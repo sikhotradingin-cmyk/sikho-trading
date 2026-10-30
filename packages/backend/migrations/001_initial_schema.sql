@@ -3,7 +3,7 @@
 
 CREATE TABLE IF NOT EXISTS virtual_accounts (
     id VARCHAR(64) PRIMARY KEY,
-    user_id VARCHAR(64) NOT NULL, -- Multiple accounts per user allowed (No unique constraint)
+    user_id VARCHAR(64) NOT NULL, -- Multiple accounts per user allowed (No unique user_id constraint)
     name VARCHAR(100) NOT NULL DEFAULT 'Primary Practice Account',
     tier VARCHAR(10) NOT NULL DEFAULT 'FREE', -- 'FREE' or 'PRO'
     starting_balance_paise BIGINT NOT NULL DEFAULT 10000000, -- ₹100,000.00
@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS virtual_accounts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_virtual_accounts_user ON virtual_accounts(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_user_default_account ON virtual_accounts(user_id) WHERE is_default = TRUE;
 
 CREATE TABLE IF NOT EXISTS account_ledger_entries (
     id VARCHAR(64) PRIMARY KEY,

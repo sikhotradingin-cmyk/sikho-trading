@@ -1,10 +1,11 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { VirtualAccountEngine } from './virtual-account-engine.js';
+import { EmulatedPostgresDatabase } from '../db/database.js';
+import { PostgresRepository } from '../db/postgres-repository.js';
 import { SimulationEngine } from './simulation-engine.js';
 import { InstrumentMetadata, Money, PlaceOrderRequest, QuoteSnapshot } from '@trading/shared';
 
-describe('Simulated Execution Engine', () => {
+describe('Simulated Execution Engine (PostgreSQL-backed)', () => {
   const niftyFuture: InstrumentMetadata = {
     globalId: 'NFO:NIFTY26OCTFUT:999001',
     provider: 'DEMO',
@@ -38,10 +39,12 @@ describe('Simulated Execution Engine', () => {
     isSimulated: true,
   };
 
-  test('executes BUY Market order at Best Ask and opens Long Position', async () => {
-    const accEngine = new VirtualAccountEngine();
-    const simEngine = new SimulationEngine(accEngine);
-    const acc = accEngine.provisionInitialAccount('trader-1');
+  test('executes BUY Market order at Best Ask and opens Long Position in PostgreSQL', async () => {
+    const db = new EmulatedPostgresDatabase();
+    const repo = new PostgresRepository(db);
+    await repo.syncInstruments([niftyFuture]);
+    const simEngine = new SimulationEngine(repo);
+    const acc = await repo.provisionInitialAccount('trader-1');
 
     const req: PlaceOrderRequest = {
       accountId: acc.id,
@@ -68,9 +71,11 @@ describe('Simulated Execution Engine', () => {
   });
 
   test('enforces idempotency: identical retry returns same order, different payload throws', async () => {
-    const accEngine = new VirtualAccountEngine();
-    const simEngine = new SimulationEngine(accEngine);
-    const acc = accEngine.provisionInitialAccount('trader-2');
+    const db = new EmulatedPostgresDatabase();
+    const repo = new PostgresRepository(db);
+    await repo.syncInstruments([niftyFuture]);
+    const simEngine = new SimulationEngine(repo);
+    const acc = await repo.provisionInitialAccount('trader-2');
 
     const req: PlaceOrderRequest = {
       accountId: acc.id,
@@ -84,10 +89,8 @@ describe('Simulated Execution Engine', () => {
     const res1 = await simEngine.submitOrder(req, niftyFuture, freshQuote, 1000n, 20n);
     const res2 = await simEngine.submitOrder(req, niftyFuture, freshQuote, 1000n, 20n);
 
-    // Identical response
     assert.equal(res1.order.id, res2.order.id);
 
-    // Mutated payload with same idempotency key must reject
     const mutatedReq: PlaceOrderRequest = { ...req, quantity: 50 };
     await assert.rejects(
       async () => {
@@ -98,13 +101,15 @@ describe('Simulated Execution Engine', () => {
   });
 
   test('rejects execution when quote timestamp is stale (> 5000ms old)', async () => {
-    const accEngine = new VirtualAccountEngine();
-    const simEngine = new SimulationEngine(accEngine);
-    const acc = accEngine.provisionInitialAccount('trader-3');
+    const db = new EmulatedPostgresDatabase();
+    const repo = new PostgresRepository(db);
+    await repo.syncInstruments([niftyFuture]);
+    const simEngine = new SimulationEngine(repo);
+    const acc = await repo.provisionInitialAccount('trader-3');
 
     const staleQuote: QuoteSnapshot = {
       ...freshQuote,
-      receiveTimestamp: Date.now() - 6000, // 6 seconds old
+      receiveTimestamp: Date.now() - 6000,
     };
 
     const req: PlaceOrderRequest = {
@@ -122,9 +127,11 @@ describe('Simulated Execution Engine', () => {
   });
 
   test('OCO exit protection: Stop-Market fill automatically cancels companion Target order', async () => {
-    const accEngine = new VirtualAccountEngine();
-    const simEngine = new SimulationEngine(accEngine);
-    const acc = accEngine.provisionInitialAccount('trader-4');
+    const db = new EmulatedPostgresDatabase();
+    const repo = new PostgresRepository(db);
+    await repo.syncInstruments([niftyFuture]);
+    const simEngine = new SimulationEngine(repo);
+    const acc = await repo.provisionInitialAccount('trader-4');
 
     // 1. Enter Long position
     await simEngine.submitOrder(
@@ -188,15 +195,13 @@ describe('Simulated Execution Engine', () => {
       receiveTimestamp: Date.now(),
     };
 
-    const triggers = simEngine.onMarketTick(dropTick);
+    const triggers = await simEngine.onMarketTick(dropTick);
     assert.equal(triggers.length, 1);
     assert.equal(triggers[0].order.id, slRes.order.id);
     assert.equal(triggers[0].order.status, 'EXECUTED');
-    // Gap fill realism: fills at actual gap price (24,440), NOT trigger (24,450)
     assert.equal(triggers[0].order.executedPrice, 24440.0);
 
-    // Target order is cancelled automatically
-    const orders = simEngine.getOrders(acc.id);
+    const orders = await repo.getOrders(acc.id);
     const targetOrder = orders.find((o) => o.id === targetRes.order.id)!;
     assert.equal(targetOrder.status, 'CANCELLED');
     assert.match(targetOrder.rejectionReason || '', /OCO_TRIGGERED/);

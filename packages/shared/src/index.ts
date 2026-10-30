@@ -9,3 +9,6 @@ export * from './indicators/sma.js';
 export * from './indicators/ema.js';
 export * from './indicators/rsi.js';
 export * from './validation/order-validator.js';
+export * from './analytics/performance-analytics.js';
+export * from './analytics/risk-sizer.js';
+export * from './analytics/discipline-guard.js';

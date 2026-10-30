@@ -11,7 +11,7 @@ import {
 } from '@trading/shared';
 import { randomUUID } from 'node:crypto';
 import { SecurityAirGap } from './security-airgap.js';
-import { VirtualAccountEngine } from './virtual-account-engine.js';
+import { PostgresRepository } from '../db/postgres-repository.js';
 
 export interface ExecutionResult {
   order: SimulatedOrder;
@@ -21,17 +21,12 @@ export interface ExecutionResult {
 }
 
 export class SimulationEngine {
-  private orders: Map<string, SimulatedOrder> = new Map();
-  // AccountId + IdempotencyKey -> OrderId
-  private idempotencyRegistry: Map<string, { orderId: string; requestHash: string }> = new Map();
-  // AccountId + GlobalInstrumentId -> Position
-  private positions: Map<string, SimulatedPosition> = new Map();
   private pendingOrders: SimulatedOrder[] = [];
 
-  constructor(private accountEngine: VirtualAccountEngine) {}
+  constructor(private repo: PostgresRepository) {}
 
   /**
-   * Submit and evaluate a simulated order.
+   * Submit and evaluate a simulated order with PostgreSQL persistence.
    */
   public async submitOrder(
     request: PlaceOrderRequest,
@@ -43,25 +38,22 @@ export class SimulationEngine {
     // 1. Air-gap assertion: Prove zero broker execution routing
     SecurityAirGap.verifySimulatedActionExclusivity('MARKET');
 
-    // 2. Account-scoped Idempotency Check
-    const idemCompositeKey = `${request.accountId}:${request.idempotencyKey}`;
-    const requestHash = JSON.stringify({
-      accountId: request.accountId,
-      globalInstrumentId: request.globalInstrumentId,
-      side: request.side,
-      orderType: request.orderType,
-      quantity: request.quantity,
-      requestedPrice: request.requestedPrice,
-      triggerPrice: request.triggerPrice,
-    });
+    // 2. Account-scoped Idempotency Check in PostgreSQL
+    const existingOrder = await this.repo.getOrderByAccountAndIdempotency(
+      request.accountId,
+      request.idempotencyKey
+    );
 
-    const existingIdem = this.idempotencyRegistry.get(idemCompositeKey);
-    if (existingIdem) {
-      if (existingIdem.requestHash !== requestHash) {
+    if (existingOrder) {
+      const match =
+        existingOrder.side === request.side &&
+        existingOrder.orderType === request.orderType &&
+        existingOrder.quantity === request.quantity &&
+        existingOrder.requestedPrice === request.requestedPrice;
+
+      if (!match) {
         throw new Error('ERR_IDEMPOTENCY_MISMATCH: Idempotency key reused with different order payload.');
       }
-      const existingOrder = this.orders.get(existingIdem.orderId);
-      if (!existingOrder) throw new Error('Existing idempotent order not found in memory.');
       return { order: existingOrder };
     }
 
@@ -84,8 +76,7 @@ export class SimulationEngine {
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };
-      this.orders.set(rejectedOrder.id, rejectedOrder);
-      this.idempotencyRegistry.set(idemCompositeKey, { orderId: rejectedOrder.id, requestHash });
+      await this.repo.saveOrder(rejectedOrder);
       return { order: rejectedOrder };
     }
 
@@ -107,37 +98,35 @@ export class SimulationEngine {
       updatedAt: Date.now(),
     };
 
-    this.orders.set(orderId, order);
-    this.idempotencyRegistry.set(idemCompositeKey, { orderId, requestHash });
-
-    // 5. Margin Reservation
-    const marginLocked = this.accountEngine.lockMargin(request.accountId, requiredMarginPaise);
+    // 5. Margin Reservation in PostgreSQL
+    const marginLocked = await this.repo.lockMargin(request.accountId, requiredMarginPaise);
     if (!marginLocked) {
       order.status = 'REJECTED';
       order.rejectionReason = 'ERR_INSUFFICIENT_MARGIN: Account cannot lock required margin.';
       order.updatedAt = Date.now();
+      await this.repo.saveOrder(order);
       return { order };
     }
 
     // 6. Immediate Execution vs. Pending Queue
     if (request.orderType === 'MARKET') {
       const executedPrice = this.computeFillPrice(order.side, quote, request.orderType);
-      return this.executeFill(order, executedPrice, quote, requiredMarginPaise);
+      const res = await this.executeFill(order, executedPrice, quote, requiredMarginPaise);
+      await this.repo.saveOrder(res.order);
+      if (res.position) {
+        await this.repo.saveOrUpdatePosition(res.position);
+      }
+      return res;
     } else {
-      // LIMIT or STOP order placed into server-side order book
+      await this.repo.saveOrder(order);
       this.pendingOrders.push(order);
       return { order };
     }
   }
 
-  /**
-   * Deterministic fill price calculation:
-   * Uses Ask (for Buy) / Bid (for Sell) when available,
-   * falling back to LTP with explicit labeled simulated slippage.
-   */
   private computeFillPrice(side: OrderSide, quote: QuoteSnapshot, _type: OrderType, gapPrice?: number): number {
     if (gapPrice !== undefined) {
-      return gapPrice; // Gap open handling: fill at actual gap tick
+      return gapPrice;
     }
     if (side === 'BUY') {
       return quote.askPrice ?? Number((quote.ltp * 1.0005).toFixed(2));
@@ -146,30 +135,26 @@ export class SimulationEngine {
     }
   }
 
-  /**
-   * Execute fill on an order and update positions and ledger atomically.
-   */
-  private executeFill(
+  private async executeFill(
     order: SimulatedOrder,
     fillPrice: number,
     quote: QuoteSnapshot,
     _marginPaise: Paise
-  ): ExecutionResult {
+  ): Promise<ExecutionResult> {
     order.status = 'EXECUTED';
     order.executedPrice = fillPrice;
     order.executedAt = Date.now();
     order.updatedAt = Date.now();
 
-    const posKey = `${order.accountId}:${order.globalInstrumentId}`;
-    let position = this.positions.get(posKey);
+    const existingPositions = await this.repo.getPositions(order.accountId);
+    let position = existingPositions.find((p) => p.globalInstrumentId === order.globalInstrumentId);
     let realizedPnlPaise = 0n;
 
     const deltaQty = order.side === 'BUY' ? order.quantity : -order.quantity;
 
     if (!position || position.quantity === 0) {
-      // New Position Opened
       position = {
-        id: randomUUID(),
+        id: position?.id || randomUUID(),
         accountId: order.accountId,
         globalInstrumentId: order.globalInstrumentId,
         quantity: deltaQty,
@@ -180,12 +165,10 @@ export class SimulationEngine {
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };
-      this.positions.set(posKey, position);
     } else {
       const isSameSide = (position.quantity > 0 && deltaQty > 0) || (position.quantity < 0 && deltaQty < 0);
 
       if (isSameSide) {
-        // Position Addition (weighted average entry price)
         const totalQty = position.quantity + deltaQty;
         const totalValue =
           Math.abs(position.quantity) * position.averageEntryPrice + Math.abs(deltaQty) * fillPrice;
@@ -193,23 +176,23 @@ export class SimulationEngine {
         position.quantity = totalQty;
         position.updatedAt = Date.now();
       } else {
-        // Position Reduction or Closure
         const closedQty = Math.min(Math.abs(position.quantity), Math.abs(deltaQty));
-        // P&L = (Exit - Entry) * Qty for Longs, (Entry - Exit) * Qty for Shorts
-        const priceDiff = position.quantity > 0 ? fillPrice - position.averageEntryPrice : position.averageEntryPrice - fillPrice;
+        const priceDiff =
+          position.quantity > 0 ? fillPrice - position.averageEntryPrice : position.averageEntryPrice - fillPrice;
         const pnlRupees = priceDiff * closedQty;
         realizedPnlPaise = Money.fromRupees(pnlRupees);
 
         position.realizedPnlPaise += realizedPnlPaise;
-        position.quantity += deltaQty; // Moves toward zero or reverses
+        position.quantity += deltaQty;
         position.updatedAt = Date.now();
 
-        // Release margin proportional to closed quantity
-        const releasedMargin = Money.multiply(order.estimatedChargesPaise * 50n, closedQty / order.quantity);
-        this.accountEngine.releaseMargin(order.accountId, releasedMargin);
+        // Futures Margin collateral release (Collateral is not cash equity debit)
+        const marginRate = 0.12; // 12% for Index Futures
+        const releasedMarginRupees = position.averageEntryPrice * closedQty * marginRate;
+        const releasedMarginPaise = Money.fromRupees(releasedMarginRupees);
+        await this.repo.releaseMargin(order.accountId, releasedMarginPaise);
 
-        // Apply realized P&L and charges to ledger
-        this.accountEngine.applyTradeSettlement(
+        await this.repo.applyTradeSettlement(
           order.accountId,
           realizedPnlPaise,
           order.estimatedChargesPaise,
@@ -219,7 +202,6 @@ export class SimulationEngine {
       }
     }
 
-    // Recompute unrealized P&L
     this.updatePositionUnrealized(position, quote.ltp);
 
     return {
@@ -230,11 +212,7 @@ export class SimulationEngine {
     };
   }
 
-  /**
-   * Server-Side Ticking Engine: Evaluates pending Limit, Stop-Loss, and Target orders on every market tick.
-   * Runs independently of client connection status.
-   */
-  public onMarketTick(quote: QuoteSnapshot): ExecutionResult[] {
+  public async onMarketTick(quote: QuoteSnapshot): Promise<ExecutionResult[]> {
     const results: ExecutionResult[] = [];
     const remainingPending: SimulatedOrder[] = [];
 
@@ -247,7 +225,6 @@ export class SimulationEngine {
       let shouldTrigger = false;
       let gapPrice: number | undefined;
 
-      // 1. Limit Order Evaluation
       if (order.orderType === 'LIMIT' && order.requestedPrice !== undefined) {
         if (order.side === 'BUY' && quote.ltp <= order.requestedPrice) {
           shouldTrigger = true;
@@ -256,35 +233,32 @@ export class SimulationEngine {
         }
       }
 
-      // 2. Stop-Market Evaluation (with Gap handling)
       if (order.orderType === 'STOP_MARKET' && order.triggerPrice !== undefined) {
         if (order.side === 'SELL' && quote.ltp <= order.triggerPrice) {
           shouldTrigger = true;
-          // If price gapped below trigger, fill at gap price (quote.ltp)
-          if (quote.ltp < order.triggerPrice) {
-            gapPrice = quote.ltp;
-          }
+          if (quote.ltp < order.triggerPrice) gapPrice = quote.ltp;
         } else if (order.side === 'BUY' && quote.ltp >= order.triggerPrice) {
           shouldTrigger = true;
-          if (quote.ltp > order.triggerPrice) {
-            gapPrice = quote.ltp;
-          }
+          if (quote.ltp > order.triggerPrice) gapPrice = quote.ltp;
         }
       }
 
       if (shouldTrigger) {
-        // OCO Race Protection: Cancel companion order if linked
         if (order.ocoCompanionOrderId) {
-          const companion = this.orders.get(order.ocoCompanionOrderId);
-          if (companion && companion.status === 'PENDING') {
-            companion.status = 'CANCELLED';
-            companion.rejectionReason = `OCO_TRIGGERED: Cancelled because companion order ${order.id} executed.`;
-            companion.updatedAt = Date.now();
+          const comp = this.pendingOrders.find((o) => o.id === order.ocoCompanionOrderId);
+          if (comp && comp.status === 'PENDING') {
+            comp.status = 'CANCELLED';
+            comp.rejectionReason = `OCO_TRIGGERED: Cancelled because companion order ${order.id} executed.`;
+            await this.repo.updateOrder(comp);
           }
         }
 
         const fillPrice = this.computeFillPrice(order.side, quote, order.orderType, gapPrice);
-        const res = this.executeFill(order, fillPrice, quote, 0n);
+        const res = await this.executeFill(order, fillPrice, quote, 0n);
+        await this.repo.updateOrder(res.order);
+        if (res.position) {
+          await this.repo.saveOrUpdatePosition(res.position);
+        }
         results.push(res);
       } else {
         remainingPending.push(order);
@@ -292,30 +266,19 @@ export class SimulationEngine {
     }
 
     this.pendingOrders = remainingPending;
-
-    // Update unrealized P&L for open positions of this instrument
-    for (const pos of this.positions.values()) {
-      if (pos.globalInstrumentId === quote.globalId && pos.quantity !== 0) {
-        this.updatePositionUnrealized(pos, quote.ltp);
-      }
-    }
-
     return results;
   }
 
-  /**
-   * Square-off an open position at prevailing market price.
-   */
-  public squareOffPosition(
+  public async squareOffPosition(
     accountId: string,
     globalInstrumentId: string,
     quote: QuoteSnapshot
-  ): ExecutionResult {
+  ): Promise<ExecutionResult> {
     SecurityAirGap.verifySimulatedActionExclusivity('SQUARE_OFF');
 
-    const posKey = `${accountId}:${globalInstrumentId}`;
-    const position = this.positions.get(posKey);
-    if (!position || position.quantity === 0) {
+    const positions = await this.repo.getPositions(accountId);
+    const position = positions.find((p) => p.globalInstrumentId === globalInstrumentId && p.quantity !== 0);
+    if (!position) {
       throw new Error(`No open position found to square off for ${globalInstrumentId}`);
     }
 
@@ -337,34 +300,28 @@ export class SimulationEngine {
     };
 
     const fillPrice = this.computeFillPrice(side, quote, 'MARKET');
-    return this.executeFill(closeOrder, fillPrice, quote, 0n);
+    const res = await this.executeFill(closeOrder, fillPrice, quote, 0n);
+    await this.repo.saveOrder(res.order);
+    if (res.position) {
+      await this.repo.saveOrUpdatePosition(res.position);
+    }
+    return res;
   }
 
-  /**
-   * Cancel a pending order.
-   */
-  public cancelOrder(accountId: string, orderId: string): SimulatedOrder {
+  public async cancelOrder(accountId: string, orderId: string): Promise<SimulatedOrder> {
     SecurityAirGap.verifySimulatedActionExclusivity('CANCEL');
 
-    const order = this.orders.get(orderId);
+    const orders = await this.repo.getOrders(accountId);
+    const order = orders.find((o) => o.id === orderId);
     if (!order) throw new Error(`Order ${orderId} not found.`);
-    if (order.accountId !== accountId) throw new Error('Unauthorized order access.');
     if (order.status !== 'PENDING') {
       throw new Error(`Cannot cancel order in status ${order.status}.`);
     }
 
     order.status = 'CANCELLED';
     order.updatedAt = Date.now();
+    await this.repo.updateOrder(order);
     this.pendingOrders = this.pendingOrders.filter((o) => o.id !== orderId);
-
-    // Cancel OCO companion if linked
-    if (order.ocoCompanionOrderId) {
-      const companion = this.orders.get(order.ocoCompanionOrderId);
-      if (companion && companion.status === 'PENDING') {
-        companion.status = 'CANCELLED';
-        companion.updatedAt = Date.now();
-      }
-    }
 
     return order;
   }
@@ -379,13 +336,5 @@ export class SimulationEngine {
     const unrealizedRupees = diff * Math.abs(pos.quantity);
     pos.unrealizedPnlPaise = Money.fromRupees(unrealizedRupees);
     pos.updatedAt = Date.now();
-  }
-
-  public getOrders(accountId: string): SimulatedOrder[] {
-    return Array.from(this.orders.values()).filter((o) => o.accountId === accountId);
-  }
-
-  public getPositions(accountId: string): SimulatedPosition[] {
-    return Array.from(this.positions.values()).filter((p) => p.accountId === accountId);
   }
 }

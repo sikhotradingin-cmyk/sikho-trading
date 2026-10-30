@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="frpb_brand_blue">#0066FF</color>
+    <color name="frpb_cyan_accent">#00A3FF</color>
+    <color name="frpb_slate_900">#0F172A</color>
+    <color name="frpb_slate_50">#F8FAFC</color>
+    <color name="white">#FFFFFFFF</color>
+</resources>
