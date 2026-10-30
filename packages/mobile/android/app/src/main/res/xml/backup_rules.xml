@@ -1,9 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
     <exclude domain="sharedpref" path="auth_tokens.xml" />
-    <exclude domain="sharedpref" path="frpb_vault_security.xml" />
-    <exclude domain="file" path="encrypted_vault" />
-    <exclude domain="file" path="encrypted_vault_meta.json" />
-    <exclude domain="file" path="encrypted_vault_meta.enc" />
-    <exclude domain="file" path="received_transfers" />
 </full-backup-content>

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.FRPB" parent="android:Theme.Material.Light.NoActionBar">
-        <item name="android:statusBarColor">@color/frpb_slate_50</item>
-        <item name="android:windowLightStatusBar">true</item>
+    <style name="Theme.Tradingzone" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="android:statusBarColor">@color/tradingzone_slate_900</item>
+        <item name="android:windowLightStatusBar">false</item>
     </style>
 </resources>

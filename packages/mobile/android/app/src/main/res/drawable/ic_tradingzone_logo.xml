@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <!-- Chart Background Grid Subtle -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#334155"
+        android:strokeWidth="1"
+        android:pathData="M6,38 L42,38 M6,26 L42,26 M6,14 L42,14" />
+    <!-- Candlestick 1 (Bullish Green) -->
+    <path
+        android:strokeColor="#10B981"
+        android:strokeWidth="2"
+        android:pathData="M14,12 L14,34" />
+    <path
+        android:fillColor="#10B981"
+        android:pathData="M11,18 H17 V30 H11 Z" />
+    <!-- Candlestick 2 (Bearish Red) -->
+    <path
+        android:strokeColor="#EF4444"
+        android:strokeWidth="2"
+        android:pathData="M24,16 L24,38" />
+    <path
+        android:fillColor="#EF4444"
+        android:pathData="M21,20 H27 V32 H21 Z" />
+    <!-- Candlestick 3 (Bullish Cyan/Blue) -->
+    <path
+        android:strokeColor="#38BDF8"
+        android:strokeWidth="2"
+        android:pathData="M34,8 L34,28" />
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M31,12 H37 V22 H31 Z" />
+    <!-- Trend Line -->
+    <path
+        android:strokeColor="#F59E0B"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:pathData="M10,32 L22,26 L36,10" />
+</vector>
+
