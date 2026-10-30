@@ -9,6 +9,7 @@ import { FeedHealth, IMarketDataProvider } from './types.js';
 
 export class DeterministicProvider implements IMarketDataProvider {
   public readonly providerId = 'DEMO';
+  public readonly simulatedClockTimestamp: number = Date.now();
   private instruments: Map<string, InstrumentMetadata> = new Map();
   private quotes: Map<string, QuoteSnapshot> = new Map();
   private candles1m: Map<string, Candle[]> = new Map();
@@ -21,15 +22,39 @@ export class DeterministicProvider implements IMarketDataProvider {
     this.setupFixtures();
   }
 
+  /**
+   * Deterministically calculates unexpired contract expiry based on the simulated clock.
+   * Resolves to the last Thursday of the simulated active month (or next month if past Thursday).
+   */
+  private calculateNextExpiryDate(clockMs: number): string {
+    const d = new Date(clockMs);
+    const year = d.getFullYear();
+    const month = d.getMonth();
+    const lastDay = new Date(year, month + 1, 0);
+    const dayOfWeek = lastDay.getDay(); // 0 is Sun, 4 is Thu
+    const diff = dayOfWeek >= 4 ? dayOfWeek - 4 : dayOfWeek + 3;
+    const lastThursday = new Date(year, month + 1, -diff);
+    if (d.getTime() > lastThursday.getTime()) {
+      const nextMonthLastDay = new Date(year, month + 2, 0);
+      const nextDayOfWeek = nextMonthLastDay.getDay();
+      const nextDiff = nextDayOfWeek >= 4 ? nextDayOfWeek - 4 : nextDayOfWeek + 3;
+      const nextLastThursday = new Date(year, month + 2, -nextDiff);
+      return nextLastThursday.toISOString().split('T')[0];
+    }
+    return lastThursday.toISOString().split('T')[0];
+  }
+
   private setupFixtures(): void {
+    const unexpiredExpiry = this.calculateNextExpiryDate(this.simulatedClockTimestamp);
+
     // 1. Non-tradable Spot Index Reference
     const spotNifty: InstrumentMetadata = {
       globalId: makeGlobalInstrumentId('NSE', 'NIFTY50', '999000'),
       provider: 'DEMO',
       exchange: 'NSE',
       token: '999000',
-      symbol: 'NIFTY 50',
-      name: 'NIFTY 50 Spot Index (Reference Only)',
+      symbol: 'DEMO-NIFTY50',
+      name: '[DEMO] NIFTY 50 Spot Index (Reference Only)',
       instrumentType: 'INDEX_SPOT',
       isTradable: false,
       lotSize: 1,
@@ -37,19 +62,19 @@ export class DeterministicProvider implements IMarketDataProvider {
       isSimulatedFixture: true,
     };
 
-    // 2. Tradable Current Month Futures (dynamic lot size 25 from metadata)
+    // 2. Tradable Current Month Futures (explicit demo contract + simulated clock)
     const futureNifty: InstrumentMetadata = {
       globalId: makeGlobalInstrumentId('NFO', 'NIFTY26OCTFUT', '999001'),
       provider: 'DEMO',
       exchange: 'NFO',
       token: '999001',
-      symbol: 'NIFTY26OCTFUT',
-      name: 'NIFTY Futures Current Month (Simulated)',
+      symbol: 'DEMO-NIFTY-FUT',
+      name: '[DEMO] NIFTY Current Month Futures (Simulated Clock)',
       instrumentType: 'FUTIDX',
       isTradable: true,
       lotSize: 25, // Dynamic from metadata
       tickSize: 0.05,
-      expiry: '2026-11-26',
+      expiry: unexpiredExpiry,
       underlying: 'NIFTY',
       isSimulatedFixture: true,
     };

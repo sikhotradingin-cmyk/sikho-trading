@@ -56,7 +56,7 @@ describe('End-to-End Server Integration & API Flow', () => {
     assert.ok(Array.isArray(body.instruments));
     const fut = body.instruments.find((i: any) => i.instrumentType === 'FUTIDX');
     assert.ok(fut);
-    assert.equal(fut.symbol, 'NIFTY26OCTFUT');
+    assert.equal(fut.symbol, 'DEMO-NIFTY-FUT');
     assert.equal(fut.isTradable, true);
     assert.equal(fut.lotSize, 25); // Dynamically verified from metadata
   });

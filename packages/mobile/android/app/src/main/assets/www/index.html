@@ -330,7 +330,7 @@
     <header>
       <div class="header-left">
         <div>
-          <span class="inst-symbol" id="header-symbol">NIFTY 28NOV24 FUT</span>
+          <span class="inst-symbol" id="header-symbol">DEMO-NIFTY-FUT</span>
           <span class="inst-badge" id="header-exchange">NSE</span>
         </div>
       </div>
@@ -932,10 +932,12 @@
 
     function updateAccountUI() {
       if (!account) return;
+      const locked = account.lockedMarginPaise || account.usedMarginPaise || 0;
+      const free = account.availableBalancePaise || account.availableMarginPaise || 0;
       document.getElementById('acc-cash-val').innerText = formatINR(account.cashBalancePaise);
-      document.getElementById('acc-used-margin').innerText = formatINR(account.usedMarginPaise);
-      document.getElementById('acc-free-margin').innerText = formatINR(account.availableMarginPaise);
-      document.getElementById('avail-margin-val').innerText = formatINR(account.availableMarginPaise);
+      document.getElementById('acc-used-margin').innerText = formatINR(locked);
+      document.getElementById('acc-free-margin').innerText = formatINR(free);
+      document.getElementById('avail-margin-val').innerText = formatINR(free);
     }
 
     async function resetVirtualAccount() {

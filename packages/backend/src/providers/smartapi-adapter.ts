@@ -59,6 +59,38 @@ export class SmartAPIAdapter implements IMarketDataProvider {
     throw new Error('SmartAPI credentials configured but live network ingestion is disabled pending redistribution agreement.');
   }
 
+  /**
+   * Resolves currently eligible contracts dynamically from the official Angel One Scrip Master.
+   * Filters by exchange segment, instruments, and guarantees contracts are not expired relative to today.
+   */
+  public resolveCurrentContracts(scripMaster: any[]): InstrumentMetadata[] {
+    const today = new Date().toISOString().split('T')[0];
+    const niftyFutures = scripMaster.filter((item: any) => 
+      item.exch_seg === 'NFO' &&
+      item.instrumenttype === 'FUTIDX' &&
+      item.name === 'NIFTY' &&
+      item.expiry >= today
+    );
+    // Sort ascending by expiry date to pick near-month contract first
+    niftyFutures.sort((a: any, b: any) => a.expiry.localeCompare(b.expiry));
+
+    return niftyFutures.map((item: any) => ({
+      globalId: `NFO:${item.symbol}:${item.token}`,
+      provider: 'SMARTAPI' as const,
+      exchange: 'NFO' as const,
+      token: item.token,
+      symbol: item.symbol,
+      name: item.name,
+      instrumentType: 'FUTIDX' as const,
+      isTradable: true,
+      lotSize: parseInt(item.lotsize || '25', 10),
+      tickSize: parseFloat(item.tick_size || '0.05'),
+      expiry: item.expiry,
+      underlying: 'NIFTY',
+      isSimulatedFixture: false,
+    }));
+  }
+
   public async getCandles(_globalId: string, _timeframe: Timeframe, _count?: number): Promise<Candle[]> {
     if (!this.isConfigured) {
       return [];

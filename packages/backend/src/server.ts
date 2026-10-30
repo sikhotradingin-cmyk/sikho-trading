@@ -45,6 +45,25 @@ export async function buildServer(customDb?: IDatabase): Promise<{
   await app.register(jwt, { secret: config.jwtSecret });
   await app.register(websocket);
 
+  // Security: Restrict development access strictly to loopback and RFC 1918 private LAN addresses
+  app.addHook('onRequest', async (req, reply) => {
+    const rawIp = req.ip || req.socket.remoteAddress || '';
+    const cleanIp = rawIp.replace(/^::ffff:/, ''); // normalize IPv4-mapped IPv6
+    const isPrivate =
+      cleanIp === '127.0.0.1' ||
+      cleanIp === '::1' ||
+      cleanIp.startsWith('10.') ||
+      cleanIp.startsWith('192.168.') ||
+      /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(cleanIp);
+
+    if (!isPrivate) {
+      return reply.status(403).send({
+        error: 'ERR_NON_LOCAL_DEV_ACCESS',
+        message: 'Development server is restricted to loopback and local private networks only.',
+      });
+    }
+  });
+
   // Database & Repositories
   const db = customDb || createDatabase(process.env.DATABASE_URL);
   const repo = new PostgresRepository(db);
