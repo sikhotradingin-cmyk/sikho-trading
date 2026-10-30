@@ -1,0 +1,24 @@
+{
+  "name": "@trading/mobile",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "start": "react-native start",
+    "android": "react-native run-android",
+    "build": "tsc",
+    "test": "node --test dist/**/*.test.js"
+  },
+  "dependencies": {
+    "@trading/shared": "*",
+    "react": "18.3.1",
+    "react-native": "0.76.1",
+    "react-native-webview": "^13.12.5",
+    "zustand": "^5.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.8.7",
+    "@types/react": "^18.3.12",
+    "typescript": "^5.6.3"
+  }
+}
