@@ -1,8 +1,8 @@
 {
-  "name": "indian-paper-trading-monorepo",
+  "name": "tradingzone-monorepo",
   "version": "1.0.0",
   "private": true,
-  "description": "Android-first Indian Securities Paper-Trading Platform Monorepo",
+  "description": "Tradingzone - Android-first Indian Securities Paper-Trading Platform Monorepo",
   "workspaces": [
     "packages/shared",
     "packages/backend",

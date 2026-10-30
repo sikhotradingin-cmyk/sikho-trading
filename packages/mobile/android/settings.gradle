@@ -1,2 +1,2 @@
-rootProject.name = 'IndianPaperTrading'
+rootProject.name = 'Tradingzone'
 include ':app'

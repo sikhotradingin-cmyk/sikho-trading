@@ -5,7 +5,7 @@
 
     <application
         android:name=".MainApplication"
-        android:label="NIFTY Paper Trader"
+        android:label="Tradingzone"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:allowBackup="false"

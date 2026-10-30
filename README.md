@@ -1,4 +1,4 @@
-# Indian Securities Paper-Trading Platform (Android-First)
+# Tradingzone - Indian Securities Paper-Trading Platform (Android-First)
 
 An Android-first, high-performance paper-trading application built for Indian retail traders. Practice analyzing live market charts and executing simulated trades against market quotes without financial risk.
 
