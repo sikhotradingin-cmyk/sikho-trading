@@ -735,12 +735,18 @@ export class SmartAPIAdapter implements IMarketDataProvider {
     let status: 'LIVE' | 'STALE' | 'DISCONNECTED' = 'DISCONNECTED';
     let banner = 'SMARTAPI — CONNECTING';
 
-    if (this.wsConnected) {
+    if (this.session) {
       if (marketOpen) {
-        status = isStale ? 'STALE' : 'LIVE';
-        banner = isStale ? 'SMARTAPI — STALE DATA (MARKET OPEN)' : 'SMARTAPI — LIVE MARKET OPEN';
+        if (this.wsConnected) {
+          status = isStale ? 'STALE' : 'LIVE';
+          banner = isStale ? 'SMARTAPI — STALE DATA (MARKET OPEN)' : 'SMARTAPI — LIVE MARKET OPEN';
+        } else {
+          status = 'DISCONNECTED';
+          banner = 'SMARTAPI — WEBSOCKET CONNECTING';
+        }
       } else {
-        status = 'LIVE'; // Connected and serving official last available data
+        // Market is closed (after 15:30 IST or weekend/holiday)
+        status = 'LIVE'; // Official last available candle and closing data
         banner = 'SMARTAPI — MARKET CLOSED (LAST AVAILABLE DATA)';
       }
     }

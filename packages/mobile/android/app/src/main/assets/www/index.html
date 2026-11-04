@@ -8,54 +8,75 @@
     :root {
       --bg: #0b0f19;
       --card-bg: #151d2f;
-      --border: #232f48;
+      --card-border: #232f48;
       --text: #f1f5f9;
       --text-muted: #94a3b8;
-      --primary: #3b82f6;
-      --primary-hover: #2563eb;
+      --primary: #2563eb;
+      --primary-accent: #38bdf8;
       --green: #10b981;
       --green-bg: rgba(16, 185, 129, 0.12);
       --red: #ef4444;
       --red-bg: rgba(239, 68, 68, 0.12);
       --amber: #f59e0b;
       --nav-height: 56px;
-      --header-height: 52px;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
     body, html { width: 100%; height: 100%; overflow: hidden; background-color: var(--bg); color: var(--text); }
     
     #app-container { display: flex; flex-direction: column; width: 100%; height: 100%; position: relative; }
     
-    /* Top Header */
-    header {
-      height: var(--header-height);
-      background: #111827;
-      border-bottom: 1px solid var(--border);
+    /* 1. Exchange Status Dot Strip (Reference Screenshots) */
+    .exchange-status-bar {
+      height: 22px;
+      background: #090d16;
+      border-bottom: 1px solid #1a2234;
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      padding: 0 12px;
+      justify-content: center;
+      gap: 10px;
+      font-size: 10px;
+      font-weight: 700;
+      color: #94a3b8;
       flex-shrink: 0;
-      z-index: 20;
+      letter-spacing: 0.3px;
     }
-    .header-left { display: flex; align-items: center; gap: 8px; }
-    .inst-symbol { font-size: 15px; font-weight: 800; color: #fff; letter-spacing: -0.3px; }
-    .inst-badge { font-size: 9px; font-weight: 700; padding: 2px 5px; border-radius: 4px; background: #1e293b; color: #38bdf8; border: 1px solid #334155; }
-    .header-price { text-align: right; }
-    .current-ltp { font-size: 15px; font-weight: 800; }
-    .price-change { font-size: 11px; font-weight: 600; }
+    .dot { font-size: 8px; vertical-align: middle; }
+    .dot-open { color: #10b981; }
+    .dot-closed { color: #ef4444; }
+    .dot-sep { color: #334155; }
+    
+    /* 2. Top Dual Indices Strip (Reference Screenshots) */
+    .indices-ticker-bar {
+      height: 44px;
+      background: #111827;
+      border-bottom: 1px solid var(--card-border);
+      display: flex;
+      align-items: center;
+      justify-content: space-around;
+      padding: 0 8px;
+      flex-shrink: 0;
+    }
+    .index-cell {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      cursor: pointer;
+    }
+    .index-name { font-size: 12px; font-weight: 800; color: #e2e8f0; }
+    .index-val { font-size: 13px; font-weight: 800; }
+    .index-chg { font-size: 10px; font-weight: 700; }
     .change-pos { color: var(--green); }
     .change-neg { color: var(--red); }
     
-    /* Demo Banner */
-    .demo-bar {
-      background: #451a03;
-      border-bottom: 1px solid #78350f;
-      color: #fde68a;
+    /* 3. Feed Health / Mode Banner */
+    .feed-banner-bar {
+      background: #1e293b;
+      border-bottom: 1px solid #334155;
+      color: #94a3b8;
       font-size: 10px;
-      font-weight: 700;
+      font-weight: 800;
       text-align: center;
-      padding: 3px 6px;
+      padding: 4px 8px;
       letter-spacing: 0.5px;
       text-transform: uppercase;
       flex-shrink: 0;
@@ -65,16 +86,16 @@
       gap: 6px;
     }
     
-    /* Screen Viewport */
+    /* Main Viewport */
     main { flex: 1; position: relative; overflow: hidden; display: flex; flex-direction: column; }
     .screen { position: absolute; inset: 0; display: none; flex-direction: column; overflow-y: auto; -webkit-overflow-scrolling: touch; }
     .screen.active { display: flex; }
     
-    /* Bottom Navigation Bar */
+    /* Bottom Navigation Bar (Reference Screenshots) */
     nav {
       height: var(--nav-height);
       background: #111827;
-      border-top: 1px solid var(--border);
+      border-top: 1px solid var(--card-border);
       display: flex;
       flex-shrink: 0;
       z-index: 30;
@@ -85,7 +106,7 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 4px;
+      gap: 3px;
       background: none;
       border: none;
       color: var(--text-muted);
@@ -95,13 +116,28 @@
       transition: color 0.15s ease;
     }
     .nav-btn svg { width: 18px; height: 18px; stroke-width: 2; }
-    .nav-btn.active { color: #38bdf8; font-weight: 800; }
+    .nav-btn.active { color: var(--primary-accent); font-weight: 800; }
+    
+    /* Upgrade Pro Banner (Reference Screenshots) */
+    .pro-upgrade-banner {
+      background: #1e293b;
+      border: 1px dashed #334155;
+      color: #cbd5e1;
+      padding: 8px 12px;
+      margin: 10px 12px 4px 12px;
+      border-radius: 8px;
+      font-size: 11px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
     
     /* Watchlist Screen */
     .watchlist-search {
-      padding: 10px 12px;
+      padding: 8px 12px;
       background: #111827;
-      border-bottom: 1px solid var(--border);
+      border-bottom: 1px solid var(--card-border);
     }
     .watchlist-search input {
       width: 100%;
@@ -115,7 +151,7 @@
     }
     .inst-card {
       padding: 12px 14px;
-      border-bottom: 1px solid var(--border);
+      border-bottom: 1px solid var(--card-border);
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -123,22 +159,48 @@
     }
     .inst-card:active { background: #1e293b; }
     .inst-card-meta { display: flex; flex-direction: column; gap: 3px; }
-    .inst-card-name { font-size: 14px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 6px; }
+    .inst-card-name { font-size: 14px; font-weight: 800; color: #fff; display: flex; align-items: center; gap: 6px; }
+    .inst-badge { font-size: 9px; font-weight: 700; padding: 2px 5px; border-radius: 4px; background: #1e293b; color: #38bdf8; border: 1px solid #334155; }
     .inst-card-sub { font-size: 11px; color: var(--text-muted); }
     .inst-card-prices { text-align: right; }
-    .inst-card-ltp { font-size: 14px; font-weight: 700; }
+    .inst-card-ltp { font-size: 14px; font-weight: 800; }
     .inst-card-range { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
     
-    /* Chart Screen */
-    #chart-screen { overflow: hidden; }
+    /* Dedicated Chart View Header (Reference Image 5) */
+    .chart-header-bar {
+      height: 48px;
+      background: #111827;
+      border-bottom: 1px solid var(--card-border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 8px;
+      flex-shrink: 0;
+    }
+    .btn-chart-back {
+      background: none;
+      border: none;
+      color: #cbd5e1;
+      padding: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+    }
+    .chart-header-title { display: flex; flex-direction: column; }
+    .chart-header-name { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 800; color: #fff; }
+    .chart-header-sub { display: flex; align-items: baseline; gap: 6px; font-size: 12px; font-weight: 700; }
+    .chart-header-actions { display: flex; align-items: center; gap: 4px; }
+    .btn-icon { background: none; border: none; color: #cbd5e1; padding: 6px; cursor: pointer; }
+    
+    /* Chart Toolbar & Drawing Tools */
     #chart-toolbar {
       height: 38px;
       background: #111827;
-      border-bottom: 1px solid var(--border);
+      border-bottom: 1px solid var(--card-border);
       display: flex;
       align-items: center;
       padding: 0 8px;
-      gap: 6px;
+      gap: 5px;
       overflow-x: auto;
       flex-shrink: 0;
     }
@@ -151,10 +213,39 @@
       padding: 3px 8px;
       border-radius: 4px;
       cursor: pointer;
+      white-space: nowrap;
     }
     .btn-tf.active { background: var(--primary); color: #fff; border-color: #60a5fa; }
-    .sep { width: 1px; height: 16px; background: #334155; margin: 0 2px; }
-    #chart-viewport { flex: 1; position: relative; width: 100%; min-height: 220px; }
+    .sep { width: 1px; height: 16px; background: #334155; margin: 0 2px; flex-shrink: 0; }
+    
+    /* Chart Viewport & Left Tool Column */
+    .chart-body-container { flex: 1; display: flex; position: relative; width: 100%; min-height: 220px; overflow: hidden; }
+    .chart-draw-toolbar {
+      width: 38px;
+      background: #0e1422;
+      border-right: 1px solid var(--card-border);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 6px 0;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .draw-btn {
+      width: 28px;
+      height: 28px;
+      background: none;
+      border: 1px solid transparent;
+      color: #94a3b8;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .draw-btn.active { background: #1e293b; color: var(--primary-accent); border-color: var(--primary-accent); }
+    #chart-viewport { flex: 1; position: relative; width: 100%; height: 100%; }
     #tradingview-chart-box { width: 100%; height: 100%; position: absolute; top: 0; left: 0; }
     #chart-attribution {
       position: absolute;
@@ -166,107 +257,120 @@
       z-index: 5;
     }
     
-    /* Quick Order Ticket Panel */
-    #quick-order-panel {
+    /* Range Quick-Picker Bar (Reference Image 5) */
+    .range-bar {
+      height: 28px;
       background: #111827;
-      border-top: 1px solid var(--border);
-      padding: 10px 12px;
+      border-top: 1px solid var(--card-border);
+      display: flex;
+      align-items: center;
+      justify-content: space-around;
+      padding: 0 8px;
       flex-shrink: 0;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
     }
-    .side-toggle {
-      display: flex;
-      background: #1e293b;
-      padding: 2px;
-      border-radius: 6px;
-    }
-    .btn-side {
-      flex: 1;
-      padding: 6px;
-      border: none;
-      font-size: 12px;
-      font-weight: 800;
-      border-radius: 4px;
-      cursor: pointer;
-      color: var(--text-muted);
+    .range-btn {
       background: none;
-      text-align: center;
-    }
-    .btn-side.active-buy { background: var(--green); color: #fff; }
-    .btn-side.active-sell { background: var(--red); color: #fff; }
-    .order-controls {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-    }
-    .input-group { flex: 1; display: flex; flex-direction: column; gap: 2px; }
-    .input-label { font-size: 10px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; }
-    .input-box {
-      background: #1f293d;
-      border: 1px solid #334155;
-      color: #fff;
-      font-size: 13px;
-      font-weight: 700;
-      padding: 6px 8px;
-      border-radius: 6px;
-      outline: none;
-      width: 100%;
-    }
-    .order-summary-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      font-size: 11px;
-      color: var(--text-muted);
-    }
-    .btn-submit-order {
-      width: 100%;
-      padding: 10px;
       border: none;
-      border-radius: 6px;
+      color: #64748b;
+      font-size: 10px;
+      font-weight: 700;
+      cursor: pointer;
+      padding: 2px 6px;
+    }
+    .range-btn.active { color: var(--primary-accent); border-bottom: 2px solid var(--primary-accent); }
+    
+    /* Quick Action Order Bar */
+    .quick-trade-bar {
+      padding: 8px 12px;
+      background: #111827;
+      border-top: 1px solid var(--card-border);
+      display: flex;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+    .btn-quick-buy {
+      flex: 1;
+      padding: 10px;
+      background: var(--green);
+      color: #fff;
       font-size: 13px;
       font-weight: 800;
+      border: none;
+      border-radius: 6px;
       cursor: pointer;
-      color: #fff;
       text-transform: uppercase;
       letter-spacing: 0.5px;
     }
-    .btn-buy { background: var(--green); }
-    .btn-buy:active { opacity: 0.85; }
-    .btn-sell { background: var(--red); }
-    .btn-sell:active { opacity: 0.85; }
-    
-    /* Orders & Positions Screen */
-    .subtabs {
-      display: flex;
-      background: #111827;
-      border-bottom: 1px solid var(--border);
-    }
-    .subtab-btn {
+    .btn-quick-sell {
       flex: 1;
       padding: 10px;
-      text-align: center;
-      font-size: 12px;
-      font-weight: 700;
-      color: var(--text-muted);
-      background: none;
+      background: var(--red);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 800;
       border: none;
-      border-bottom: 2px solid transparent;
+      border-radius: 6px;
       cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
     }
-    .subtab-btn.active { color: #38bdf8; border-bottom-color: #38bdf8; }
-    .pos-card {
-      margin: 10px 12px;
-      padding: 12px;
-      background: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 8px;
+    
+    /* Modal Order Ticket Bottom Sheet */
+    #order-sheet-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.6);
+      z-index: 50;
+      align-items: flex-end;
+    }
+    #order-sheet-modal.open { display: flex; }
+    .order-sheet-content {
+      width: 100%;
+      background: #111827;
+      border-top: 2px solid #232f48;
+      border-radius: 16px 16px 0 0;
+      padding: 16px;
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 12px;
+      animation: slideUp 0.2s ease-out;
     }
+    @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+    .order-sheet-header { display: flex; justify-content: space-between; align-items: center; }
+    .sheet-title { font-size: 15px; font-weight: 800; }
+    .btn-close-sheet { background: none; border: none; color: #94a3b8; font-size: 18px; cursor: pointer; }
+    .side-toggle { display: flex; background: #1e293b; padding: 2px; border-radius: 6px; }
+    .btn-side { flex: 1; padding: 7px; border: none; font-size: 12px; font-weight: 800; border-radius: 4px; cursor: pointer; color: var(--text-muted); background: none; }
+    .btn-side.active-buy { background: var(--green); color: #fff; }
+    .btn-side.active-sell { background: var(--red); color: #fff; }
+    .order-controls { display: flex; gap: 8px; align-items: center; }
+    .input-group { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+    .input-label { font-size: 10px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; }
+    .input-box { background: #1f293d; border: 1px solid #334155; color: #fff; font-size: 13px; font-weight: 700; padding: 8px; border-radius: 6px; outline: none; width: 100%; }
+    .order-summary-row { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--text-muted); }
+    .btn-submit-order { width: 100%; padding: 12px; border: none; border-radius: 6px; font-size: 13px; font-weight: 800; cursor: pointer; color: #fff; text-transform: uppercase; }
+    
+    /* Trades / Positions Screen (Reference Image 7) */
+    .trades-summary-card {
+      margin: 12px;
+      padding: 14px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .trades-summary-header { display: flex; justify-content: space-between; align-items: center; }
+    .trades-pnl-title { font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; }
+    .trades-pnl-val { font-size: 24px; font-weight: 900; }
+    .btn-exit-all { background: #0284c7; color: #fff; border: none; padding: 6px 14px; border-radius: 6px; font-size: 11px; font-weight: 800; cursor: pointer; }
+    .trades-meta-row { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); border-top: 1px solid #1e293b; padding-top: 8px; }
+    .subtabs { display: flex; background: #111827; border-bottom: 1px solid var(--card-border); }
+    .subtab-btn { flex: 1; padding: 10px; text-align: center; font-size: 12px; font-weight: 700; color: var(--text-muted); background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer; }
+    .subtab-btn.active { color: #38bdf8; border-bottom-color: #38bdf8; }
+    .pos-card { margin: 10px 12px; padding: 12px; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; display: flex; flex-direction: column; gap: 8px; }
     .pos-card-header { display: flex; justify-content: space-between; align-items: center; }
     .pos-inst { font-size: 14px; font-weight: 800; color: #fff; }
     .pos-pnl { font-size: 15px; font-weight: 800; }
@@ -274,51 +378,32 @@
     .pos-grid-cell { display: flex; flex-direction: column; gap: 2px; }
     .pos-grid-label { font-size: 9px; color: var(--text-muted); text-transform: uppercase; }
     .pos-grid-val { font-weight: 700; color: #e2e8f0; }
-    .btn-sqoff {
-      margin-top: 4px;
-      width: 100%;
-      background: #334155;
-      border: none;
-      padding: 7px;
-      color: #fff;
-      font-size: 12px;
-      font-weight: 700;
-      border-radius: 6px;
-      cursor: pointer;
-    }
-    .btn-sqoff:active { background: #475569; }
+    .btn-sqoff { margin-top: 4px; width: 100%; background: #334155; border: none; padding: 8px; color: #fff; font-size: 12px; font-weight: 700; border-radius: 6px; cursor: pointer; }
     
-    /* Account Screen */
-    .acc-header {
-      padding: 16px 14px;
-      background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
-      border-bottom: 1px solid var(--border);
-      text-align: center;
-    }
-    .acc-label { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
-    .acc-balance { font-size: 28px; font-weight: 800; color: #fff; margin: 4px 0; }
-    .acc-stats-row { display: flex; justify-content: space-around; margin-top: 12px; }
-    .acc-stat { display: flex; flex-direction: column; gap: 2px; }
-    .acc-stat-lbl { font-size: 10px; color: var(--text-muted); }
-    .acc-stat-val { font-size: 13px; font-weight: 700; color: #38bdf8; }
+    /* Tools Screen (Reference Image 6) */
+    .tools-list { display: flex; flex-direction: column; gap: 8px; padding: 12px; }
+    .tool-card { padding: 14px; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; display: flex; align-items: center; justify-content: space-between; font-size: 14px; font-weight: 700; cursor: pointer; }
+    .tool-card:active { background: #1e293b; }
     
-    .settings-section {
-      margin: 14px 12px;
-      padding: 14px;
-      background: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-    .settings-title { font-size: 12px; font-weight: 800; color: #38bdf8; text-transform: uppercase; letter-spacing: 0.5px; }
-    .host-presets { display: flex; gap: 8px; }
-    .btn-preset { flex: 1; padding: 6px; font-size: 11px; font-weight: 700; border: 1px solid #334155; border-radius: 6px; background: #1e293b; color: #cbd5e1; cursor: pointer; }
-    .btn-preset:active { background: #334155; }
-    .btn-test-conn { background: var(--primary); color: #fff; border: none; padding: 8px; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer; }
-    .btn-reset-funds { background: #7f1d1d; color: #fca5a5; border: 1px solid #991b1b; padding: 10px; border-radius: 6px; font-size: 12px; font-weight: 800; cursor: pointer; text-transform: uppercase; }
-    .btn-reset-funds:active { background: #991b1b; color: #fff; }
+    /* Profile / Wallet Screen (Reference Image 4) */
+    .profile-card { margin: 12px; padding: 14px; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px; display: flex; align-items: center; gap: 14px; }
+    .avatar-circle { width: 44px; height: 44px; border-radius: 50%; background: #1e293b; border: 2px solid #38bdf8; display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 900; color: #38bdf8; }
+    .profile-info { display: flex; flex-direction: column; gap: 3px; }
+    .profile-email { font-size: 14px; font-weight: 700; color: #fff; }
+    .profile-badge { font-size: 10px; font-weight: 800; color: #ec4899; }
+    
+    .wallet-card { margin: 0 12px 12px 12px; padding: 14px; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px; display: flex; flex-direction: column; gap: 10px; }
+    .wallet-header { display: flex; justify-content: space-between; align-items: center; }
+    .wallet-title { font-size: 12px; font-weight: 800; color: #94a3b8; text-transform: uppercase; }
+    .wallet-total { font-size: 26px; font-weight: 900; color: #fff; }
+    .wallet-subrow { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-muted); border-top: 1px solid #1e293b; padding-top: 8px; }
+    .btn-wallet-reset { background: #7f1d1d; color: #fca5a5; border: 1px solid #991b1b; padding: 8px; border-radius: 6px; font-size: 11px; font-weight: 800; cursor: pointer; text-transform: uppercase; }
+    
+    .settings-section { margin: 0 12px 12px 12px; padding: 14px; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px; display: flex; flex-direction: column; gap: 10px; }
+    .settings-title { font-size: 12px; font-weight: 800; color: #38bdf8; text-transform: uppercase; }
+    .host-presets { display: flex; gap: 6px; }
+    .btn-preset { flex: 1; padding: 6px 4px; font-size: 10px; font-weight: 700; border: 1px solid #334155; border-radius: 6px; background: #1e293b; color: #cbd5e1; cursor: pointer; }
+    .btn-test-conn { background: var(--primary); color: #fff; border: none; padding: 9px; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer; }
     
     .empty-state { text-align: center; padding: 32px 16px; color: var(--text-muted); font-size: 12px; }
   </style>
@@ -326,180 +411,297 @@
 </head>
 <body>
   <div id="app-container">
-    <!-- Header -->
-    <header>
-      <div class="header-left">
-        <span style="background: linear-gradient(135deg, #2563eb, #38bdf8); color: #fff; font-size: 11px; font-weight: 900; padding: 2px 7px; border-radius: 4px; letter-spacing: 0.3px;">Tradingzone</span>
-        <div>
-          <span class="inst-symbol" id="header-symbol">DEMO-NIFTY-FUT</span>
-          <span class="inst-badge" id="header-exchange">NSE</span>
-        </div>
-      </div>
-      <div class="header-price">
-        <div class="current-ltp change-pos" id="header-ltp">₹24,350.50</div>
-        <div class="price-change change-pos" id="header-change">+125.50 (+0.52%)</div>
-      </div>
-    </header>
-
-    <!-- Demo Banner -->
-    <div class="demo-bar" id="demo-banner-bar">
-      <span id="demo-banner-text">⚠️ TRADINGZONE PRACTICE — DEMO DATA ONLY — NO REAL MONEY</span>
+    <!-- 1. Top Exchange Status Dots (Reference Screenshots) -->
+    <div class="exchange-status-bar">
+      <span>BSE: <span class="dot dot-closed" id="dot-bse">●</span></span>
+      <span class="dot-sep">|</span>
+      <span>CDS: <span class="dot dot-closed" id="dot-cds">●</span></span>
+      <span class="dot-sep">|</span>
+      <span>MCX: <span class="dot dot-closed" id="dot-mcx">●</span></span>
+      <span class="dot-sep">|</span>
+      <span>NCDEX: <span class="dot dot-closed" id="dot-ncdex">●</span></span>
+      <span class="dot-sep">|</span>
+      <span>NSE: <span class="dot dot-closed" id="dot-nse">●</span></span>
     </div>
 
-    <!-- Main Screens -->
+    <!-- 2. Dual Indices Strip: NIFTY 50 & BANKNIFTY (Reference Screenshots) -->
+    <div class="indices-ticker-bar">
+      <div class="index-cell" onclick="selectSpotIndex()">
+        <span class="index-name">NIFTY</span>
+        <span class="index-val change-pos" id="ticker-nifty-val">24,350.50</span>
+        <span class="index-chg change-pos" id="ticker-nifty-chg">+125.50 (0.52%)</span>
+      </div>
+      <div class="index-cell">
+        <span class="index-name">BANKNIFTY</span>
+        <span class="index-val change-neg" id="ticker-bnifty-val">52,180.20</span>
+        <span class="index-chg change-neg" id="ticker-bnifty-chg">-115.40 (-0.22%)</span>
+      </div>
+    </div>
+
+    <!-- 3. Dynamic Feed Status Banner -->
+    <div class="feed-banner-bar" id="demo-banner-bar">
+      <span id="demo-banner-text">SMARTAPI — INITIALIZING FEED</span>
+    </div>
+
+    <!-- Main Screens Viewport -->
     <main>
-      <!-- 1. Watchlist Screen -->
-      <section class="screen" id="screen-watchlist">
+      <!-- TAB 1: WATCHLIST SCREEN (Reference Images 1, 3) -->
+      <section class="screen active" id="screen-watchlist">
         <div class="watchlist-search">
           <input type="text" id="watchlist-search-input" placeholder="Search instruments (NIFTY, BANKNIFTY, RELIANCE)..." oninput="filterWatchlist()">
+        </div>
+        <div class="pro-upgrade-banner">
+          <span>Upgrade to PRO for Multi-Watchlists</span>
+          <span style="color: #38bdf8;">PRO Tier 🛒</span>
         </div>
         <div id="watchlist-items-container">
           <!-- Populated by JavaScript -->
         </div>
       </section>
 
-      <!-- 2. Chart Screen -->
-      <section class="screen active" id="screen-chart">
+      <!-- TAB 2: CHART WORKSPACE (Reference Image 5) -->
+      <section class="screen" id="screen-chart">
+        <!-- Dedicated Header with Back button -->
+        <div class="chart-header-bar">
+          <button class="btn-chart-back" onclick="switchTab('watchlist')" title="Back to Watchlist">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" width="22" height="22">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
+          <div class="chart-header-title">
+            <div class="chart-header-name">
+              <span id="chart-sym-title">NIFTY 50</span>
+              <span class="inst-badge" id="chart-exch-badge">NSE</span>
+            </div>
+            <div class="chart-header-sub">
+              <span id="chart-ltp-disp" class="change-pos">₹24,350.50</span>
+              <span id="chart-chg-disp" class="change-pos">+125.50 (0.52%)</span>
+            </div>
+          </div>
+          <div class="chart-header-actions">
+            <button class="btn-icon" onclick="loadCandles()" title="Refresh Chart">
+              <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" width="18" height="18"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Timeframe & Indicator Selector Toolbar -->
         <div id="chart-toolbar">
           <button class="btn-tf" id="tf-1m" onclick="setTimeframe('1m')">1M</button>
+          <button class="btn-tf" id="tf-3m" onclick="setTimeframe('3m')">3M</button>
           <button class="btn-tf active" id="tf-5m" onclick="setTimeframe('5m')">5M</button>
           <button class="btn-tf" id="tf-15m" onclick="setTimeframe('15m')">15M</button>
+          <button class="btn-tf" id="tf-30m" onclick="setTimeframe('30m')">30M</button>
+          <button class="btn-tf" id="tf-1h" onclick="setTimeframe('1h')">1H</button>
+          <button class="btn-tf" id="tf-1D" onclick="setTimeframe('1D')">1D</button>
           <div class="sep"></div>
           <button class="btn-tf" id="btn-ind-ema" onclick="toggleEma()">EMA 20</button>
           <button class="btn-tf" id="btn-ind-sma" onclick="toggleSma()">SMA 50</button>
-          <button class="btn-tf" id="btn-tool-hline" onclick="toggleHLine()">― H-Line</button>
         </div>
-        <div id="chart-viewport">
-          <div id="tradingview-chart-box"></div>
-          <div id="chart-attribution">TradingView Lightweight Charts™ (Apache-2.0 Attribution)</div>
+
+        <!-- Canvas Body with Left Drawing Toolbar -->
+        <div class="chart-body-container">
+          <div class="chart-draw-toolbar">
+            <button class="draw-btn active" id="tool-cross" onclick="setDrawTool('CROSS')" title="Crosshair">✛</button>
+            <button class="draw-btn" id="tool-hline" onclick="setDrawTool('HLINE')" title="Horizontal Price Level">―</button>
+            <button class="draw-btn" id="tool-measure" onclick="setDrawTool('MEASURE')" title="Measure Range">⤢</button>
+            <button class="draw-btn" id="tool-trash" onclick="clearDrawings()" title="Clear Lines">🗑</button>
+          </div>
+          <div id="chart-viewport">
+            <div id="tradingview-chart-box"></div>
+            <div id="chart-attribution">TradingView Lightweight Charts™ (Apache-2.0 Attribution)</div>
+          </div>
         </div>
-        <div id="quick-order-panel">
-          <div class="side-toggle">
-            <button class="btn-side active-buy" id="side-buy" onclick="setOrderSide('BUY')">BUY / LONG</button>
-            <button class="btn-side" id="side-sell" onclick="setOrderSide('SELL')">SELL / SHORT</button>
-          </div>
-          <div class="order-controls">
-            <div class="input-group">
-              <span class="input-label">Type</span>
-              <select class="input-box" id="order-type" onchange="handleOrderTypeChange()">
-                <option value="MARKET">MARKET</option>
-                <option value="LIMIT">LIMIT</option>
-                <option value="STOP_LOSS">STOP LOSS</option>
-              </select>
-            </div>
-            <div class="input-group">
-              <span class="input-label" id="qty-label">Lots (Qty 50)</span>
-              <input type="number" class="input-box" id="order-lots" value="1" min="1" step="1" oninput="updateOrderCalc()">
-            </div>
-            <div class="input-group" id="limit-price-group" style="display: none;">
-              <span class="input-label">Price ₹</span>
-              <input type="number" class="input-box" id="order-price" step="0.05">
-            </div>
-          </div>
-          <div class="order-summary-row">
-            <span>Req. Margin: <strong id="req-margin-val" style="color: #38bdf8;">₹1,21,752.50</strong></span>
-            <span>Available: <strong id="avail-margin-val" style="color: #10b981;">₹1,00,000.00</strong></span>
-          </div>
-          <button class="btn-submit-order btn-buy" id="btn-submit-order" onclick="submitSimulatedOrder()">
-            Place Simulated Buy Market
-          </button>
+
+        <!-- Range Quick-Picker Bar (Reference Image 5) -->
+        <div class="range-bar">
+          <button class="range-btn active" onclick="setRange('1D')">1D</button>
+          <button class="range-btn" onclick="setRange('5D')">5D</button>
+          <button class="range-btn" onclick="setRange('1M')">1M</button>
+          <button class="range-btn" onclick="setRange('3M')">3M</button>
+          <button class="range-btn" onclick="setRange('6M')">6M</button>
+          <button class="range-btn" onclick="setRange('1Y')">1Y</button>
+          <button class="range-btn" onclick="setRange('ALL')">All</button>
+        </div>
+
+        <!-- Quick Buy/Sell Actions -->
+        <div class="quick-trade-bar">
+          <button class="btn-quick-buy" onclick="openOrderSheet('BUY')">BUY / LONG</button>
+          <button class="btn-quick-sell" onclick="openOrderSheet('SELL')">SELL / SHORT</button>
         </div>
       </section>
 
-      <!-- 3. Orders & Positions Screen -->
-      <section class="screen" id="screen-trade">
-        <div class="subtabs">
-          <button class="subtab-btn active" id="tab-btn-pos" onclick="showSubTab('POS')">Positions (<span id="pos-count">0</span>)</button>
-          <button class="subtab-btn" id="tab-btn-ord" onclick="showSubTab('ORD')">Orders (<span id="ord-count">0</span>)</button>
+      <!-- TAB 3: TRADES & POSITIONS SCREEN (Reference Image 7) -->
+      <section class="screen" id="screen-trades">
+        <div class="trades-summary-card">
+          <div class="trades-summary-header">
+            <div>
+              <div class="trades-pnl-title">Total Simulated P&L</div>
+              <div class="trades-pnl-val change-pos" id="total-pnl-disp">₹0.00</div>
+            </div>
+            <button class="btn-exit-all" onclick="exitAllPositions()">Exit All</button>
+          </div>
+          <div class="trades-meta-row">
+            <span>Used Margin: <strong id="trades-used-margin" style="color: #fff;">₹0.00</strong></span>
+            <span>Brokerage & Charges: <strong id="trades-charges" style="color: #94a3b8;">₹0.00</strong></span>
+          </div>
         </div>
+
+        <div class="subtabs">
+          <button class="subtab-btn active" id="tab-btn-act" onclick="showTradeSubTab('ACT')">ACTIVE (<span id="pos-count">0</span>)</button>
+          <button class="subtab-btn" id="tab-btn-opn" onclick="showTradeSubTab('OPN')">OPEN ORDERS (<span id="ord-count">0</span>)</button>
+          <button class="subtab-btn" id="tab-btn-his" onclick="showTradeSubTab('HIS')">HISTORY</button>
+        </div>
+
         <div id="subtab-positions-content">
-          <div class="empty-state" id="pos-empty">No active positions. Place a trade on NIFTY to open position.</div>
+          <div class="empty-state" id="pos-empty">No active positions. Place a simulated trade on NIFTY to open position.</div>
           <div id="positions-list"></div>
         </div>
+
         <div id="subtab-orders-content" style="display: none;">
-          <div class="empty-state" id="ord-empty">No open orders.</div>
+          <div class="empty-state" id="ord-empty">No pending limit orders.</div>
           <div id="orders-list"></div>
+        </div>
+
+        <div id="subtab-history-content" style="display: none;">
+          <div class="empty-state" id="his-empty">No closed trades in this session.</div>
+          <div id="history-list"></div>
         </div>
       </section>
 
-      <!-- 4. Account Screen -->
-      <section class="screen" id="screen-account">
-        <div class="acc-header">
-          <div class="acc-label">Virtual Capital (Practice Money)</div>
-          <div class="acc-balance" id="acc-cash-val">₹1,00,000.00</div>
-          <div class="acc-stats-row">
-            <div class="acc-stat">
-              <span class="acc-stat-lbl">Used Margin</span>
-              <span class="acc-stat-val" id="acc-used-margin">₹0.00</span>
-            </div>
-            <div class="acc-stat">
-              <span class="acc-stat-lbl">Free Margin</span>
-              <span class="acc-stat-val" id="acc-free-margin">₹1,00,000.00</span>
-            </div>
-            <div class="acc-stat">
-              <span class="acc-stat-lbl">Win Rate</span>
-              <span class="acc-stat-val" id="acc-win-rate">0.0%</span>
-            </div>
+      <!-- TAB 4: TOOLS SCREEN (Reference Image 6) -->
+      <section class="screen" id="screen-tools">
+        <div class="tools-list">
+          <div class="tool-card" onclick="alert('FII/DII Net Activity is available in PRO Tier.')">
+            <span>🏛️ FII / DII Institutional Flow</span>
+            <span style="color: #64748b;">›</span>
+          </div>
+          <div class="tool-card" onclick="alert('Algorithmic Recommendations available in PRO Tier.')">
+            <span>👑 Algorithmic Signals</span>
+            <span style="color: #64748b;">›</span>
+          </div>
+          <div class="tool-card" onclick="alert('Real-time Market Movers available in PRO Tier.')">
+            <span>📈 Market Movers & Top Gainers</span>
+            <span style="color: #64748b;">›</span>
+          </div>
+          <div class="tool-card" onclick="alert('Pre-Market Analysis active during 09:00 - 09:15 IST.')">
+            <span>⏱️ Pre-Market Session Data</span>
+            <span style="color: #64748b;">›</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 5: PROFILE & WALLET SCREEN (Reference Image 4) -->
+      <section class="screen" id="screen-profile">
+        <div class="profile-card">
+          <div class="avatar-circle">T</div>
+          <div class="profile-info">
+            <span class="profile-email" id="user-email-disp">dev-phone-01@tradingzone</span>
+            <span class="profile-badge">FREE User • Paper Trading</span>
           </div>
         </div>
 
-        <!-- Physical Phone Backend Connectivity Settings -->
+        <div class="wallet-card">
+          <div class="wallet-header">
+            <span class="wallet-title">Your Practice Wallet</span>
+            <button class="btn-wallet-reset" onclick="resetVirtualAccount()">Reset to ₹1,00,000</button>
+          </div>
+          <div class="wallet-total" id="wallet-total-funds">₹1,00,000.00</div>
+          <div class="wallet-subrow">
+            <span>Available Margin: <strong id="wallet-avail" style="color: #10b981;">₹1,00,000.00</strong></span>
+            <span>Used Margin: <strong id="wallet-used" style="color: #38bdf8;">₹0.00</strong></span>
+          </div>
+        </div>
+
+        <!-- Phone Backend Connectivity Settings -->
         <div class="settings-section">
-          <div class="settings-title">Physical Phone Connectivity</div>
+          <div class="settings-title">Phone to PC Connectivity</div>
           <p style="font-size: 11px; color: var(--text-muted); line-height: 1.4;">
-            Your phone cannot reach <code style="color: #38bdf8;">localhost</code> on your PC directly. Configure your host IP below:
+            Your phone reaches the PC via Wi-Fi LAN IP or USB ADB Reverse:
           </p>
           <div class="host-presets">
-            <button class="btn-preset" onclick="setPresetUrl('http://192.168.0.102:4000')">Wi-Fi (192.168.0.102)</button>
-            <button class="btn-preset" onclick="setPresetUrl('http://localhost:4000')">USB ADB Reverse</button>
+            <button class="btn-preset" onclick="setPresetUrl('http://192.168.0.100:4000')">Wi-Fi (192.168.0.100)</button>
+            <button class="btn-preset" onclick="setPresetUrl('http://127.0.0.1:4000')">USB ADB Reverse</button>
+            <button class="btn-preset" onclick="setPresetUrl('http://10.0.2.2:4000')">Emulator</button>
           </div>
           <div class="input-group">
             <span class="input-label">Backend API URL</span>
-            <input type="text" class="input-box" id="cfg-api-url" value="http://192.168.0.102:4000">
+            <input type="text" class="input-box" id="cfg-api-url" value="http://192.168.0.100:4000">
           </div>
           <div class="input-group">
             <span class="input-label">WebSocket Stream URL</span>
-            <input type="text" class="input-box" id="cfg-ws-url" value="ws://192.168.0.102:4000/ws">
+            <input type="text" class="input-box" id="cfg-ws-url" value="ws://192.168.0.100:4000/ws">
           </div>
           <button class="btn-test-conn" onclick="saveAndTestConnection()">Save & Test Connection</button>
-          <div id="conn-test-result" style="font-size: 11px; font-weight: 600; text-align: center;"></div>
-        </div>
-
-        <div class="settings-section">
-          <div class="settings-title">Virtual Account Management</div>
-          <p style="font-size: 11px; color: var(--text-muted); line-height: 1.4;">
-            Reset your virtual practice balance to initial ₹1,00,000 baseline. Historical transactions remain preserved in database.
-          </p>
-          <button class="btn-reset-funds" onclick="resetVirtualAccount()">Reset Virtual Balance (₹1,00,000)</button>
+          <div id="conn-test-result" style="font-size: 11px; font-weight: 700; text-align: center; margin-top: 4px;"></div>
         </div>
       </section>
     </main>
 
-    <!-- Bottom Navigation Dock -->
+    <!-- Modal Order Sheet (Slide Up Bottom Sheet) -->
+    <div id="order-sheet-modal">
+      <div class="order-sheet-content">
+        <div class="order-sheet-header">
+          <span class="sheet-title" id="sheet-title-text">Place Simulated Order</span>
+          <button class="btn-close-sheet" onclick="closeOrderSheet()">✕</button>
+        </div>
+        <div class="side-toggle">
+          <button class="btn-side active-buy" id="side-buy" onclick="setOrderSide('BUY')">BUY / LONG</button>
+          <button class="btn-side" id="side-sell" onclick="setOrderSide('SELL')">SELL / SHORT</button>
+        </div>
+        <div class="order-controls">
+          <div class="input-group">
+            <span class="input-label">Type</span>
+            <select class="input-box" id="order-type" onchange="handleOrderTypeChange()">
+              <option value="MARKET">MARKET</option>
+              <option value="LIMIT">LIMIT</option>
+              <option value="STOP_LOSS">STOP LOSS</option>
+            </select>
+          </div>
+          <div class="input-group">
+            <span class="input-label" id="qty-label">Lots (Qty 65)</span>
+            <input type="number" class="input-box" id="order-lots" value="1" min="1" step="1" oninput="updateOrderCalc()">
+          </div>
+          <div class="input-group" id="limit-price-group" style="display: none;">
+            <span class="input-label">Price ₹</span>
+            <input type="number" class="input-box" id="order-price" step="0.10">
+          </div>
+        </div>
+        <div class="order-summary-row">
+          <span>Req. Margin: <strong id="req-margin-val" style="color: #38bdf8;">₹0.00</strong></span>
+          <span>Available: <strong id="avail-margin-val" style="color: #10b981;">₹1,00,000.00</strong></span>
+        </div>
+        <button class="btn-submit-order btn-buy" id="btn-submit-order" onclick="submitSimulatedOrder()">
+          Place Simulated Buy Order
+        </button>
+      </div>
+    </div>
+
+    <!-- Bottom Navigation Dock (Reference Screenshots) -->
     <nav>
-      <button class="nav-btn" id="nav-watchlist" onclick="switchTab('watchlist')">
-        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16" /></svg>
+      <button class="nav-btn active" id="nav-watchlist" onclick="switchTab('watchlist')">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" /></svg>
         <span>Watchlist</span>
       </button>
-      <button class="nav-btn active" id="nav-chart" onclick="switchTab('chart')">
-        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" /></svg>
-        <span>Chart</span>
+      <button class="nav-btn" id="nav-trades" onclick="switchTab('trades')">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+        <span>Trades</span>
       </button>
-      <button class="nav-btn" id="nav-trade" onclick="switchTab('trade')">
-        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>
-        <span>Orders/Pos</span>
+      <button class="nav-btn" id="nav-tools" onclick="switchTab('tools')">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+        <span>Tools</span>
       </button>
-      <button class="nav-btn" id="nav-account" onclick="switchTab('account')">
+      <button class="nav-btn" id="nav-profile" onclick="switchTab('profile')">
         <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>
-        <span>Account</span>
+        <span>Profile</span>
       </button>
     </nav>
   </div>
 
   <script>
     // State
-    let apiBase = localStorage.getItem('apiBase') || 'http://192.168.0.102:4000';
-    let wsBase = localStorage.getItem('wsBase') || 'ws://192.168.0.102:4000/ws';
+    let apiBase = localStorage.getItem('apiBase') || 'http://192.168.0.100:4000';
+    let wsBase = localStorage.getItem('wsBase') || 'ws://192.168.0.100:4000/ws';
     let token = null;
     let selectedInstrument = null;
     let instruments = [];
@@ -509,11 +711,12 @@
     let account = null;
     let selectedTimeframe = '5m';
     let orderSide = 'BUY';
-    let activeTool = null;
+    let activeDrawTool = 'CROSS';
     let socket = null;
-    
-    // TradingView Chart
-    let chart, candleSeries, emaSeries, smaSeries;
+    let priceLines = [];
+
+    // Lightweight Charts instances
+    let chart, candleSeries, volumeSeries, emaSeries, smaSeries;
 
     function formatINR(paise) {
       const rupees = (Number(paise) / 100).toFixed(2);
@@ -525,7 +728,7 @@
       if (!container || chart) return;
 
       chart = LightweightCharts.createChart(container, {
-        width: container.clientWidth || 360,
+        width: container.clientWidth || 340,
         height: container.clientHeight || 280,
         layout: { background: { color: '#0b0f19' }, textColor: '#94a3b8', fontSize: 11 },
         grid: { vertLines: { color: '#151d2f' }, horzLines: { color: '#151d2f' } },
@@ -538,8 +741,36 @@
         wickUpColor: '#10b981', wickDownColor: '#ef4444'
       });
 
+      volumeSeries = chart.addHistogramSeries({
+        color: '#26a69a',
+        priceFormat: { type: 'volume' },
+        priceScaleId: '', // overlay volume on main pane with offset
+      });
+      volumeSeries.priceScale().applyOptions({
+        scaleMargins: { top: 0.8, bottom: 0 },
+      });
+
       emaSeries = chart.addLineSeries({ color: '#38bdf8', lineWidth: 2, title: 'EMA 20', visible: false });
       smaSeries = chart.addLineSeries({ color: '#f59e0b', lineWidth: 2, title: 'SMA 50', visible: false });
+
+      // Handle chart clicks for drawing tools (e.g., placing Horizontal Price Line)
+      chart.subscribeClick((param) => {
+        if (activeDrawTool === 'HLINE' && param.point && candleSeries) {
+          const price = candleSeries.coordinateToPrice(param.point.y);
+          if (price) {
+            const pLine = candleSeries.createPriceLine({
+              price: price,
+              color: '#38bdf8',
+              lineWidth: 2,
+              lineStyle: LightweightCharts.LineStyle.Dashed,
+              axisLabelVisible: true,
+              title: 'H-LINE ₹' + price.toFixed(2),
+            });
+            priceLines.push(pLine);
+            setDrawTool('CROSS');
+          }
+        }
+      });
 
       window.addEventListener('resize', () => {
         if (chart && container) {
@@ -566,7 +797,8 @@
         connectWebSocket();
       } catch (err) {
         console.error('Login error', err);
-        document.getElementById('conn-test-result').innerHTML = '<span style="color: #ef4444;">Cannot reach backend. Check host IP below!</span>';
+        const el = document.getElementById('conn-test-result');
+        if (el) el.innerHTML = '<span style="color: #ef4444;">Cannot reach backend. Check host IP below!</span>';
       }
     }
 
@@ -578,11 +810,19 @@
         const active = d.activeProvider;
         const banner = document.getElementById('demo-banner-text');
         const bar = document.getElementById('demo-banner-bar');
+        const isMarketOpen = d.marketSession?.isMarketOpen;
+
+        // Update exchange dots
+        ['bse', 'cds', 'mcx', 'ncdex', 'nse'].forEach(id => {
+          const dot = document.getElementById(`dot-${id}`);
+          if (dot) dot.className = isMarketOpen ? 'dot dot-open' : 'dot dot-closed';
+        });
+
         if (banner && active) {
           banner.innerText = active.uiBannerLabel;
           if (bar) {
             if (active.source === 'SMARTAPI') {
-              if (d.marketSession?.isMarketOpen) {
+              if (isMarketOpen) {
                 bar.style.background = '#064e3b';
                 bar.style.borderColor = '#047857';
                 bar.style.color = '#a7f3d0';
@@ -608,9 +848,10 @@
         const data = await res.json();
         instruments = data.instruments || [];
         renderWatchlist();
-        // Default to NIFTY FUT
-        const nifty = instruments.find(i => i.instrumentType === 'FUTIDX') || instruments[0];
-        if (nifty) selectInstrument(nifty.globalId);
+
+        // Default to NIFTY active tradable contract
+        const defaultInst = instruments.find(i => i.isTradable) || instruments[0];
+        if (defaultInst) selectInstrument(defaultInst.globalId);
       } catch (err) {
         console.error('Error loading instruments', err);
       }
@@ -620,11 +861,19 @@
       selectedInstrument = instruments.find(i => i.globalId === globalId);
       if (!selectedInstrument) return;
 
-      document.getElementById('header-symbol').innerText = selectedInstrument.symbol;
-      document.getElementById('header-exchange').innerText = selectedInstrument.exchange;
+      document.getElementById('chart-sym-title').innerText = selectedInstrument.symbol;
+      document.getElementById('chart-exch-badge').innerText = selectedInstrument.exchange;
       document.getElementById('qty-label').innerText = `Lots (Qty ${selectedInstrument.lotSize})`;
       updateOrderCalc();
       loadCandles();
+    }
+
+    function selectSpotIndex() {
+      const spot = instruments.find(i => i.instrumentType === 'INDEX_SPOT');
+      if (spot) {
+        selectInstrument(spot.globalId);
+        switchTab('chart');
+      }
     }
 
     async function loadCandles() {
@@ -636,10 +885,40 @@
           currentCandles = data.candles || [];
           if (candleSeries && currentCandles.length > 0) {
             candleSeries.setData(currentCandles);
+
+            // Populate Volume
+            const volData = currentCandles.map(c => ({
+              time: c.time,
+              value: c.volume || 100,
+              color: c.close >= c.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)'
+            }));
+            volumeSeries.setData(volData);
+
             chart.timeScale().fitContent();
             updateIndicators();
             const last = currentCandles[currentCandles.length - 1];
-            document.getElementById('header-ltp').innerText = '₹' + last.close.toFixed(2);
+            const prev = currentCandles[0];
+            const chg = last.close - prev.open;
+            const chgPct = ((chg / prev.open) * 100).toFixed(2);
+            const isPos = chg >= 0;
+
+            const ltpEl = document.getElementById('chart-ltp-disp');
+            const chgEl = document.getElementById('chart-chg-disp');
+            if (ltpEl) {
+              ltpEl.innerText = '₹' + last.close.toFixed(2);
+              ltpEl.className = isPos ? 'change-pos' : 'change-neg';
+            }
+            if (chgEl) {
+              chgEl.innerText = `${isPos ? '+' : ''}${chg.toFixed(2)} (${chgPct}%)`;
+              chgEl.className = isPos ? 'change-pos' : 'change-neg';
+            }
+
+            // Also update top ticker
+            if (selectedInstrument.symbol.includes('NIFTY') && !selectedInstrument.symbol.includes('BANK')) {
+              document.getElementById('ticker-nifty-val').innerText = last.close.toFixed(2);
+              document.getElementById('ticker-nifty-chg').innerText = `${isPos ? '+' : ''}${chg.toFixed(2)} (${chgPct}%)`;
+            }
+
             document.getElementById('order-price').value = last.close.toFixed(2);
           }
         }
@@ -658,7 +937,7 @@
             if (parsed.type === 'QUOTE_TICK' && parsed.data) {
               const tick = parsed.data;
               if (selectedInstrument && tick.globalId === selectedInstrument.globalId) {
-                document.getElementById('header-ltp').innerText = '₹' + tick.ltp.toFixed(2);
+                document.getElementById('chart-ltp-disp').innerText = '₹' + tick.ltp.toFixed(2);
                 if (candleSeries) {
                   const nowSec = Math.floor(tick.receiveTimestamp / 1000);
                   const minSec = Math.floor(nowSec / (selectedTimeframe === '5m' ? 300 : 60)) * (selectedTimeframe === '5m' ? 300 : 60);
@@ -668,6 +947,11 @@
                     high: tick.high,
                     low: tick.low,
                     close: tick.ltp
+                  });
+                  volumeSeries.update({
+                    time: minSec,
+                    value: tick.volume || 100,
+                    color: tick.ltp >= tick.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)'
                   });
                 }
               }
@@ -700,11 +984,11 @@
               <span>${inst.symbol}</span>
               <span class="inst-badge">${inst.exchange}</span>
             </div>
-            <div class="inst-card-sub">Lot Size: ${inst.lotSize} • Tick: ₹${inst.tickSize}</div>
+            <div class="inst-card-sub">Lot Size: ${inst.lotSize} • Tick: ₹${inst.tickSize}${inst.expiry ? ' • Exp: ' + inst.expiry : ''}</div>
           </div>
           <div class="inst-card-prices">
             <div class="inst-card-ltp change-pos" id="ltp-${inst.globalId}">₹24,350.00</div>
-            <div class="inst-card-range">F&O Practice</div>
+            <div class="inst-card-range">${inst.isTradable ? 'F&O Practice' : 'Index Reference'}</div>
           </div>
         `;
         container.appendChild(card);
@@ -717,8 +1001,17 @@
 
     function setTimeframe(tf) {
       selectedTimeframe = tf;
-      ['1m', '5m', '15m'].forEach(t => document.getElementById(`tf-${t}`)?.classList.toggle('active', t === tf));
+      ['1m', '3m', '5m', '15m', '30m', '1h', '1D'].forEach(t => {
+        const el = document.getElementById(`tf-${t}`);
+        if (el) el.classList.toggle('active', t === tf);
+      });
       loadCandles();
+    }
+
+    function setRange(range) {
+      document.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active'));
+      event?.target?.classList.add('active');
+      if (chart) chart.timeScale().fitContent();
     }
 
     function toggleEma() {
@@ -733,13 +1026,22 @@
       document.getElementById('btn-ind-sma').classList.toggle('active', !isVis);
     }
 
-    function toggleHLine() {
-      if (activeTool === 'HLINE') {
-        activeTool = null;
-        document.getElementById('btn-tool-hline').classList.remove('active');
-      } else {
-        activeTool = 'HLINE';
-        document.getElementById('btn-tool-hline').classList.add('active');
+    function setDrawTool(tool) {
+      activeDrawTool = tool;
+      ['tool-cross', 'tool-hline', 'tool-measure'].forEach(id => {
+        document.getElementById(id)?.classList.remove('active');
+      });
+      if (tool === 'CROSS') document.getElementById('tool-cross')?.classList.add('active');
+      if (tool === 'HLINE') document.getElementById('tool-hline')?.classList.add('active');
+      if (tool === 'MEASURE') document.getElementById('tool-measure')?.classList.add('active');
+    }
+
+    function clearDrawings() {
+      if (candleSeries && priceLines.length) {
+        for (const pl of priceLines) {
+          candleSeries.removePriceLine(pl);
+        }
+        priceLines = [];
       }
     }
 
@@ -766,6 +1068,16 @@
         }
         smaSeries.setData(smaData);
       }
+    }
+
+    function openOrderSheet(side) {
+      setOrderSide(side);
+      document.getElementById('order-sheet-modal').classList.add('open');
+      updateOrderCalc();
+    }
+
+    function closeOrderSheet() {
+      document.getElementById('order-sheet-modal').classList.remove('open');
     }
 
     function setOrderSide(side) {
@@ -798,6 +1110,10 @@
         alert('Please connect to backend first.');
         return;
       }
+      if (!selectedInstrument.isTradable) {
+        alert('Educational Guard: Spot indices cannot be traded directly. Please select the tradable Futures contract.');
+        return;
+      }
       const lots = parseInt(document.getElementById('order-lots').value) || 1;
       const quantity = lots * selectedInstrument.lotSize;
       const orderType = document.getElementById('order-type').value;
@@ -823,6 +1139,7 @@
         if (!res.ok) {
           alert('Order Error: ' + (data.error || 'Unknown error'));
         } else {
+          closeOrderSheet();
           alert(`Simulated ${orderSide} Order Placed! Status: ${data.order.status}`);
           await loadOrdersAndPositions();
           await refreshAccount();
@@ -858,15 +1175,24 @@
       const list = document.getElementById('positions-list');
       const empty = document.getElementById('pos-empty');
       list.innerHTML = '';
+      let totalPnl = 0;
+      let totalLocked = 0;
+
       if (!positions || positions.length === 0) {
         empty.style.display = 'block';
+        document.getElementById('total-pnl-disp').innerText = '₹0.00';
+        document.getElementById('trades-used-margin').innerText = '₹0.00';
         return;
       }
       empty.style.display = 'none';
+
       positions.forEach(pos => {
+        const pnl = pos.unrealizedPnlPaise || 0;
+        totalPnl += Number(pnl);
+        totalLocked += Number(pos.lockedMarginPaise || 0);
+
         const card = document.createElement('div');
         card.className = 'pos-card';
-        const pnl = pos.unrealizedPnlPaise || 0;
         const pnlClass = pnl >= 0 ? 'change-pos' : 'change-neg';
         card.innerHTML = `
           <div class="pos-card-header">
@@ -891,6 +1217,11 @@
         `;
         list.appendChild(card);
       });
+
+      const pnlDisp = document.getElementById('total-pnl-disp');
+      pnlDisp.innerText = formatINR(totalPnl);
+      pnlDisp.className = 'trades-pnl-val ' + (totalPnl >= 0 ? 'change-pos' : 'change-neg');
+      document.getElementById('trades-used-margin').innerText = formatINR(totalLocked);
     }
 
     function renderOrders() {
@@ -950,6 +1281,14 @@
       }
     }
 
+    async function exitAllPositions() {
+      if (!positions.length) return alert('No active positions to exit.');
+      if (!confirm('Square off all open positions?')) return;
+      for (const pos of positions) {
+        await squareOffPosition(pos.globalInstrumentId);
+      }
+    }
+
     async function refreshAccount() {
       if (!token) return;
       try {
@@ -967,9 +1306,11 @@
       if (!account) return;
       const locked = account.lockedMarginPaise || account.usedMarginPaise || 0;
       const free = account.availableBalancePaise || account.availableMarginPaise || 0;
-      document.getElementById('acc-cash-val').innerText = formatINR(account.cashBalancePaise);
-      document.getElementById('acc-used-margin').innerText = formatINR(locked);
-      document.getElementById('acc-free-margin').innerText = formatINR(free);
+      const cash = account.cashBalancePaise || 0;
+
+      document.getElementById('wallet-total-funds').innerText = formatINR(cash);
+      document.getElementById('wallet-avail').innerText = formatINR(free);
+      document.getElementById('wallet-used').innerText = formatINR(locked);
       document.getElementById('avail-margin-val').innerText = formatINR(free);
     }
 
@@ -993,17 +1334,19 @@
       }
     }
 
-    function showSubTab(tab) {
-      document.getElementById('tab-btn-pos').classList.toggle('active', tab === 'POS');
-      document.getElementById('tab-btn-ord').classList.toggle('active', tab === 'ORD');
-      document.getElementById('subtab-positions-content').style.display = tab === 'POS' ? 'block' : 'none';
-      document.getElementById('subtab-orders-content').style.display = tab === 'ORD' ? 'block' : 'none';
+    function showTradeSubTab(tab) {
+      document.getElementById('tab-btn-act').classList.toggle('active', tab === 'ACT');
+      document.getElementById('tab-btn-opn').classList.toggle('active', tab === 'OPN');
+      document.getElementById('tab-btn-his').classList.toggle('active', tab === 'HIS');
+      document.getElementById('subtab-positions-content').style.display = tab === 'ACT' ? 'block' : 'none';
+      document.getElementById('subtab-orders-content').style.display = tab === 'OPN' ? 'block' : 'none';
+      document.getElementById('subtab-history-content').style.display = tab === 'HIS' ? 'block' : 'none';
     }
 
     function switchTab(name) {
-      ['watchlist', 'chart', 'trade', 'account'].forEach(t => {
-        document.getElementById(`screen-${t}`).classList.toggle('active', t === name);
-        document.getElementById(`nav-${t}`).classList.toggle('active', t === name);
+      ['watchlist', 'chart', 'trades', 'tools', 'profile'].forEach(t => {
+        document.getElementById(`screen-${t}`)?.classList.toggle('active', t === name);
+        document.getElementById(`nav-${t}`)?.classList.toggle('active', t === name);
       });
       if (name === 'chart' && chart) {
         setTimeout(() => {
@@ -1011,7 +1354,7 @@
           chart.applyOptions({ width: c.clientWidth, height: c.clientHeight });
         }, 50);
       }
-      if (name === 'trade') loadOrdersAndPositions();
+      if (name === 'trades') loadOrdersAndPositions();
     }
 
     function setPresetUrl(url) {
@@ -1053,4 +1396,3 @@
   </script>
 </body>
 </html>
-

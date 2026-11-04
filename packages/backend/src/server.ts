@@ -567,9 +567,10 @@ export async function buildServer(customDb?: IDatabase): Promise<{
     const clientState = { ws, subscriptions: new Set<string>() };
     wsClients.add(clientState);
 
-    // Default subscriptions: NIFTY Futures and NIFTY Spot
-    clientState.subscriptions.add('NFO:NIFTY26OCTFUT:999001');
-    clientState.subscriptions.add('NSE:NIFTY50:999000');
+    // Default subscriptions: All active instruments from active provider
+    for (const inst of instruments) {
+      clientState.subscriptions.add(inst.globalId);
+    }
 
     ws.on('message', (raw: any) => {
       try {
