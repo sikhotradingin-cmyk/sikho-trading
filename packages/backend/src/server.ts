@@ -14,7 +14,7 @@ import {
 import { config } from './config.js';
 import { DeterministicProvider } from './providers/deterministic-provider.js';
 import { IMarketDataProvider } from './providers/types.js';
-import { SmartAPIAdapter } from './providers/smartapi-adapter.js';
+import { SmartAPIAdapter, isIndianMarketOpen } from './providers/smartapi-adapter.js';
 import { SimulationEngine } from './engine/simulation-engine.js';
 import { VirtualAccountEngine } from './engine/virtual-account-engine.js';
 import { createDatabase, IDatabase } from './db/database.js';
@@ -79,7 +79,8 @@ export async function buildServer(customDb?: IDatabase): Promise<{
   const smartApiAdapter = new SmartAPIAdapter(config.smartApi);
   await smartApiAdapter.init();
 
-  const activeProvider: IMarketDataProvider = demoProvider;
+  // Active provider: use SmartAPI when configured; otherwise fall back to Deterministic Demo Provider
+  const activeProvider: IMarketDataProvider = smartApiAdapter.isConfigured ? smartApiAdapter : demoProvider;
 
   // Sync instruments to PostgreSQL
   const instruments = await activeProvider.getInstruments();
@@ -121,6 +122,15 @@ export async function buildServer(customDb?: IDatabase): Promise<{
       activeProvider: activeProvider.getFeedHealth(),
       smartApiStatus: smartApiAdapter.getFeedHealth(),
       databaseEmulated: db.isEmulated(),
+      serverTimestamp: Date.now(),
+      marketSession: {
+        isMarketOpen: isIndianMarketOpen(),
+        exchange: 'NSE',
+        tradingHoursIST: '09:15 - 15:30',
+        note: isIndianMarketOpen()
+          ? 'Market is currently OPEN'
+          : 'Market is currently CLOSED (09:15 - 15:30 IST). Showing latest available session data.',
+      },
     };
   });
 

@@ -342,8 +342,8 @@
     </header>
 
     <!-- Demo Banner -->
-    <div class="demo-bar">
-      <span>⚠️ TRADINGZONE PRACTICE — DEMO DATA ONLY — NO REAL MONEY</span>
+    <div class="demo-bar" id="demo-banner-bar">
+      <span id="demo-banner-text">⚠️ TRADINGZONE PRACTICE — DEMO DATA ONLY — NO REAL MONEY</span>
     </div>
 
     <!-- Main Screens -->
@@ -560,6 +560,7 @@
         token = data.token;
         account = data.account;
         updateAccountUI();
+        await loadFeedHealth();
         await loadInstruments();
         await loadOrdersAndPositions();
         connectWebSocket();
@@ -567,6 +568,37 @@
         console.error('Login error', err);
         document.getElementById('conn-test-result').innerHTML = '<span style="color: #ef4444;">Cannot reach backend. Check host IP below!</span>';
       }
+    }
+
+    async function loadFeedHealth() {
+      try {
+        const res = await fetch(`${apiBase}/api/v1/feed-health`);
+        if (!res.ok) return;
+        const d = await res.json();
+        const active = d.activeProvider;
+        const banner = document.getElementById('demo-banner-text');
+        const bar = document.getElementById('demo-banner-bar');
+        if (banner && active) {
+          banner.innerText = active.uiBannerLabel;
+          if (bar) {
+            if (active.source === 'SMARTAPI') {
+              if (d.marketSession?.isMarketOpen) {
+                bar.style.background = '#064e3b';
+                bar.style.borderColor = '#047857';
+                bar.style.color = '#a7f3d0';
+              } else {
+                bar.style.background = '#1e293b';
+                bar.style.borderColor = '#334155';
+                bar.style.color = '#94a3b8';
+              }
+            } else {
+              bar.style.background = '#451a03';
+              bar.style.borderColor = '#78350f';
+              bar.style.color = '#fde68a';
+            }
+          }
+        }
+      } catch (e) {}
     }
 
     async function loadInstruments() {

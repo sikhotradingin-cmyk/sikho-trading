@@ -1,5 +1,11 @@
 import dotenv from 'dotenv';
+import path from 'node:path';
+
+// Attempt loading from multiple standard locations
 dotenv.config();
+dotenv.config({ path: path.resolve(process.cwd(), 'packages/backend/.env') });
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
 export interface AppConfig {
   port: number;
