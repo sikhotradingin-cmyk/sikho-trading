@@ -1,0 +1,15 @@
+node_modules
+npm-debug.log
+packages/mobile/android/app/build
+packages/mobile/android/.gradle
+packages/mobile/android/local.properties
+.git
+.github
+.gemini
+*.apk
+*.keystore
+*.jks
+.env
+packages/backend/.env
+dist
+

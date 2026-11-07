@@ -1,3 +1,6 @@
+
+
+
 -- Migration 001: Initial Schema for Indian Securities Paper Trading
 -- All monetary values stored as integer PAISE (1 INR = 100 PAISE) to prevent floating-point drift.
 
@@ -42,7 +45,7 @@ CREATE TABLE IF NOT EXISTS instruments (
     is_tradable BOOLEAN NOT NULL,
     lot_size INT NOT NULL,
     tick_size NUMERIC(6, 2) NOT NULL,
-    expiry DATE,
+    expiry VARCHAR(32),
     strike_price NUMERIC(12, 2),
     underlying VARCHAR(32),
     is_simulated_fixture BOOLEAN NOT NULL DEFAULT FALSE,

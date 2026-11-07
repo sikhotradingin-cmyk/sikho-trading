@@ -2,17 +2,51 @@ import {
   LedgerEntry,
   Money,
   Paise,
+  ProductType,
   SimulatedOrder,
   SimulatedPosition,
   VirtualAccount,
 } from '@trading/shared';
-import { randomUUID } from 'node:crypto';
+import { pbkdf2Sync, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { IDatabase } from './database.js';
+
+export interface UserRecord {
+  id: string;
+  email: string;
+  name: string;
+  hasPassword: boolean;
+  googleSub?: string;
+  avatarUrl?: string;
+  hasPin: boolean;
+  biometricEnabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export function hashSecretPBKDF2(secret: string): string {
+  const salt = randomBytes(16).toString('hex');
+  const derived = pbkdf2Sync(secret, salt, 100000, 32, 'sha256').toString('hex');
+  return `pbkdf2:100000:${salt}:${derived}`;
+}
+
+export function verifySecretPBKDF2(secret: string, storedHash?: string | null): boolean {
+  if (!storedHash || !storedHash.startsWith('pbkdf2:')) return false;
+  const parts = storedHash.split(':');
+  if (parts.length !== 4) return false;
+  const iterations = parseInt(parts[1], 10);
+  const salt = parts[2];
+  const expectedHex = parts[3];
+  const actualBuf = pbkdf2Sync(secret, salt, iterations, 32, 'sha256');
+  const expectedBuf = Buffer.from(expectedHex, 'hex');
+  if (actualBuf.length !== expectedBuf.length) return false;
+  return timingSafeEqual(actualBuf, expectedBuf);
+}
 
 export class PostgresRepository {
   constructor(private db: IDatabase) {}
 
   public async syncInstruments(instruments: any[]): Promise<void> {
+    const now = Date.now();
     for (const inst of instruments) {
       await this.db.query(
         `INSERT INTO instruments 
@@ -34,15 +68,249 @@ export class PostgresRepository {
           inst.strikePrice ?? null,
           inst.underlying ?? null,
           inst.isSimulatedFixture ?? false,
-          Date.now(),
+          now,
         ]
+      );
+
+      if (inst.canonicalId || inst.upstoxInstrumentKey) {
+        const canonicalId = inst.canonicalId || `${inst.exchange}:${inst.token}`;
+        await this.db.query(
+          `INSERT INTO provider_instrument_mappings
+           (canonical_id, exchange, exchange_token, upstox_key, smartapi_global_id, symbol, underlying, instrument_type, expiry_iso, strike_price, option_type, lot_size, tick_size, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+           ON CONFLICT (canonical_id) DO UPDATE SET
+             upstox_key = COALESCE($4, provider_instrument_mappings.upstox_key),
+             smartapi_global_id = COALESCE($5, provider_instrument_mappings.smartapi_global_id),
+             updated_at = $14`,
+          [
+            canonicalId,
+            inst.exchange,
+            inst.token,
+            inst.upstoxInstrumentKey ?? null,
+            inst.globalId,
+            inst.symbol,
+            inst.underlying ?? null,
+            inst.instrumentType,
+            inst.expiry ?? null,
+            inst.strikePrice ?? null,
+            inst.optionType ?? null,
+            inst.lotSize,
+            inst.tickSize,
+            now,
+          ]
+        );
+      }
+    }
+  }
+
+  public async registerUser(params: {
+    email: string;
+    name: string;
+    password?: string;
+    googleSub?: string;
+    avatarUrl?: string;
+  }): Promise<UserRecord> {
+    const cleanEmail = params.email.trim().toLowerCase();
+    const existing = await this.db.query('SELECT * FROM users WHERE email = $1', [cleanEmail]);
+    if (existing.rows.length > 0) {
+      throw new Error('ERR_EMAIL_EXISTS: An account with this email already exists. Please sign in.');
+    }
+
+    const userId = `usr_${randomUUID()}`;
+    const now = Date.now();
+    const passwordHash = params.password ? hashSecretPBKDF2(params.password) : null;
+
+    await this.db.query(
+      `INSERT INTO users (id, email, name, password_hash, google_sub, avatar_url, biometric_enabled, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        userId,
+        cleanEmail,
+        params.name.trim(),
+        passwordHash,
+        params.googleSub ?? null,
+        params.avatarUrl ?? null,
+        false,
+        now,
+        now,
+      ]
+    );
+
+    const res = await this.db.query('SELECT * FROM users WHERE id = $1', [userId]);
+    return this.mapUser(res.rows[0]);
+  }
+
+  public async authenticateUser(email: string, password: string): Promise<UserRecord> {
+    const cleanEmail = email.trim().toLowerCase();
+    const res = await this.db.query('SELECT * FROM users WHERE email = $1', [cleanEmail]);
+    if (res.rows.length === 0) {
+      throw new Error('ERR_INVALID_CREDENTIALS: Invalid email or password.');
+    }
+    const row = res.rows[0];
+    if (!verifySecretPBKDF2(password, row.password_hash)) {
+      throw new Error('ERR_INVALID_CREDENTIALS: Invalid email or password.');
+    }
+    return this.mapUser(row);
+  }
+
+  public async upsertGoogleUser(params: {
+    email: string;
+    name: string;
+    googleSub: string;
+    avatarUrl?: string;
+  }): Promise<UserRecord> {
+    const cleanEmail = params.email.trim().toLowerCase();
+    const sub = params.googleSub.trim();
+    const now = Date.now();
+
+    // 1. Strict primary lookup by permanent immutable Google Subject ID (google_sub)
+    const bySub = await this.db.query('SELECT * FROM users WHERE google_sub = $1', [sub]);
+    if (bySub.rows.length > 0) {
+      const userId = bySub.rows[0].id;
+      await this.db.query(
+        'UPDATE users SET email = $1, name = COALESCE(NULLIF($2, \'\'), name), avatar_url = COALESCE($3, avatar_url), updated_at = $4 WHERE id = $5',
+        [cleanEmail, params.name.trim(), params.avatarUrl ?? null, now, userId]
+      );
+      const updated = await this.db.query('SELECT * FROM users WHERE id = $1', [userId]);
+      return this.mapUser(updated.rows[0]);
+    }
+
+    // 2. Check by email ONLY if that existing email user has no conflicting password / account
+    // Never merge accounts solely because their email strings match if an existing user was created separately
+    const byEmail = await this.db.query('SELECT * FROM users WHERE email = $1', [cleanEmail]);
+    if (byEmail.rows.length > 0) {
+      const existingUser = byEmail.rows[0];
+      // Only link if this existing record already has the same google_sub or no credentials conflicting
+      if (existingUser.google_sub === sub) {
+        return this.mapUser(existingUser);
+      }
+      if (!existingUser.google_sub && !existingUser.password_hash) {
+        // Link unlinked passwordless record to this verified Google Subject
+        await this.db.query(
+          'UPDATE users SET google_sub = $1, avatar_url = COALESCE($2, avatar_url), updated_at = $3 WHERE id = $4',
+          [sub, params.avatarUrl ?? null, now, existingUser.id]
+        );
+        const updated = await this.db.query('SELECT * FROM users WHERE id = $1', [existingUser.id]);
+        return this.mapUser(updated.rows[0]);
+      }
+      // If there is an existing email with a password or different google_sub, do not merge blindly!
+      // Create distinct isolated Google user to preserve security and isolation.
+    }
+
+    const userId = `usr_g_${randomUUID()}`;
+    await this.db.query(
+      `INSERT INTO users (id, email, name, password_hash, google_sub, avatar_url, biometric_enabled, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        userId,
+        cleanEmail,
+        params.name.trim(),
+        null,
+        sub,
+        params.avatarUrl ?? null,
+        false,
+        now,
+        now,
+      ]
+    );
+
+    const res = await this.db.query('SELECT * FROM users WHERE id = $1', [userId]);
+    return this.mapUser(res.rows[0]);
+  }
+
+  public async getUserById(userId: string): Promise<UserRecord | null> {
+    const res = await this.db.query('SELECT * FROM users WHERE id = $1', [userId]);
+    if (res.rows.length === 0) return null;
+    return this.mapUser(res.rows[0]);
+  }
+
+  public async getUserByEmail(email: string): Promise<UserRecord | null> {
+    const res = await this.db.query('SELECT * FROM users WHERE email = $1', [email.trim().toLowerCase()]);
+    if (res.rows.length === 0) return null;
+    return this.mapUser(res.rows[0]);
+  }
+
+  public async resetUserPassword(email: string, newPassword: string): Promise<UserRecord> {
+    const cleanEmail = email.trim().toLowerCase();
+    const res = await this.db.query('SELECT * FROM users WHERE email = $1', [cleanEmail]);
+    if (res.rows.length === 0) {
+      throw new Error('ERR_USER_NOT_FOUND: No account found with this email address.');
+    }
+    const userId = res.rows[0].id;
+    const hash = hashSecretPBKDF2(newPassword);
+    await this.db.query('UPDATE users SET password_hash = $1, updated_at = $2 WHERE id = $3', [
+      hash,
+      Date.now(),
+      userId,
+    ]);
+    const updated = await this.db.query('SELECT * FROM users WHERE id = $1', [userId]);
+    return this.mapUser(updated.rows[0]);
+  }
+
+  public async setupUserPin(userId: string, pin: string, biometricEnabled: boolean = false): Promise<UserRecord> {
+    if (!/^\d{4}$/.test(pin)) {
+      throw new Error('ERR_INVALID_PIN: PIN must be exactly 4 digits.');
+    }
+    const pinHash = hashSecretPBKDF2(pin);
+    await this.db.query(
+      'UPDATE users SET pin_hash = $1, biometric_enabled = $2, updated_at = $3 WHERE id = $4',
+      [pinHash, biometricEnabled, Date.now(), userId]
+    );
+    const updated = await this.db.query('SELECT * FROM users WHERE id = $1', [userId]);
+    if (updated.rows.length === 0) throw new Error('User not found');
+    return this.mapUser(updated.rows[0]);
+  }
+
+  public async verifyUserPin(userId: string, pin: string): Promise<boolean> {
+    const res = await this.db.query('SELECT pin_hash FROM users WHERE id = $1', [userId]);
+    if (res.rows.length === 0) return false;
+    return verifySecretPBKDF2(pin, res.rows[0].pin_hash);
+  }
+
+  public async clearUserPin(userId: string): Promise<void> {
+    await this.db.query(
+      'UPDATE users SET pin_hash = NULL, biometric_enabled = FALSE, updated_at = $1 WHERE id = $2',
+      [Date.now(), userId]
+    );
+  }
+
+  public async getDrawings(userId: string, instrumentId: string): Promise<any[]> {
+    const res = await this.db.query(
+      'SELECT drawings_json FROM chart_drawings WHERE user_id = $1 AND instrument_id = $2',
+      [userId, instrumentId]
+    );
+    if (res.rows.length === 0) return [];
+    try {
+      return JSON.parse(res.rows[0].drawings_json || '[]');
+    } catch {
+      return [];
+    }
+  }
+
+  public async saveDrawings(userId: string, instrumentId: string, drawings: any[]): Promise<void> {
+    const existing = await this.db.query(
+      'SELECT id FROM chart_drawings WHERE user_id = $1 AND instrument_id = $2',
+      [userId, instrumentId]
+    );
+    const jsonStr = JSON.stringify(Array.isArray(drawings) ? drawings : []);
+    const now = Date.now();
+    if (existing.rows.length === 0) {
+      await this.db.query(
+        'INSERT INTO chart_drawings (id, user_id, instrument_id, drawings_json, updated_at) VALUES ($1, $2, $3, $4, $5)',
+        [randomUUID(), userId, instrumentId, jsonStr, now]
+      );
+    } else {
+      await this.db.query(
+        'UPDATE chart_drawings SET drawings_json = $1, updated_at = $2 WHERE user_id = $3 AND instrument_id = $4',
+        [jsonStr, now, userId, instrumentId]
       );
     }
   }
 
   public async provisionInitialAccount(
     userId: string,
-    accountName: string = 'Primary Practice Account'
+    accountName: string = 'Primary Practice Account',
+    initialTier: 'FREE' | 'PRO' = 'FREE'
   ): Promise<VirtualAccount> {
     // 1. Fast check outside transaction
     const existing = await this.db.query(
@@ -50,6 +318,13 @@ export class PostgresRepository {
       [userId]
     );
     if (existing.rows.length > 0) {
+      if (initialTier === 'PRO' && existing.rows[0].tier !== 'PRO') {
+        await this.db.query('UPDATE virtual_accounts SET tier = $1 WHERE id = $2', [
+          'PRO',
+          existing.rows[0].id,
+        ]);
+        existing.rows[0].tier = 'PRO';
+      }
       return this.mapAccount(existing.rows[0]);
     }
 
@@ -75,7 +350,7 @@ export class PostgresRepository {
             accountId,
             userId,
             accountName,
-            'FREE',
+            initialTier,
             initialPaise.toString(),
             initialPaise.toString(),
             '0',
@@ -106,7 +381,6 @@ export class PostgresRepository {
         return this.mapAccount(accRes.rows[0]);
       });
     } catch {
-      // If unique violation occurred from concurrent race, return the newly created row
       const fallback = await this.db.query(
         'SELECT * FROM virtual_accounts WHERE user_id = $1 AND is_default = true',
         [userId]
@@ -118,7 +392,7 @@ export class PostgresRepository {
     }
   }
 
-  public async getAccount(accountId: string): Promise<VirtualAccount | null> {
+  public async getAccount(accountId: string): Promise<(VirtualAccount & { baselineResetAt?: number }) | null> {
     const res = await this.db.query('SELECT * FROM virtual_accounts WHERE id = $1', [accountId]);
     if (res.rows.length === 0) return null;
     return this.mapAccount(res.rows[0]);
@@ -163,6 +437,47 @@ export class PostgresRepository {
       await client.query(
         'UPDATE virtual_accounts SET locked_margin_paise = $1, updated_at = $2 WHERE id = $3',
         [newLocked.toString(), Date.now(), accountId]
+      );
+    });
+  }
+
+  public async applyOrderCharges(
+    accountId: string,
+    chargesPaise: Paise,
+    referenceId: string,
+    orderSummary: string
+  ): Promise<void> {
+    if (chargesPaise <= 0n) return;
+    await this.db.transaction(async (client) => {
+      const res = await client.query(
+        'SELECT cash_balance_paise FROM virtual_accounts WHERE id = $1 FOR UPDATE',
+        [accountId]
+      );
+      if (res.rows.length === 0) throw new Error(`Account not found: ${accountId}`);
+
+      const currentCash = BigInt(res.rows[0].cash_balance_paise);
+      const newCash = currentCash - chargesPaise;
+      const now = Date.now();
+
+      await client.query(
+        'UPDATE virtual_accounts SET cash_balance_paise = $1, updated_at = $2 WHERE id = $3',
+        [newCash.toString(), now, accountId]
+      );
+
+      await client.query(
+        `INSERT INTO account_ledger_entries 
+         (id, account_id, entry_type, amount_paise, balance_after_paise, reference_id, note, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          randomUUID(),
+          accountId,
+          'SIMULATED_CHARGES',
+          (-chargesPaise).toString(),
+          newCash.toString(),
+          referenceId,
+          `Simulated regulatory & exchange turnover charges: ${Money.formatINR(chargesPaise)} (${orderSummary})`,
+          now,
+        ]
       );
     });
   }
@@ -256,8 +571,18 @@ export class PostgresRepository {
       const now = Date.now();
 
       await client.query(
-        'UPDATE virtual_accounts SET cash_balance_paise = $1, locked_margin_paise = 0, updated_at = $2 WHERE id = $3',
+        'UPDATE virtual_accounts SET cash_balance_paise = $1, locked_margin_paise = 0, baseline_reset_at = $2, updated_at = $2 WHERE id = $3',
         [initialPaise.toString(), now, accountId]
+      );
+
+      // Close any open positions and cancel pending orders on reset
+      await client.query(
+        'UPDATE positions SET quantity = 0, updated_at = $1 WHERE account_id = $2 AND quantity != 0',
+        [now, accountId]
+      );
+      await client.query(
+        "UPDATE orders SET status = 'CANCELLED', rejection_reason = 'ACCOUNT_RESET', updated_at = $1 WHERE account_id = $2 AND status = 'PENDING'",
+        [now, accountId]
       );
 
       await client.query(
@@ -282,14 +607,15 @@ export class PostgresRepository {
   public async saveOrder(order: SimulatedOrder): Promise<void> {
     await this.db.query(
       `INSERT INTO orders 
-       (id, account_id, global_instrument_id, side, order_type, quantity, requested_price, trigger_price, executed_price, status, idempotency_key, rejection_reason, oco_companion_order_id, position_id, estimated_charges_paise, executed_at, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+       (id, account_id, global_instrument_id, side, order_type, product_type, quantity, requested_price, trigger_price, executed_price, status, idempotency_key, rejection_reason, oco_companion_order_id, position_id, estimated_charges_paise, executed_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
       [
         order.id,
         order.accountId,
         order.globalInstrumentId,
         order.side,
         order.orderType,
+        order.productType || 'INTRADAY',
         order.quantity,
         order.requestedPrice ?? null,
         order.triggerPrice ?? null,
@@ -332,12 +658,13 @@ export class PostgresRepository {
     if (existing.rows.length === 0) {
       await this.db.query(
         `INSERT INTO positions 
-         (id, account_id, global_instrument_id, quantity, average_entry_price, realized_pnl_paise, stop_loss_price, target_price, stop_order_id, target_order_id, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+         (id, account_id, global_instrument_id, product_type, quantity, average_entry_price, realized_pnl_paise, stop_loss_price, target_price, stop_order_id, target_order_id, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
         [
           position.id,
           position.accountId,
           position.globalInstrumentId,
+          position.productType || 'INTRADAY',
           position.quantity,
           position.averageEntryPrice,
           position.realizedPnlPaise.toString(),
@@ -352,9 +679,10 @@ export class PostgresRepository {
     } else {
       await this.db.query(
         `UPDATE positions 
-         SET quantity = $1, average_entry_price = $2, realized_pnl_paise = $3, stop_loss_price = $4, target_price = $5, updated_at = $6
-         WHERE account_id = $7 AND global_instrument_id = $8`,
+         SET product_type = $1, quantity = $2, average_entry_price = $3, realized_pnl_paise = $4, stop_loss_price = $5, target_price = $6, updated_at = $7
+         WHERE account_id = $8 AND global_instrument_id = $9`,
         [
+          position.productType || 'INTRADAY',
           position.quantity,
           position.averageEntryPrice,
           position.realizedPnlPaise.toString(),
@@ -393,6 +721,15 @@ export class PostgresRepository {
     return res.rows.map(this.mapPosition);
   }
 
+  public async getAllOpenPositionInstrumentIds(): Promise<string[]> {
+    const posRes = await this.db.query('SELECT DISTINCT global_instrument_id FROM positions WHERE quantity != 0');
+    const ordRes = await this.db.query("SELECT DISTINCT global_instrument_id FROM orders WHERE status = 'PENDING'");
+    const set = new Set<string>();
+    for (const r of posRes.rows) set.add(r.global_instrument_id);
+    for (const r of ordRes.rows) set.add(r.global_instrument_id);
+    return Array.from(set);
+  }
+
   public async getLedger(accountId: string): Promise<LedgerEntry[]> {
     const res = await this.db.query(
       'SELECT * FROM account_ledger_entries WHERE account_id = $1 ORDER BY created_at DESC',
@@ -401,7 +738,22 @@ export class PostgresRepository {
     return res.rows.map(this.mapLedger);
   }
 
-  private mapAccount(row: any): VirtualAccount {
+  private mapUser(row: any): UserRecord {
+    return {
+      id: row.id,
+      email: row.email,
+      name: row.name,
+      hasPassword: Boolean(row.password_hash),
+      googleSub: row.google_sub ?? undefined,
+      avatarUrl: row.avatar_url ?? undefined,
+      hasPin: Boolean(row.pin_hash),
+      biometricEnabled: Boolean(row.biometric_enabled),
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at),
+    };
+  }
+
+  private mapAccount(row: any): VirtualAccount & { baselineResetAt?: number } {
     const cash = BigInt(row.cash_balance_paise);
     const locked = BigInt(row.locked_margin_paise);
     return {
@@ -415,6 +767,7 @@ export class PostgresRepository {
       availableBalancePaise: cash - locked,
       currency: 'INR',
       isDefault: Boolean(row.is_default),
+      baselineResetAt: Number(row.baseline_reset_at || 0),
       createdAt: Number(row.created_at),
       updatedAt: Number(row.updated_at),
     };
@@ -427,6 +780,7 @@ export class PostgresRepository {
       globalInstrumentId: row.global_instrument_id,
       side: row.side,
       orderType: row.order_type,
+      productType: (row.product_type as ProductType) || 'INTRADAY',
       quantity: Number(row.quantity),
       requestedPrice: row.requested_price !== null ? Number(row.requested_price) : undefined,
       triggerPrice: row.trigger_price !== null ? Number(row.trigger_price) : undefined,
@@ -448,6 +802,7 @@ export class PostgresRepository {
       id: row.id,
       accountId: row.account_id,
       globalInstrumentId: row.global_instrument_id,
+      productType: (row.product_type as ProductType) || 'INTRADAY',
       quantity: Number(row.quantity),
       averageEntryPrice: Number(row.average_entry_price),
       realizedPnlPaise: BigInt(row.realized_pnl_paise || 0),

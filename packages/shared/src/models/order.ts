@@ -4,6 +4,8 @@ export type OrderSide = 'BUY' | 'SELL';
 
 export type OrderType = 'MARKET' | 'LIMIT' | 'STOP_MARKET' | 'TARGET';
 
+export type ProductType = 'INTRADAY' | 'DELIVERY' | 'MARGIN';
+
 export type OrderStatus =
   | 'PENDING' // Awaiting price trigger or match
   | 'TRIGGERED' // Stop breached, converting to active execution
@@ -17,6 +19,7 @@ export interface SimulatedOrder {
   globalInstrumentId: string;
   side: OrderSide;
   orderType: OrderType;
+  productType?: ProductType;
   quantity: number;
   requestedPrice?: number;
   triggerPrice?: number;
@@ -37,6 +40,7 @@ export interface PlaceOrderRequest {
   globalInstrumentId: string;
   side: OrderSide;
   orderType: OrderType;
+  productType?: ProductType;
   quantity: number;
   requestedPrice?: number;
   triggerPrice?: number;

@@ -206,4 +206,161 @@ describe('Simulated Execution Engine (PostgreSQL-backed)', () => {
     assert.equal(targetOrder.status, 'CANCELLED');
     assert.match(targetOrder.rejectionReason || '', /OCO_TRIGGERED/);
   });
+
+  test('rejects live-feed (non-simulated) market order when exchange is closed or quote is from last session', async () => {
+    const db = new EmulatedPostgresDatabase();
+    const repo = new PostgresRepository(db);
+    const smartApiFuture: InstrumentMetadata = {
+      globalId: 'NFO:NIFTY23NOV26FUT:61471',
+      provider: 'SMARTAPI',
+      exchange: 'NFO',
+      token: '61471',
+      symbol: 'NIFTY23NOV26FUT',
+      name: 'NIFTY Futures (23NOV2026)',
+      instrumentType: 'FUTIDX',
+      isTradable: true,
+      lotSize: 65,
+      tickSize: 0.1,
+      expiry: '23NOV2026',
+      marginMultiplier: 0.05,
+      isSimulatedFixture: false,
+    };
+    await repo.syncInstruments([smartApiFuture]);
+    const simEngine = new SimulationEngine(repo);
+    const acc = await repo.provisionInitialAccount('trader-closed-mkt');
+
+    const lastSessionQuote: QuoteSnapshot = {
+      globalId: smartApiFuture.globalId,
+      token: '61471',
+      ltp: 23970.7,
+      open: 23712.0,
+      high: 23988.0,
+      low: 23700.5,
+      close: 23780.5,
+      bidPrice: 23970.6,
+      askPrice: 23970.8,
+      providerTimestamp: Date.now() - 3600000,
+      receiveTimestamp: Date.now(), // Even if packet just arrived over WS
+      source: 'SMARTAPI',
+      isSimulated: false,
+    };
+
+    const req: PlaceOrderRequest = {
+      accountId: acc.id,
+      globalInstrumentId: smartApiFuture.globalId,
+      side: 'BUY',
+      orderType: 'MARKET',
+      quantity: 65,
+      idempotencyKey: 'idem-closed-mkt-1',
+    };
+
+    const res = await simEngine.submitOrder(
+      req,
+      smartApiFuture,
+      lastSessionQuote,
+      Money.fromRupees(77904.78),
+      Money.fromRupees(311.62)
+    );
+
+    assert.equal(res.order.status, 'REJECTED');
+    assert.match(res.order.rejectionReason || '', /ERR_MARKET_CLOSED|ERR_STALE_MARKET_DATA/);
+
+    const postAcc = await repo.getAccount(acc.id);
+    assert.equal(postAcc!.cashBalancePaise, 10000000n);
+    assert.equal(postAcc!.lockedMarginPaise, 0n);
+    assert.equal(postAcc!.availableBalancePaise, 10000000n);
+  });
+
+  test('reconciles ₹311.62 entry & exit fees with cash balance, available balance, and ledger entries (charged once per leg)', async () => {
+    const db = new EmulatedPostgresDatabase();
+    const repo = new PostgresRepository(db);
+    const nifty65: InstrumentMetadata = {
+      globalId: 'NFO:NIFTY23NOV26FUT:61471',
+      provider: 'DEMO',
+      exchange: 'NFO',
+      token: '61471',
+      symbol: 'NIFTY23NOV26FUT',
+      name: 'NIFTY Futures (23NOV2026)',
+      instrumentType: 'FUTIDX',
+      isTradable: true,
+      lotSize: 65,
+      tickSize: 0.1,
+      expiry: '23NOV2026',
+      marginMultiplier: 0.05,
+      isSimulatedFixture: true,
+    };
+    await repo.syncInstruments([nifty65]);
+    const simEngine = new SimulationEngine(repo);
+    const acc = await repo.provisionInitialAccount('trader-fee-reconcile');
+
+    const quote: QuoteSnapshot = {
+      globalId: nifty65.globalId,
+      token: '61471',
+      ltp: 23970.7,
+      open: 23712.0,
+      high: 23988.0,
+      low: 23700.5,
+      close: 23780.5,
+      bidPrice: 23970.6,
+      askPrice: 23970.8,
+      providerTimestamp: Date.now(),
+      receiveTimestamp: Date.now(),
+      source: 'DEMO',
+      isSimulated: true,
+    };
+
+    const entryMarginPaise = Money.fromRupees(77904.78); // 7,790,478 Paise
+    const entryChargesPaise = Money.fromRupees(311.62); // 31,162 Paise
+
+    const buyRes = await simEngine.submitOrder(
+      {
+        accountId: acc.id,
+        globalInstrumentId: nifty65.globalId,
+        side: 'BUY',
+        orderType: 'MARKET',
+        quantity: 65,
+        idempotencyKey: 'buy-reconcile-1',
+      },
+      nifty65,
+      quote,
+      entryMarginPaise,
+      entryChargesPaise
+    );
+
+    assert.equal(buyRes.order.status, 'EXECUTED');
+    assert.equal(buyRes.order.executedPrice, 23970.8);
+
+    // Verify account after entry:
+    // Cash = 10,000,000 - 31,162 = 9,968,838 Paise (₹99,688.38)
+    // Locked Margin = 7,790,478 Paise (₹77,904.78)
+    // Available = 9,968,838 - 7,790,478 = 2,178,360 Paise (₹21,783.60)
+    const accAfterBuy = (await repo.getAccount(acc.id))!;
+    assert.equal(accAfterBuy.cashBalancePaise, 9968838n);
+    assert.equal(accAfterBuy.lockedMarginPaise, 7790478n);
+    assert.equal(accAfterBuy.availableBalancePaise, 2178360n);
+
+    // Verify ledger after entry: INITIAL_GRANT + 1 SIMULATED_CHARGES entry
+    const ledgerAfterBuy = await repo.getLedger(acc.id);
+    const entryChargeEntries = ledgerAfterBuy.filter((e) => e.entryType === 'SIMULATED_CHARGES');
+    assert.equal(entryChargeEntries.length, 1);
+    assert.equal(entryChargeEntries[0].amountPaise, -31162n);
+    assert.equal(entryChargeEntries[0].balanceAfterPaise, 9968838n);
+    assert.equal(entryChargeEntries[0].referenceId, buyRes.order.id);
+
+    // Now Square-Off at bid 23970.60 -> P&L = (23970.60 - 23970.80) * 65 = -₹13.00 (-1300 Paise)
+    // Exit charges = 31,162 Paise (₹311.62)
+    const sqRes = await simEngine.squareOffPosition(acc.id, nifty65.globalId, quote, nifty65);
+    assert.equal(sqRes.order.status, 'EXECUTED');
+    assert.equal(sqRes.position?.quantity, 0);
+
+    const accAfterExit = (await repo.getAccount(acc.id))!;
+    // Final Cash = 9,968,838 - 1,300 (P&L) - 31,162 (Exit Fee) = 9,936,376 Paise (₹99,363.76)
+    assert.equal(accAfterExit.cashBalancePaise, 9936376n);
+    assert.equal(accAfterExit.lockedMarginPaise, 0n);
+    assert.equal(accAfterExit.availableBalancePaise, 9936376n);
+
+    const ledgerAfterExit = await repo.getLedger(acc.id);
+    const allChargeEntries = ledgerAfterExit.filter((e) => e.entryType === 'SIMULATED_CHARGES');
+    assert.equal(allChargeEntries.length, 2); // 1 for entry order, 1 for exit order
+  });
 });

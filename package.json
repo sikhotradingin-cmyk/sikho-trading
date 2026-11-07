@@ -9,6 +9,7 @@
     "packages/mobile"
   ],
   "scripts": {
+    "build": "npm --workspace=packages/shared run build && npm --workspace=packages/backend run build",
     "build:shared": "npm --workspace=packages/shared run build",
     "build:backend": "npm --workspace=packages/backend run build",
     "test:shared": "npm --workspace=packages/shared test",
@@ -16,6 +17,8 @@
     "test:mobile": "npm --workspace=packages/mobile test",
     "test": "npm --workspace=packages/shared test && npm --workspace=packages/backend test && npm --workspace=packages/mobile test",
     "start:backend": "npm --workspace=packages/backend run dev",
+    "start:backend:prod": "npm --workspace=packages/backend run start",
+    "migrate:backend": "npm --workspace=packages/backend run migrate",
     "start:mobile": "npm --workspace=packages/mobile run start"
   },
   "devDependencies": {

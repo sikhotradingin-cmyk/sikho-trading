@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { calculateSMA } from './sma.js';
 import { calculateEMA } from './ema.js';
 import { calculateRSI } from './rsi.js';
+import { calculateBollingerBands, calculateMACD, calculateATR, calculateVWAP } from './advanced.js';
 import { Candle } from '../models/candle.js';
 
 describe('Technical Indicators & Warm-up Verification', () => {
@@ -62,5 +63,38 @@ describe('Technical Indicators & Warm-up Verification', () => {
     // All gains -> RSI should be 100
     assert.equal(rsi[0].value, 100.0);
     assert.equal(rsi[1].value, 100.0);
+  });
+
+  test('Bollinger Bands, MACD, ATR, and VWAP compute accurately and reject zero-volume spot VWAP', () => {
+    const sample: Candle[] = [];
+    for (let i = 0; i < 40; i++) {
+      sample.push({
+        time: 1700000000 + i * 300,
+        open: 24000 + i * 5,
+        high: 24015 + i * 5,
+        low: 23990 + i * 5,
+        close: 24005 + i * 5,
+        volume: 1000 + i * 50,
+      });
+    }
+
+    const bb = calculateBollingerBands(sample, 20, 2);
+    assert.equal(bb.length, 21);
+    assert.ok(bb[0].upper > bb[0].middle && bb[0].middle > bb[0].lower);
+
+    const macd = calculateMACD(sample, 12, 26, 9);
+    assert.ok(macd.length > 0);
+    assert.equal(typeof macd[0].histogram, 'number');
+
+    const atr = calculateATR(sample, 14);
+    assert.equal(atr.length, 26);
+    assert.ok(atr[0].value > 0);
+
+    const vwap = calculateVWAP(sample);
+    assert.equal(vwap.length, 40);
+
+    // Zero volume (e.g. Spot Index) must return empty VWAP rather than fabricating volume
+    const spotCandles = sample.map((c) => ({ ...c, volume: 0 }));
+    assert.deepEqual(calculateVWAP(spotCandles), []);
   });
 });

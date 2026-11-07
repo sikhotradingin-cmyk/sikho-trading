@@ -17,15 +17,35 @@ export interface ValidationFailure {
 export type OrderValidationResult = ValidationSuccess | ValidationFailure;
 
 /**
- * Default Intraday Simulation Margin Rates:
- * For Index Futures: 12% of contract value.
- * For Equities: 20% of value.
+ * SIMULATED EDUCATIONAL MARGIN RATES (SIMULATION ASSUMPTION):
+ * Note: These are simplified educational simulation parameters for paper trading practice,
+ * not official exchange SPAN/Exposure margin requirements.
+ * - Index Futures: 12% of contract value (~8.3x leverage).
+ * - Stock Futures: 20% of contract value (5x leverage).
+ * - Equity Intraday: 20% of contract value (5x leverage).
+ * - Equity Delivery: 100% full cash payment (1x cash delivery, no margin loan).
+ * - Option Buy: 100% premium paid upfront.
+ * - Option Sell (Short): 100% premium + 15% underlying strike notional collateral.
  */
 export const SIMULATED_MARGIN_RATES = {
   FUTIDX: 0.12,
+  FUTSTK: 0.20,
+  FUTCOM: 0.05, // 5% educational margin for MCX Commodity Futures
   EQUITY_STOCK: 0.20,
+  EQUITY_DELIVERY: 1.0,
+  OPTION_BUY: 1.0,
+  OPTION_SHORT_UNDERLYING: 0.15,
   INDEX_SPOT: 0.0, // Non-tradable
 };
+
+export const SIMULATION_ASSUMPTIONS_DISCLAIMER =
+  'Simulation Assumption: Margins and charges are computed using fixed educational baseline models (e.g. 20% intraday equity, 12% index futures, 100% option premium, ~0.02% estimated transaction charges) for risk-free paper trading practice, and do not represent exchange SPAN or real broker tariff schedules.';
+
+export interface OrderValidationOptions {
+  existingPositionQuantity?: number;
+  existingDeliveryHoldingQuantity?: number;
+  underlyingPrice?: number;
+}
 
 export class OrderValidator {
   /**
@@ -36,7 +56,8 @@ export class OrderValidator {
     request: PlaceOrderRequest,
     instrument: InstrumentMetadata,
     availableBalancePaise: Paise,
-    currentMarketPrice: number
+    currentMarketPrice: number,
+    options?: OrderValidationOptions
   ): OrderValidationResult {
     // 1. Non-tradable check (e.g. Spot Index prevention)
     if (!instrument.isTradable || instrument.instrumentType === 'INDEX_SPOT') {
@@ -140,13 +161,71 @@ export class OrderValidator {
       };
     }
 
-    const contractValueRupees = effectivePrice * request.quantity;
-    const marginRate =
-      instrument.instrumentType === 'FUTIDX'
-        ? SIMULATED_MARGIN_RATES.FUTIDX
-        : SIMULATED_MARGIN_RATES.EQUITY_STOCK;
+    const existingPosQty = options?.existingPositionQuantity ?? 0;
+    const isRiskReducingExit =
+      (existingPosQty > 0 && request.side === 'SELL' && request.quantity <= existingPosQty) ||
+      (existingPosQty < 0 && request.side === 'BUY' && request.quantity <= Math.abs(existingPosQty));
 
-    const requiredMarginRupees = contractValueRupees * marginRate;
+    const productType =
+      request.productType ||
+      (instrument.instrumentType === 'EQUITY_STOCK' ? 'INTRADAY' : 'MARGIN');
+
+    // Check Equity Delivery short-sell restriction
+    if (instrument.instrumentType === 'EQUITY_STOCK' && productType === 'DELIVERY' && request.side === 'SELL') {
+      const heldQty = options?.existingDeliveryHoldingQuantity ?? (existingPosQty > 0 ? existingPosQty : 0);
+      if (heldQty < request.quantity) {
+        return {
+          isValid: false,
+          errorCode: 'ERR_INSUFFICIENT_HOLDINGS',
+          errorMessage: `Insufficient delivery holdings to sell ${request.quantity} shares of ${instrument.symbol} (Held: ${heldQty}). Switch to INTRADAY to short-sell intraday.`,
+        };
+      }
+    }
+
+    const quoteRatio =
+      instrument.exchange === 'MCX' && instrument.priceQuoteMultiplier
+        ? instrument.priceQuoteMultiplier / (instrument.lotSize || 1)
+        : 1.0;
+    const contractValueRupees = effectivePrice * quoteRatio * request.quantity;
+    let requiredMarginRupees = 0;
+
+    if (!isRiskReducingExit) {
+      if (instrument.instrumentType === 'EQUITY_STOCK') {
+        if (productType === 'DELIVERY') {
+          requiredMarginRupees = contractValueRupees * SIMULATED_MARGIN_RATES.EQUITY_DELIVERY;
+        } else {
+          const rate = instrument.marginMultiplier ?? SIMULATED_MARGIN_RATES.EQUITY_STOCK;
+          requiredMarginRupees = contractValueRupees * rate;
+        }
+      } else if (
+        instrument.instrumentType === 'OPTIDX' ||
+        instrument.instrumentType === 'OPTSTK' ||
+        instrument.instrumentType === 'OPTCOM'
+      ) {
+        if (request.side === 'BUY') {
+          // Option buyers pay 100% of premium
+          requiredMarginRupees = contractValueRupees * SIMULATED_MARGIN_RATES.OPTION_BUY;
+        } else {
+          // Option writers (short) require premium + 15% of underlying notional
+          const refUnderlyingPrice =
+            options?.underlyingPrice || instrument.strikePrice || effectivePrice * 50;
+          const underlyingNotional = refUnderlyingPrice * request.quantity * quoteRatio;
+          requiredMarginRupees =
+            contractValueRupees + underlyingNotional * SIMULATED_MARGIN_RATES.OPTION_SHORT_UNDERLYING;
+        }
+      } else if (instrument.instrumentType === 'FUTCOM') {
+        const rate = instrument.marginMultiplier ?? SIMULATED_MARGIN_RATES.FUTCOM;
+        requiredMarginRupees = contractValueRupees * rate;
+      } else if (instrument.instrumentType === 'FUTSTK') {
+        const rate = instrument.marginMultiplier ?? SIMULATED_MARGIN_RATES.FUTSTK;
+        requiredMarginRupees = contractValueRupees * rate;
+      } else {
+        // FUTIDX
+        const rate = instrument.marginMultiplier ?? SIMULATED_MARGIN_RATES.FUTIDX;
+        requiredMarginRupees = contractValueRupees * rate;
+      }
+    }
+
     const requiredMarginPaise = Money.fromRupees(requiredMarginRupees);
 
     // 7. Estimated Simulation Transaction Charges (STT 0.0125%, Exchange 0.0019%, GST 18%, Stamp Duty 0.002%)
@@ -154,7 +233,7 @@ export class OrderValidator {
     const estimatedChargesRupees = Math.max(20, contractValueRupees * 0.0002);
     const estimatedChargesPaise = Money.fromRupees(estimatedChargesRupees);
 
-    if (availableBalancePaise < requiredMarginPaise + estimatedChargesPaise) {
+    if (!isRiskReducingExit && availableBalancePaise < requiredMarginPaise + estimatedChargesPaise) {
       return {
         isValid: false,
         errorCode: 'ERR_INSUFFICIENT_MARGIN',

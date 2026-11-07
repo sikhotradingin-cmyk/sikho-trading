@@ -83,6 +83,22 @@ describe('SmartAPI Adapter & Utility Functions', () => {
     const candles = await unconfigured.getCandles('NSE:NIFTY50-INDEX', '1m', 10);
     assert.deepEqual(candles, []);
 
+    // Verify broad multi-segment instrument discovery from scrip_master.json
+    const idxRes = await unconfigured.searchInstruments({ segment: 'INDEX_SPOT', exchange: 'NSE' });
+    assert.ok(idxRes.totalCount >= 10, 'Should index multiple NSE spot indices');
+
+    const eqRes = await unconfigured.searchInstruments({ segment: 'EQUITY_STOCK', q: 'RELIANCE' });
+    assert.ok(eqRes.instruments.some((i) => i.symbol === 'RELIANCE-EQ' && i.exchange === 'NSE'));
+
+    const optRes = await unconfigured.searchInstruments({
+      segment: 'OPTIDX',
+      underlying: 'NIFTY',
+      optionType: 'CE',
+    });
+    assert.ok(optRes.totalCount > 0, 'Should index active NIFTY CE options');
+    assert.equal(optRes.instruments[0].optionType, 'CE');
+    assert.ok((optRes.instruments[0].strikePrice ?? 0) > 1000, 'Strike price should be scaled from paise to rupees');
+
     await unconfigured.dispose();
   });
 });

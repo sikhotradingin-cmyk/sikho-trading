@@ -1,1398 +1,924 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>Tradingzone</title>
-  <style>
-    :root {
-      --bg: #0b0f19;
-      --card-bg: #151d2f;
-      --card-border: #232f48;
-      --text: #f1f5f9;
-      --text-muted: #94a3b8;
-      --primary: #2563eb;
-      --primary-accent: #38bdf8;
-      --green: #10b981;
-      --green-bg: rgba(16, 185, 129, 0.12);
-      --red: #ef4444;
-      --red-bg: rgba(239, 68, 68, 0.12);
-      --amber: #f59e0b;
-      --nav-height: 56px;
-    }
-    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-    body, html { width: 100%; height: 100%; overflow: hidden; background-color: var(--bg); color: var(--text); }
-    
-    #app-container { display: flex; flex-direction: column; width: 100%; height: 100%; position: relative; }
-    
-    /* 1. Exchange Status Dot Strip (Reference Screenshots) */
-    .exchange-status-bar {
-      height: 22px;
-      background: #090d16;
-      border-bottom: 1px solid #1a2234;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 10px;
-      font-size: 10px;
-      font-weight: 700;
-      color: #94a3b8;
-      flex-shrink: 0;
-      letter-spacing: 0.3px;
-    }
-    .dot { font-size: 8px; vertical-align: middle; }
-    .dot-open { color: #10b981; }
-    .dot-closed { color: #ef4444; }
-    .dot-sep { color: #334155; }
-    
-    /* 2. Top Dual Indices Strip (Reference Screenshots) */
-    .indices-ticker-bar {
-      height: 44px;
-      background: #111827;
-      border-bottom: 1px solid var(--card-border);
-      display: flex;
-      align-items: center;
-      justify-content: space-around;
-      padding: 0 8px;
-      flex-shrink: 0;
-    }
-    .index-cell {
-      display: flex;
-      align-items: baseline;
-      gap: 6px;
-      cursor: pointer;
-    }
-    .index-name { font-size: 12px; font-weight: 800; color: #e2e8f0; }
-    .index-val { font-size: 13px; font-weight: 800; }
-    .index-chg { font-size: 10px; font-weight: 700; }
-    .change-pos { color: var(--green); }
-    .change-neg { color: var(--red); }
-    
-    /* 3. Feed Health / Mode Banner */
-    .feed-banner-bar {
-      background: #1e293b;
-      border-bottom: 1px solid #334155;
-      color: #94a3b8;
-      font-size: 10px;
-      font-weight: 800;
-      text-align: center;
-      padding: 4px 8px;
-      letter-spacing: 0.5px;
-      text-transform: uppercase;
-      flex-shrink: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-    }
-    
-    /* Main Viewport */
-    main { flex: 1; position: relative; overflow: hidden; display: flex; flex-direction: column; }
-    .screen { position: absolute; inset: 0; display: none; flex-direction: column; overflow-y: auto; -webkit-overflow-scrolling: touch; }
-    .screen.active { display: flex; }
-    
-    /* Bottom Navigation Bar (Reference Screenshots) */
-    nav {
-      height: var(--nav-height);
-      background: #111827;
-      border-top: 1px solid var(--card-border);
-      display: flex;
-      flex-shrink: 0;
-      z-index: 30;
-    }
-    .nav-btn {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 3px;
-      background: none;
-      border: none;
-      color: var(--text-muted);
-      cursor: pointer;
-      font-size: 10px;
-      font-weight: 600;
-      transition: color 0.15s ease;
-    }
-    .nav-btn svg { width: 18px; height: 18px; stroke-width: 2; }
-    .nav-btn.active { color: var(--primary-accent); font-weight: 800; }
-    
-    /* Upgrade Pro Banner (Reference Screenshots) */
-    .pro-upgrade-banner {
-      background: #1e293b;
-      border: 1px dashed #334155;
-      color: #cbd5e1;
-      padding: 8px 12px;
-      margin: 10px 12px 4px 12px;
-      border-radius: 8px;
-      font-size: 11px;
-      font-weight: 700;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-    
-    /* Watchlist Screen */
-    .watchlist-search {
-      padding: 8px 12px;
-      background: #111827;
-      border-bottom: 1px solid var(--card-border);
-    }
-    .watchlist-search input {
-      width: 100%;
-      background: #1f293d;
-      border: 1px solid #334155;
-      color: #fff;
-      font-size: 13px;
-      padding: 8px 12px;
-      border-radius: 8px;
-      outline: none;
-    }
-    .inst-card {
-      padding: 12px 14px;
-      border-bottom: 1px solid var(--card-border);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      cursor: pointer;
-    }
-    .inst-card:active { background: #1e293b; }
-    .inst-card-meta { display: flex; flex-direction: column; gap: 3px; }
-    .inst-card-name { font-size: 14px; font-weight: 800; color: #fff; display: flex; align-items: center; gap: 6px; }
-    .inst-badge { font-size: 9px; font-weight: 700; padding: 2px 5px; border-radius: 4px; background: #1e293b; color: #38bdf8; border: 1px solid #334155; }
-    .inst-card-sub { font-size: 11px; color: var(--text-muted); }
-    .inst-card-prices { text-align: right; }
-    .inst-card-ltp { font-size: 14px; font-weight: 800; }
-    .inst-card-range { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
-    
-    /* Dedicated Chart View Header (Reference Image 5) */
-    .chart-header-bar {
-      height: 48px;
-      background: #111827;
-      border-bottom: 1px solid var(--card-border);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0 8px;
-      flex-shrink: 0;
-    }
-    .btn-chart-back {
-      background: none;
-      border: none;
-      color: #cbd5e1;
-      padding: 6px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-    }
-    .chart-header-title { display: flex; flex-direction: column; }
-    .chart-header-name { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 800; color: #fff; }
-    .chart-header-sub { display: flex; align-items: baseline; gap: 6px; font-size: 12px; font-weight: 700; }
-    .chart-header-actions { display: flex; align-items: center; gap: 4px; }
-    .btn-icon { background: none; border: none; color: #cbd5e1; padding: 6px; cursor: pointer; }
-    
-    /* Chart Toolbar & Drawing Tools */
-    #chart-toolbar {
-      height: 38px;
-      background: #111827;
-      border-bottom: 1px solid var(--card-border);
-      display: flex;
-      align-items: center;
-      padding: 0 8px;
-      gap: 5px;
-      overflow-x: auto;
-      flex-shrink: 0;
-    }
-    .btn-tf {
-      background: #1f293d;
-      border: 1px solid #334155;
-      color: var(--text-muted);
-      font-size: 11px;
-      font-weight: 700;
-      padding: 3px 8px;
-      border-radius: 4px;
-      cursor: pointer;
-      white-space: nowrap;
-    }
-    .btn-tf.active { background: var(--primary); color: #fff; border-color: #60a5fa; }
-    .sep { width: 1px; height: 16px; background: #334155; margin: 0 2px; flex-shrink: 0; }
-    
-    /* Chart Viewport & Left Tool Column */
-    .chart-body-container { flex: 1; display: flex; position: relative; width: 100%; min-height: 220px; overflow: hidden; }
-    .chart-draw-toolbar {
-      width: 38px;
-      background: #0e1422;
-      border-right: 1px solid var(--card-border);
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 6px 0;
-      gap: 8px;
-      flex-shrink: 0;
-    }
-    .draw-btn {
-      width: 28px;
-      height: 28px;
-      background: none;
-      border: 1px solid transparent;
-      color: #94a3b8;
-      border-radius: 4px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
-      font-size: 12px;
-    }
-    .draw-btn.active { background: #1e293b; color: var(--primary-accent); border-color: var(--primary-accent); }
-    #chart-viewport { flex: 1; position: relative; width: 100%; height: 100%; }
-    #tradingview-chart-box { width: 100%; height: 100%; position: absolute; top: 0; left: 0; }
-    #chart-attribution {
-      position: absolute;
-      bottom: 4px;
-      left: 8px;
-      font-size: 8px;
-      color: #64748b;
-      pointer-events: none;
-      z-index: 5;
-    }
-    
-    /* Range Quick-Picker Bar (Reference Image 5) */
-    .range-bar {
-      height: 28px;
-      background: #111827;
-      border-top: 1px solid var(--card-border);
-      display: flex;
-      align-items: center;
-      justify-content: space-around;
-      padding: 0 8px;
-      flex-shrink: 0;
-    }
-    .range-btn {
-      background: none;
-      border: none;
-      color: #64748b;
-      font-size: 10px;
-      font-weight: 700;
-      cursor: pointer;
-      padding: 2px 6px;
-    }
-    .range-btn.active { color: var(--primary-accent); border-bottom: 2px solid var(--primary-accent); }
-    
-    /* Quick Action Order Bar */
-    .quick-trade-bar {
-      padding: 8px 12px;
-      background: #111827;
-      border-top: 1px solid var(--card-border);
-      display: flex;
-      gap: 10px;
-      flex-shrink: 0;
-    }
-    .btn-quick-buy {
-      flex: 1;
-      padding: 10px;
-      background: var(--green);
-      color: #fff;
-      font-size: 13px;
-      font-weight: 800;
-      border: none;
-      border-radius: 6px;
-      cursor: pointer;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-    .btn-quick-sell {
-      flex: 1;
-      padding: 10px;
-      background: var(--red);
-      color: #fff;
-      font-size: 13px;
-      font-weight: 800;
-      border: none;
-      border-radius: 6px;
-      cursor: pointer;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-    
-    /* Modal Order Ticket Bottom Sheet */
-    #order-sheet-modal {
-      display: none;
-      position: fixed;
-      inset: 0;
-      background: rgba(0, 0, 0, 0.6);
-      z-index: 50;
-      align-items: flex-end;
-    }
-    #order-sheet-modal.open { display: flex; }
-    .order-sheet-content {
-      width: 100%;
-      background: #111827;
-      border-top: 2px solid #232f48;
-      border-radius: 16px 16px 0 0;
-      padding: 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-      animation: slideUp 0.2s ease-out;
-    }
-    @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
-    .order-sheet-header { display: flex; justify-content: space-between; align-items: center; }
-    .sheet-title { font-size: 15px; font-weight: 800; }
-    .btn-close-sheet { background: none; border: none; color: #94a3b8; font-size: 18px; cursor: pointer; }
-    .side-toggle { display: flex; background: #1e293b; padding: 2px; border-radius: 6px; }
-    .btn-side { flex: 1; padding: 7px; border: none; font-size: 12px; font-weight: 800; border-radius: 4px; cursor: pointer; color: var(--text-muted); background: none; }
-    .btn-side.active-buy { background: var(--green); color: #fff; }
-    .btn-side.active-sell { background: var(--red); color: #fff; }
-    .order-controls { display: flex; gap: 8px; align-items: center; }
-    .input-group { flex: 1; display: flex; flex-direction: column; gap: 3px; }
-    .input-label { font-size: 10px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; }
-    .input-box { background: #1f293d; border: 1px solid #334155; color: #fff; font-size: 13px; font-weight: 700; padding: 8px; border-radius: 6px; outline: none; width: 100%; }
-    .order-summary-row { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--text-muted); }
-    .btn-submit-order { width: 100%; padding: 12px; border: none; border-radius: 6px; font-size: 13px; font-weight: 800; cursor: pointer; color: #fff; text-transform: uppercase; }
-    
-    /* Trades / Positions Screen (Reference Image 7) */
-    .trades-summary-card {
-      margin: 12px;
-      padding: 14px;
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      border-radius: 10px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-    .trades-summary-header { display: flex; justify-content: space-between; align-items: center; }
-    .trades-pnl-title { font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; }
-    .trades-pnl-val { font-size: 24px; font-weight: 900; }
-    .btn-exit-all { background: #0284c7; color: #fff; border: none; padding: 6px 14px; border-radius: 6px; font-size: 11px; font-weight: 800; cursor: pointer; }
-    .trades-meta-row { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); border-top: 1px solid #1e293b; padding-top: 8px; }
-    .subtabs { display: flex; background: #111827; border-bottom: 1px solid var(--card-border); }
-    .subtab-btn { flex: 1; padding: 10px; text-align: center; font-size: 12px; font-weight: 700; color: var(--text-muted); background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer; }
-    .subtab-btn.active { color: #38bdf8; border-bottom-color: #38bdf8; }
-    .pos-card { margin: 10px 12px; padding: 12px; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; display: flex; flex-direction: column; gap: 8px; }
-    .pos-card-header { display: flex; justify-content: space-between; align-items: center; }
-    .pos-inst { font-size: 14px; font-weight: 800; color: #fff; }
-    .pos-pnl { font-size: 15px; font-weight: 800; }
-    .pos-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; font-size: 11px; }
-    .pos-grid-cell { display: flex; flex-direction: column; gap: 2px; }
-    .pos-grid-label { font-size: 9px; color: var(--text-muted); text-transform: uppercase; }
-    .pos-grid-val { font-weight: 700; color: #e2e8f0; }
-    .btn-sqoff { margin-top: 4px; width: 100%; background: #334155; border: none; padding: 8px; color: #fff; font-size: 12px; font-weight: 700; border-radius: 6px; cursor: pointer; }
-    
-    /* Tools Screen (Reference Image 6) */
-    .tools-list { display: flex; flex-direction: column; gap: 8px; padding: 12px; }
-    .tool-card { padding: 14px; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; display: flex; align-items: center; justify-content: space-between; font-size: 14px; font-weight: 700; cursor: pointer; }
-    .tool-card:active { background: #1e293b; }
-    
-    /* Profile / Wallet Screen (Reference Image 4) */
-    .profile-card { margin: 12px; padding: 14px; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px; display: flex; align-items: center; gap: 14px; }
-    .avatar-circle { width: 44px; height: 44px; border-radius: 50%; background: #1e293b; border: 2px solid #38bdf8; display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 900; color: #38bdf8; }
-    .profile-info { display: flex; flex-direction: column; gap: 3px; }
-    .profile-email { font-size: 14px; font-weight: 700; color: #fff; }
-    .profile-badge { font-size: 10px; font-weight: 800; color: #ec4899; }
-    
-    .wallet-card { margin: 0 12px 12px 12px; padding: 14px; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px; display: flex; flex-direction: column; gap: 10px; }
-    .wallet-header { display: flex; justify-content: space-between; align-items: center; }
-    .wallet-title { font-size: 12px; font-weight: 800; color: #94a3b8; text-transform: uppercase; }
-    .wallet-total { font-size: 26px; font-weight: 900; color: #fff; }
-    .wallet-subrow { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-muted); border-top: 1px solid #1e293b; padding-top: 8px; }
-    .btn-wallet-reset { background: #7f1d1d; color: #fca5a5; border: 1px solid #991b1b; padding: 8px; border-radius: 6px; font-size: 11px; font-weight: 800; cursor: pointer; text-transform: uppercase; }
-    
-    .settings-section { margin: 0 12px 12px 12px; padding: 14px; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px; display: flex; flex-direction: column; gap: 10px; }
-    .settings-title { font-size: 12px; font-weight: 800; color: #38bdf8; text-transform: uppercase; }
-    .host-presets { display: flex; gap: 6px; }
-    .btn-preset { flex: 1; padding: 6px 4px; font-size: 10px; font-weight: 700; border: 1px solid #334155; border-radius: 6px; background: #1e293b; color: #cbd5e1; cursor: pointer; }
-    .btn-test-conn { background: var(--primary); color: #fff; border: none; padding: 9px; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer; }
-    
-    .empty-state { text-align: center; padding: 32px 16px; color: var(--text-muted); font-size: 12px; }
-  </style>
-  <script src="./lightweight-charts.standalone.production.js"></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Sikho Trading — Indian Paper Trading</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script src="lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
-  <div id="app-container">
-    <!-- 1. Top Exchange Status Dots (Reference Screenshots) -->
-    <div class="exchange-status-bar">
-      <span>BSE: <span class="dot dot-closed" id="dot-bse">●</span></span>
-      <span class="dot-sep">|</span>
-      <span>CDS: <span class="dot dot-closed" id="dot-cds">●</span></span>
-      <span class="dot-sep">|</span>
-      <span>MCX: <span class="dot dot-closed" id="dot-mcx">●</span></span>
-      <span class="dot-sep">|</span>
-      <span>NCDEX: <span class="dot dot-closed" id="dot-ncdex">●</span></span>
-      <span class="dot-sep">|</span>
-      <span>NSE: <span class="dot dot-closed" id="dot-nse">●</span></span>
-    </div>
+  <div id="app-root">
 
-    <!-- 2. Dual Indices Strip: NIFTY 50 & BANKNIFTY (Reference Screenshots) -->
-    <div class="indices-ticker-bar">
-      <div class="index-cell" onclick="selectSpotIndex()">
-        <span class="index-name">NIFTY</span>
-        <span class="index-val change-pos" id="ticker-nifty-val">24,350.50</span>
-        <span class="index-chg change-pos" id="ticker-nifty-chg">+125.50 (0.52%)</span>
+    <!-- ==================================================================
+         SCREEN 1: WELCOME / SIGN IN / SIGN UP / RECOVERY (Midnight #080C12)
+         ================================================================== -->
+    <div id="screen-auth" class="screen-view active">
+      <div class="auth-screen">
+        <div class="auth-brand-header">
+          <div class="brand-logo-mark">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+              <path d="M4 17L10 11L14 15L20 7" stroke="#C7F542" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M15 7H20V12" stroke="#C7F542" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <div class="auth-brand-title">Sikho Trading</div>
+          <div class="auth-paper-pill">
+            <span>●</span>
+            <span>Paper Trading • ₹1,00,000 Virtual Capital</span>
+          </div>
+        </div>
+
+        <div class="auth-card-white">
+          <div id="auth-card-heading" class="auth-card-title">Welcome back!</div>
+          <div id="auth-card-subtitle" class="auth-card-sub">Sign in to your isolated Indian market practice account</div>
+
+          <div id="auth-error-msg" class="auth-error-box"></div>
+
+          <form id="auth-form" onsubmit="event.preventDefault(); window.TZApp.submitAuthForm();">
+            <div id="auth-name-group" class="form-group" style="display:none;">
+              <label class="form-label" for="auth-input-name">Full Name</label>
+              <input id="auth-input-name" class="form-input" type="text" placeholder="e.g. Arjun Mehta" autocomplete="name" />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="auth-input-email">Email Address</label>
+              <input id="auth-input-email" class="form-input" type="email" placeholder="you@example.com" autocomplete="email" />
+            </div>
+
+            <div class="form-group">
+              <label id="auth-label-password" class="form-label" for="auth-input-password">Password</label>
+              <div style="position:relative; display:flex; align-items:center;">
+                <input id="auth-input-password" class="form-input" type="password" placeholder="Enter your password" autocomplete="current-password" style="padding-right:44px;" />
+                <button type="button" id="btn-toggle-password" onclick="window.TZApp.togglePasswordVisibility()" aria-label="Toggle password visibility" style="position:absolute; right:8px; background:none; border:none; padding:6px; cursor:pointer; color:#6B7280; display:flex; align-items:center; justify-content:center;">
+                  <svg id="eye-icon-open" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                    <circle cx="12" cy="12" r="3"></circle>
+                  </svg>
+                  <svg id="eye-icon-closed" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;">
+                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                    <line x1="1" y1="1" x2="23" y2="23"></line>
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <button type="submit" id="btn-auth-submit" class="btn-lime-primary">
+              <span id="btn-auth-submit-text">Sign In to Sikho Trading</span>
+            </button>
+          </form>
+
+          <div class="auth-divider">or continue with</div>
+
+          <button type="button" id="btn-google-signin" class="btn-google-official" onclick="window.TZApp.handleGoogleSignIn()">
+            <svg width="18" height="18" viewBox="0 0 24 24">
+              <path fill="#4285F4" d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.47c-.29 1.48-1.14 2.73-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82z"/>
+              <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96H1.29v3.09C3.26 21.3 7.31 24 12 24z"/>
+              <path fill="#FBBC05" d="M5.27 14.29c-.25-.72-.38-1.49-.38-2.29s.13-1.57.38-2.29V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.98-3.09z"/>
+              <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.98 3.09c.95-2.85 3.6-4.96 6.73-4.96z"/>
+            </svg>
+            <span id="btn-google-signin-text">Continue with Google</span>
+          </button>
+
+          <div class="auth-links-row">
+            <button type="button" id="btn-auth-toggle-mode" class="link-btn" onclick="window.TZApp.toggleAuthMode('register')">Create new account</button>
+            <button type="button" id="btn-auth-recover" class="link-btn" onclick="window.TZApp.toggleAuthMode('recover')">Trouble logging in?</button>
+          </div>
+        </div>
+
+        <div style="text-align:center; font-size:11.5px; color:var(--text-on-black-secondary);">
+          100% Simulated Paper Execution • Real NSE &amp; BSE Market Data
+        </div>
+
+        <div class="auth-server-status" onclick="window.TZApp.openServerConfigModal()" style="margin-top:14px; display:flex; align-items:center; justify-content:center; gap:8px; font-size:11.5px; color:#9CA3AF; cursor:pointer;">
+          <span id="auth-server-indicator" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#10B981;"></span>
+          <span id="auth-server-label">Server: 192.168.0.100:4000</span>
+          <span style="text-decoration:underline; color:#C7F542; margin-left:4px;">Change</span>
+        </div>
       </div>
-      <div class="index-cell">
-        <span class="index-name">BANKNIFTY</span>
-        <span class="index-val change-neg" id="ticker-bnifty-val">52,180.20</span>
-        <span class="index-chg change-neg" id="ticker-bnifty-chg">-115.40 (-0.22%)</span>
-      </div>
     </div>
 
-    <!-- 3. Dynamic Feed Status Banner -->
-    <div class="feed-banner-bar" id="demo-banner-bar">
-      <span id="demo-banner-text">SMARTAPI — INITIALIZING FEED</span>
-    </div>
+    <!-- ==================================================================
+         SCREEN 2: 4-DIGIT PIN & BIOMETRIC UNLOCK (newui4.jpeg inspired)
+         ================================================================== -->
+    <div id="screen-pin" class="screen-view">
+      <div class="auth-screen" style="align-items:center;">
+        <div class="auth-brand-header">
+          <div id="pin-user-avatar" class="avatar-circle-btn" style="width:52px;height:52px;font-size:20px;margin-bottom:12px;">A</div>
+          <div id="pin-user-greeting" class="auth-brand-title" style="font-size:20px;">Enter your Sikho Trading PIN</div>
+          <div id="pin-user-email" style="font-size:12.5px;color:var(--text-on-black-secondary);margin-top:4px;"></div>
+          <div class="pin-boxes-row">
+            <div id="pin-box-0" class="pin-box"></div>
+            <div id="pin-box-1" class="pin-box"></div>
+            <div id="pin-box-2" class="pin-box"></div>
+            <div id="pin-box-3" class="pin-box"></div>
+          </div>
+          <div id="pin-error-text" style="color:var(--negative-red);font-size:12.5px;min-height:18px;"></div>
+        </div>
 
-    <!-- Main Screens Viewport -->
-    <main>
-      <!-- TAB 1: WATCHLIST SCREEN (Reference Images 1, 3) -->
-      <section class="screen active" id="screen-watchlist">
-        <div class="watchlist-search">
-          <input type="text" id="watchlist-search-input" placeholder="Search instruments (NIFTY, BANKNIFTY, RELIANCE)..." oninput="filterWatchlist()">
-        </div>
-        <div class="pro-upgrade-banner">
-          <span>Upgrade to PRO for Multi-Watchlists</span>
-          <span style="color: #38bdf8;">PRO Tier 🛒</span>
-        </div>
-        <div id="watchlist-items-container">
-          <!-- Populated by JavaScript -->
-        </div>
-      </section>
-
-      <!-- TAB 2: CHART WORKSPACE (Reference Image 5) -->
-      <section class="screen" id="screen-chart">
-        <!-- Dedicated Header with Back button -->
-        <div class="chart-header-bar">
-          <button class="btn-chart-back" onclick="switchTab('watchlist')" title="Back to Watchlist">
-            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" width="22" height="22">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7" />
+        <div class="pin-keypad">
+          <button class="pin-key" onclick="window.TZApp.pressPinDigit('1')">1</button>
+          <button class="pin-key" onclick="window.TZApp.pressPinDigit('2')">2</button>
+          <button class="pin-key" onclick="window.TZApp.pressPinDigit('3')">3</button>
+          <button class="pin-key" onclick="window.TZApp.pressPinDigit('4')">4</button>
+          <button class="pin-key" onclick="window.TZApp.pressPinDigit('5')">5</button>
+          <button class="pin-key" onclick="window.TZApp.pressPinDigit('6')">6</button>
+          <button class="pin-key" onclick="window.TZApp.pressPinDigit('7')">7</button>
+          <button class="pin-key" onclick="window.TZApp.pressPinDigit('8')">8</button>
+          <button class="pin-key" onclick="window.TZApp.pressPinDigit('9')">9</button>
+          <button class="pin-key" style="font-size:12px;" onclick="window.TZApp.triggerBiometricUnlock()">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#C7F542" stroke-width="2">
+              <path d="M12 11c0 3.517-1.009 6.799-2.753 9.571m-3.44-2.04l.054-.09A13.916 13.916 0 008 11a4 4 0 118 0c0 1.017-.07 2.019-.203 3m-2.118 6.844A21.88 21.88 0 0015.171 17m3.839 1.132c.645-2.266.99-4.659.99-7.132A8 8 0 008 4.07M3 15.364c.64-1.319 1-2.8 1-4.364 0-1.457.39-2.823 1.07-4"/>
             </svg>
           </button>
-          <div class="chart-header-title">
-            <div class="chart-header-name">
-              <span id="chart-sym-title">NIFTY 50</span>
-              <span class="inst-badge" id="chart-exch-badge">NSE</span>
+          <button class="pin-key" onclick="window.TZApp.pressPinDigit('0')">0</button>
+          <button class="pin-key" onclick="window.TZApp.pressPinBackspace()">⌫</button>
+        </div>
+
+        <div style="display:flex;gap:20px;margin-top:12px;">
+          <button class="link-btn" style="color:var(--accent-lime);" onclick="window.TZApp.forgotPinRecovery()">Forgot PIN?</button>
+          <button class="link-btn" style="color:var(--text-on-black-secondary);" onclick="window.TZApp.signOut()">Switch account</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================================================================
+         SCREEN 3: MAIN 5-TAB APPLICATION SHELL
+         ================================================================== -->
+    <div id="screen-main" class="screen-view">
+      <!-- Top Dark Header -->
+      <header class="top-dark-header">
+        <div class="header-row-main">
+          <div class="brand-Lockup">
+            <div class="brand-logo-mark" style="width:32px;height:32px;border-radius:9px;margin:0;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                <path d="M4 17L10 11L14 15L20 7" stroke="#C7F542" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
             </div>
-            <div class="chart-header-sub">
-              <span id="chart-ltp-disp" class="change-pos">₹24,350.50</span>
-              <span id="chart-chg-disp" class="change-pos">+125.50 (0.52%)</span>
+            <div>
+              <div style="display:flex;align-items:center;gap:6px;">
+                <span class="brand-title-sm">Sikho Trading</span>
+                <span class="paper-badge-header">PAPER</span>
+              </div>
+              <div id="header-provider-label" style="font-size:10.5px;color:var(--text-on-black-secondary);">Upstox V3 • Virtual Funds</div>
             </div>
           </div>
-          <div class="chart-header-actions">
-            <button class="btn-icon" onclick="loadCandles()" title="Refresh Chart">
-              <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" width="18" height="18"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+
+          <div class="header-actions-right">
+            <button class="search-pill-trigger" onclick="window.TZApp.openSearchModal()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+              </svg>
+              <span>Search stocks, F&amp;O...</span>
+            </button>
+            <button id="header-avatar-btn" class="avatar-circle-btn" onclick="window.TZApp.switchMainTab('profile')">T</button>
+          </div>
+        </div>
+      </header>
+
+      <!-- Persistent Benchmark Index Strip -->
+      <div id="benchmark-index-strip" class="index-strip-bar"></div>
+
+      <!-- TAB 1: MARKETS (Stocks | F&O | Commodities) -->
+      <main id="tab-explore" class="white-content-scroll">
+        <div class="explore-mode-bar">
+          <div class="segmented-pill-group">
+            <button id="btn-explore-stocks" class="seg-pill-btn active" onclick="window.TZApp.setExploreCategory('STOCKS')">Stocks</button>
+            <button id="btn-explore-fno" class="seg-pill-btn" onclick="window.TZApp.setExploreCategory('FNO')">F&amp;O</button>
+            <button id="btn-explore-commodities" class="seg-pill-btn" onclick="window.TZApp.setExploreCategory('COMMODITIES')">Commodities</button>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:10.5px;color:var(--text-on-white-secondary);font-weight:600;">VIRTUAL AVAILABLE</div>
+            <div id="explore-avail-balance" class="tabular-nums" style="font-size:13.5px;font-weight:700;color:var(--text-on-white-primary);">₹1,00,000.00</div>
+          </div>
+        </div>
+
+        <!-- Stocks Mode View -->
+        <div id="explore-stocks-view">
+          <div id="stocks-sector-chips" class="filter-chips-scroll">
+            <button class="filter-chip active" onclick="window.TZApp.filterExploreStocks('ALL', this)">All NSE Equities</button>
+            <button class="filter-chip" onclick="window.TZApp.filterExploreStocks('BANK', this)">Banking &amp; Finance</button>
+            <button class="filter-chip" onclick="window.TZApp.filterExploreStocks('IT', this)">IT &amp; Tech</button>
+            <button class="filter-chip" onclick="window.TZApp.filterExploreStocks('ENERGY', this)">Energy &amp; Metal</button>
+            <button class="filter-chip" onclick="window.TZApp.filterExploreStocks('AUTO', this)">Auto &amp; Consumer</button>
+          </div>
+          <div class="section-header-white">
+            <div>
+              <div class="section-title-dark">NSE Cash Equities</div>
+              <div class="section-sub-dark">Tap any stock for full-screen chart or Intraday / Delivery paper order</div>
+            </div>
+            <button class="link-btn" style="font-size:12px;" onclick="window.TZApp.openSearchModal('EQUITY_STOCK')">Browse all 2,750+</button>
+          </div>
+          <div id="explore-stocks-list"></div>
+        </div>
+
+        <!-- F&O Mode View (newui6.jpeg inspired) -->
+        <div id="explore-fno-view" style="display:none;">
+          <div class="section-header-white">
+            <div>
+              <div class="section-title-dark">Index Futures &amp; Option Chains</div>
+              <div class="section-sub-dark">Select an index for chart or tap the chain icon for CE/PE strikes</div>
+            </div>
+          </div>
+          <div id="explore-fno-indices-list"></div>
+
+          <div class="section-header-white" style="margin-top:8px;">
+            <div>
+              <div class="section-title-dark">Top F&amp;O Stock Underlyings</div>
+              <div class="section-sub-dark">Active Futures &amp; Options contracts from exchange master</div>
+            </div>
+            <button class="link-btn" style="font-size:12px;" onclick="window.TZApp.openSearchModal('FUTIDX')">Search F&amp;O</button>
+          </div>
+          <div id="explore-fno-stocks-list"></div>
+        </div>
+
+        <!-- Commodities Mode View (MCX Official Specifications & Evening Session) -->
+        <div id="explore-commodities-view" style="display:none;">
+          <div id="commodities-category-chips" class="filter-chips-scroll">
+            <button class="filter-chip active" onclick="window.TZApp.filterCommodities('ALL', this)">All MCX Contracts</button>
+            <button class="filter-chip" onclick="window.TZApp.filterCommodities('METALS', this)">Metals (Gold, Silver, Base)</button>
+            <button class="filter-chip" onclick="window.TZApp.filterCommodities('ENERGY', this)">Energy (Crude, NatGas)</button>
+            <button class="filter-chip" onclick="window.TZApp.filterCommodities('AGRICULTURE', this)">Agri (Cotton, Mentha)</button>
+          </div>
+          <div class="section-header-white">
+            <div>
+              <div class="section-title-dark">MCX Commodity Derivatives</div>
+              <div class="section-sub-dark">Official lot sizes, quotation units &amp; evening trading (09:00 - 23:30/23:55 IST)</div>
+            </div>
+            <button class="link-btn" style="font-size:12px;" onclick="window.TZApp.openCommoditySpecsModal()">Specs Matrix</button>
+          </div>
+          <div id="explore-commodities-list"></div>
+        </div>
+      </main>
+
+      <!-- TAB 2: WATCHLISTS -->
+      <main id="tab-watchlists" class="white-content-scroll" style="display:none;">
+        <div class="explore-mode-bar">
+          <div>
+            <div class="section-title-dark">My Watchlists</div>
+            <div class="section-sub-dark">Track live NSE, NFO &amp; BSE instruments</div>
+          </div>
+          <button class="btn-lime-primary" style="width:auto;min-height:36px;padding:0 14px;font-size:12.5px;" onclick="window.TZApp.openSearchModal()">+ Add Symbol</button>
+        </div>
+        <div id="watchlist-items-container"></div>
+      </main>
+
+      <!-- TAB 3: PORTFOLIO (Holdings | Positions | History) -->
+      <main id="tab-portfolio" class="white-content-scroll" style="display:none;">
+        <div class="dark-summary-card">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+            <div>
+              <div class="summary-label">TOTAL VIRTUAL EQUITY</div>
+              <div id="port-total-equity" class="summary-big-val">₹1,00,000.00</div>
+            </div>
+            <span class="paper-badge-header">PRACTICE PORTFOLIO</span>
+          </div>
+          <div class="summary-grid-2">
+            <div>
+              <div class="summary-label">Open MTM P&amp;L</div>
+              <div id="port-unrealized-pnl" class="summary-sub-val">₹0.00</div>
+            </div>
+            <div>
+              <div class="summary-label">Realized P&amp;L</div>
+              <div id="port-realized-pnl" class="summary-sub-val">₹0.00</div>
+            </div>
+            <div>
+              <div class="summary-label">Available Margin</div>
+              <div id="port-avail-margin" class="summary-sub-val">₹1,00,000.00</div>
+            </div>
+            <div>
+              <div class="summary-label">Locked Margin / Cash</div>
+              <div id="port-locked-margin" class="summary-sub-val">₹0.00</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="explore-mode-bar">
+          <div class="segmented-pill-group">
+            <button id="btn-port-positions" class="seg-pill-btn active" onclick="window.TZApp.setPortfolioSubTab('POSITIONS')">Positions</button>
+            <button id="btn-port-holdings" class="seg-pill-btn" onclick="window.TZApp.setPortfolioSubTab('HOLDINGS')">Holdings</button>
+            <button id="btn-port-history" class="seg-pill-btn" onclick="window.TZApp.setPortfolioSubTab('HISTORY')">Closed</button>
+          </div>
+        </div>
+
+        <div id="portfolio-list-container"></div>
+      </main>
+
+      <!-- TAB 4: ORDERS (Pending | Executed | Cancelled | Rejected) -->
+      <main id="tab-orders" class="white-content-scroll" style="display:none;">
+        <div class="filter-chips-scroll">
+          <button class="filter-chip active" onclick="window.TZApp.setOrdersFilter('ALL', this)">All Orders</button>
+          <button class="filter-chip" onclick="window.TZApp.setOrdersFilter('PENDING', this)">Pending</button>
+          <button class="filter-chip" onclick="window.TZApp.setOrdersFilter('EXECUTED', this)">Executed</button>
+          <button class="filter-chip" onclick="window.TZApp.setOrdersFilter('CANCELLED', this)">Cancelled</button>
+          <button class="filter-chip" onclick="window.TZApp.setOrdersFilter('REJECTED', this)">Rejected</button>
+        </div>
+        <div id="orders-list-container"></div>
+      </main>
+
+      <!-- TAB 5: PROFILE & VIRTUAL WALLET (newui1.jpeg inspired) -->
+      <main id="tab-profile" class="white-content-scroll" style="display:none;">
+        <div style="background:var(--bg-midnight);color:var(--text-on-black-primary);padding:20px 16px 22px;">
+          <div style="display:flex;align-items:center;gap:14px;">
+            <div id="prof-avatar-circle" class="avatar-circle-btn" style="width:54px;height:54px;font-size:22px;">T</div>
+            <div>
+              <div id="prof-user-name" style="font-size:18px;font-weight:700;">Trader</div>
+              <div id="prof-user-email" style="font-size:12.5px;color:var(--text-on-black-secondary);margin-top:2px;"></div>
+              <div class="auth-paper-pill" style="margin-top:6px;">Paper Trading Account • Isolated</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="dark-summary-card">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div>
+              <div class="summary-label">VIRTUAL PRACTICE WALLET</div>
+              <div id="prof-cash-balance" class="summary-big-val">₹1,00,000.00</div>
+            </div>
+            <button class="btn-lime-primary" style="width:auto;min-height:38px;padding:0 14px;font-size:12.5px;" onclick="window.TZApp.resetVirtualWallet()">
+              Reset to ₹1L
+            </button>
+          </div>
+          <div class="summary-grid-2">
+            <div>
+              <div class="summary-label">Available to Trade</div>
+              <div id="prof-avail-balance" class="summary-sub-val">₹1,00,000.00</div>
+            </div>
+            <div>
+              <div class="summary-label">Margin Utilized</div>
+              <div id="prof-locked-balance" class="summary-sub-val">₹0.00</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-header-white">
+          <div class="section-title-dark">Security &amp; App Lock</div>
+        </div>
+        <div class="instrument-row-white" onclick="window.TZApp.promptSetupPin()">
+          <div class="inst-left">
+            <div class="inst-badge-icon">PIN</div>
+            <div class="inst-meta">
+              <div class="inst-symbol">4-Digit Sikho Trading PIN &amp; Biometric</div>
+              <div id="prof-pin-status-sub" class="inst-name-sub">Protect your practice session on this phone</div>
+            </div>
+          </div>
+          <div style="font-weight:700;font-size:12.5px;color:var(--text-on-white-primary);">Configure ➔</div>
+        </div>
+
+        <div class="section-header-white">
+          <div class="section-title-dark">Market Data &amp; Audit Ledger</div>
+        </div>
+        <div class="instrument-row-white">
+          <div class="inst-left">
+            <div class="inst-badge-icon">FEED</div>
+            <div class="inst-meta">
+              <div id="prof-provider-title" class="inst-symbol">Primary Provider: Upstox V3</div>
+              <div id="prof-provider-sub" class="inst-name-sub">Checking feed status...</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="instrument-row-white" onclick="window.TZApp.loadAndShowLedger()">
+          <div class="inst-left">
+            <div class="inst-badge-icon">LOG</div>
+            <div class="inst-meta">
+              <div class="inst-symbol">Account Audit Ledger</div>
+              <div class="inst-name-sub">View every virtual grant, P&amp;L settlement &amp; charge</div>
+            </div>
+          </div>
+          <div style="font-weight:700;font-size:12.5px;">View ➔</div>
+        </div>
+
+        <div class="instrument-row-white" onclick="window.TZApp.openTradeJournalModal()">
+          <div class="inst-left">
+            <div class="inst-badge-icon">JRN</div>
+            <div class="inst-meta">
+              <div class="inst-symbol">Trade Journal &amp; Review</div>
+              <div class="inst-name-sub">Log trade rationale, review performance analytics &amp; notes</div>
+            </div>
+          </div>
+          <div style="font-weight:700;font-size:12.5px;">Open ➔</div>
+        </div>
+
+        <div id="prof-ledger-box" style="display:none;padding:12px 16px;background:var(--surface-light-secondary);border-bottom:1px solid var(--surface-light-border);"></div>
+
+        <div style="padding:14px 16px 0 16px;">
+          <button onclick="window.TZApp.openAdPrivacyOptions()" style="width:100%;min-height:44px;border-radius:12px;border:1px solid var(--surface-light-border);background:var(--surface-light-secondary);color:var(--text-on-white-primary);font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:space-between;padding:0 14px;cursor:pointer;">
+            <span style="display:flex;align-items:center;gap:8px;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+              <span>Privacy &amp; Ad Consent Settings</span>
+            </span>
+            <span style="font-size:12px;color:var(--text-on-white-secondary);">Manage ➔</span>
+          </button>
+        </div>
+
+        <div style="padding:16px 16px 20px 16px;">
+          <button onclick="window.TZApp.signOut()" style="width:100%;min-height:46px;border-radius:12px;border:1.5px solid var(--negative-red);background:var(--bg-white);color:var(--negative-red);font-size:14px;font-weight:700;cursor:pointer;">
+            Sign Out of Sikho Trading
+          </button>
+        </div>
+      </main>
+
+      <!-- Native Banner Ad Reserved Space (Directly above Bottom Navigation) -->
+      <div id="native-ad-banner-spacer" style="display:none;width:100%;height:50px;background:#080C12;border-top:1px solid rgba(255,255,255,0.06);flex-shrink:0;"></div>
+
+      <!-- Bottom Navigation Bar (5 Tabs, SVG Icons) -->
+      <nav class="bottom-nav-bar">
+        <button id="nav-btn-explore" class="nav-tab-btn active" onclick="window.TZApp.switchMainTab('explore')">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/>
+          </svg>
+          <span>Markets</span>
+        </button>
+        <button id="nav-btn-watchlists" class="nav-tab-btn" onclick="window.TZApp.switchMainTab('watchlists')">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
+          </svg>
+          <span>Watchlists</span>
+        </button>
+        <button id="nav-btn-portfolio" class="nav-tab-btn" onclick="window.TZApp.switchMainTab('portfolio')">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
+          </svg>
+          <span>Portfolio</span>
+        </button>
+        <button id="nav-btn-orders" class="nav-tab-btn" onclick="window.TZApp.switchMainTab('orders')">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+          </svg>
+          <span>Orders</span>
+        </button>
+        <button id="nav-btn-profile" class="nav-tab-btn" onclick="window.TZApp.switchMainTab('profile')">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+          </svg>
+          <span>Profile</span>
+        </button>
+      </nav>
+    </div>
+
+    <!-- ==================================================================
+         FULL-SCREEN CHART WORKSPACE (Uninterrupted Midnight #080C12)
+         ================================================================== -->
+    <div id="screen-chart" class="chart-overlay-screen">
+      <div class="chart-top-bar">
+        <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+          <button class="chart-back-btn" onclick="window.TZApp.closeChartWorkspace()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+              <path d="M19 12H5M12 19l-7-7 7-7"/>
+            </svg>
+          </button>
+          <div style="min-width:0;">
+            <div style="display:flex;align-items:center;gap:6px;">
+              <span id="chart-sym-title" style="font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">NIFTY 50</span>
+              <span id="chart-seg-badge" class="paper-badge-header">INDEX</span>
+            </div>
+            <div style="display:flex;align-items:baseline;gap:8px;margin-top:1px;">
+              <span id="chart-ltp-display" class="tabular-nums" style="font-size:14px;font-weight:700;">—</span>
+              <span id="chart-chg-display" class="tabular-nums" style="font-size:11.5px;font-weight:600;">—</span>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:6px;">
+          <button id="chart-btn-option-chain" class="tool-action-pill" onclick="window.TZApp.openOptionChainFromChart()">
+            <span>Option Chain</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Timeframe Interval Strip + Indicators & Drawings Triggers -->
+      <div class="chart-controls-strip">
+        <div style="display:flex;gap:4px;">
+          <button class="tf-pill" data-tf="1m" onclick="window.TZApp.selectTimeframe('1m')">1m</button>
+          <button class="tf-pill" data-tf="3m" onclick="window.TZApp.selectTimeframe('3m')">3m</button>
+          <button class="tf-pill active" data-tf="5m" onclick="window.TZApp.selectTimeframe('5m')">5m</button>
+          <button class="tf-pill" data-tf="15m" onclick="window.TZApp.selectTimeframe('15m')">15m</button>
+          <button class="tf-pill" data-tf="30m" onclick="window.TZApp.selectTimeframe('30m')">30m</button>
+          <button class="tf-pill" data-tf="1h" onclick="window.TZApp.selectTimeframe('1h')">1h</button>
+          <button class="tf-pill" data-tf="1D" onclick="window.TZApp.selectTimeframe('1D')">1D</button>
+        </div>
+        <div style="display:flex;gap:6px;">
+          <button id="btn-chart-indicators" class="tool-action-pill" onclick="window.TZApp.openIndicatorsModal()">
+            <span>fx</span>
+          </button>
+          <button id="btn-chart-drawings" class="tool-action-pill" onclick="window.TZApp.openDrawingsModal()">
+            <span id="active-drawing-label">✎</span>
+          </button>
+          <button id="btn-chart-alerts" class="tool-action-pill" onclick="window.TZApp.openPriceAlertModal()">
+            <span>🔔</span>
+          </button>
+          <button id="btn-chart-replay" class="tool-action-pill" onclick="window.TZApp.toggleReplayMode()">
+            <span>⏱ Replay</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Historical Replay Controls Bar (Active in Replay Mode) -->
+      <div id="chart-replay-bar" class="replay-control-bar" style="display:none;">
+        <div class="replay-badge">REPLAY MODE • SIMULATED</div>
+        <div class="replay-actions">
+          <button class="tool-action-pill" onclick="window.TZApp.replayStepBackward()">◀ Prev</button>
+          <button id="btn-replay-playpause" class="tool-action-pill" onclick="window.TZApp.replayTogglePlay()">▶ Play</button>
+          <button class="tool-action-pill" onclick="window.TZApp.replayStepForward()">Next ▶</button>
+          <button class="tool-action-pill" style="color:var(--negative-red);" onclick="window.TZApp.exitReplayMode()">Exit ✕</button>
+        </div>
+      </div>
+
+      <!-- Main Chart Canvas + Touch-Arbitrated Vector Drawing Layer -->
+      <div class="chart-stage-wrap">
+        <div id="chart-ohlc-legend" class="ohlc-floating-legend">O — H — L — C —</div>
+        <div id="tv-main-chart"></div>
+        <svg id="drawing-svg-layer"></svg>
+        <button id="btn-go-latest" class="go-latest-fab" onclick="window.TZApp.scrollToLatestBar()">
+          <span>Go to latest ➔</span>
+        </button>
+      </div>
+
+      <!-- Range Preset Strip (Separated from Timeframe Interval) -->
+      <div class="range-footer-strip">
+        <div style="display:flex;gap:4px;overflow-x:auto;">
+          <button class="tf-pill" data-range="1D" onclick="window.TZApp.selectRangePreset('1D')">1D</button>
+          <button class="tf-pill" data-range="5D" onclick="window.TZApp.selectRangePreset('5D')">5D</button>
+          <button class="tf-pill" data-range="1M" onclick="window.TZApp.selectRangePreset('1M')">1M</button>
+          <button class="tf-pill" data-range="3M" onclick="window.TZApp.selectRangePreset('3M')">3M</button>
+          <button class="tf-pill" data-range="6M" onclick="window.TZApp.selectRangePreset('6M')">6M</button>
+          <button class="tf-pill" data-range="1Y" onclick="window.TZApp.selectRangePreset('1Y')">1Y</button>
+          <button class="tf-pill" data-range="ALL" onclick="window.TZApp.selectRangePreset('ALL')">All</button>
+        </div>
+        <div id="chart-candle-stats" style="font-size:10.5px;color:var(--text-on-black-secondary);white-space:nowrap;"></div>
+      </div>
+
+      <!-- Bottom Trade Bar -->
+      <div id="chart-bottom-trade-bar" class="chart-trade-bar"></div>
+    </div>
+
+    <!-- ==================================================================
+         MODAL 1: ALL INDICES SCREEN (newui2.jpeg inspired)
+         ================================================================== -->
+    <div id="modal-all-indices" class="chart-overlay-screen" style="background:var(--bg-white);color:var(--text-on-white-primary);">
+      <div class="top-dark-header" style="display:flex;align-items:center;justify-content:space-between;">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <button class="chart-back-btn" onclick="window.TZApp.closeAllIndicesModal()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+              <path d="M19 12H5M12 19l-7-7 7-7"/>
+            </svg>
+          </button>
+          <div>
+            <div style="font-size:16px;font-weight:700;color:var(--text-on-black-primary);">All Indian Indices</div>
+            <div style="font-size:11.5px;color:var(--text-on-black-secondary);">NSE &amp; BSE Benchmark Indices</div>
+          </div>
+        </div>
+      </div>
+      <div style="padding:10px 16px;background:var(--bg-white);border-bottom:1px solid var(--surface-light-border);">
+        <input id="all-indices-search" class="form-input" type="text" placeholder="Search NIFTY 50, SENSEX, BANKEX, IT, Pharma..." oninput="window.TZApp.renderAllIndicesList()" />
+      </div>
+      <div id="all-indices-list-container" class="white-content-scroll"></div>
+    </div>
+
+    <!-- ==================================================================
+         MODAL 2: OPTION CHAIN SCREEN (CE | Strike | PE)
+         ================================================================== -->
+    <div id="modal-option-chain" class="chart-overlay-screen" style="background:var(--bg-white);color:var(--text-on-white-primary);">
+      <div class="top-dark-header">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <button class="chart-back-btn" onclick="window.TZApp.closeOptionChainModal()">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+                <path d="M19 12H5M12 19l-7-7 7-7"/>
+              </svg>
+            </button>
+            <div>
+              <div id="oc-title" style="font-size:16px;font-weight:700;color:var(--text-on-black-primary);">NIFTY Option Chain</div>
+              <div id="oc-spot-subtitle" style="font-size:12px;color:var(--accent-lime);">Spot: —</div>
+            </div>
+          </div>
+          <select id="oc-underlying-select" onchange="window.TZApp.loadOptionChain(this.value)" style="background:var(--surface-dark-raised);color:var(--text-on-black-primary);border:1px solid var(--surface-dark-border);border-radius:8px;padding:6px 10px;font-weight:700;font-size:12.5px;">
+            <option value="NIFTY">NIFTY 50</option>
+            <option value="BANKNIFTY">BANKNIFTY</option>
+            <option value="SENSEX">SENSEX</option>
+            <option value="FINNIFTY">FINNIFTY</option>
+            <option value="MIDCPNIFTY">MIDCPNIFTY</option>
+            <option value="BANKEX">BANKEX</option>
+            <option value="RELIANCE">RELIANCE</option>
+            <option value="HDFCBANK">HDFCBANK</option>
+            <option value="TCS">TCS</option>
+            <option value="ICICIBANK">ICICIBANK</option>
+          </select>
+        </div>
+        <div id="oc-expiry-pills" class="filter-chips-scroll" style="background:transparent;border:none;padding:10px 0 2px;"></div>
+      </div>
+
+      <div class="white-content-scroll" style="padding-bottom:0;">
+        <div id="oc-provenance-bar" style="padding:6px 16px;background:var(--surface-light-secondary);font-size:11px;color:var(--text-on-white-secondary);border-bottom:1px solid var(--surface-light-border);display:flex;justify-content:space-between;">
+          <span id="oc-provenance-mode">Delivery: POLLED</span>
+          <span id="oc-provenance-note">OI is null when unavailable (never assumed 0)</span>
+        </div>
+        <table class="oc-table">
+          <thead>
+            <tr>
+              <th>CALL OI</th>
+              <th>CALL LTP</th>
+              <th>STRIKE</th>
+              <th>PUT LTP</th>
+              <th>PUT OI</th>
+            </tr>
+          </thead>
+          <tbody id="oc-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ==================================================================
+         MODAL 3: GLOBAL INSTRUMENT SEARCH & FILTER DRAWER
+         ================================================================== -->
+    <div id="modal-search" class="chart-overlay-screen" style="background:var(--bg-white);color:var(--text-on-white-primary);">
+      <div class="top-dark-header">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <button class="chart-back-btn" onclick="window.TZApp.closeSearchModal()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+              <path d="M19 12H5M12 19l-7-7 7-7"/>
+            </svg>
+          </button>
+          <input id="global-search-input" class="form-input" style="height:40px;min-height:40px;" type="text" placeholder="Search symbol, futures, 24000 CE..." oninput="window.TZApp.runGlobalSearch()" />
+        </div>
+        <div class="filter-chips-scroll" style="background:transparent;border:none;padding:10px 0 2px;">
+          <button class="filter-chip active" onclick="window.TZApp.setSearchSegment('', this)">All</button>
+          <button class="filter-chip" onclick="window.TZApp.setSearchSegment('EQUITY_STOCK', this)">Equities</button>
+          <button class="filter-chip" onclick="window.TZApp.setSearchSegment('FUTIDX', this)">Index Futures</button>
+          <button class="filter-chip" onclick="window.TZApp.setSearchSegment('OPTIDX', this)">Index Options</button>
+          <button class="filter-chip" onclick="window.TZApp.setSearchSegment('FUTSTK', this)">Stock Futures</button>
+          <button class="filter-chip" onclick="window.TZApp.setSearchSegment('COMMODITY', this)">Commodities (MCX)</button>
+          <button class="filter-chip" onclick="window.TZApp.setSearchSegment('INDEX_SPOT', this)">Indices</button>
+        </div>
+      </div>
+      <div id="search-results-container" class="white-content-scroll"></div>
+    </div>
+
+    <!-- ==================================================================
+         MODAL 4: WHITE ORDER ENTRY BOTTOM SHEET
+         ================================================================== -->
+    <div id="modal-order-ticket" class="modal-backdrop" onclick="if(event.target===this) window.TZApp.closeOrderTicket()">
+      <div class="white-bottom-sheet">
+        <div class="sheet-handle"></div>
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;">
+          <div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <span id="ticket-symbol" style="font-size:17px;font-weight:700;">NIFTY FUT</span>
+              <span id="ticket-exchange-badge" class="tag-exch">NFO</span>
+            </div>
+            <div id="ticket-ltp-sub" class="tabular-nums" style="font-size:13px;color:var(--text-on-white-secondary);margin-top:2px;">LTP: —</div>
+          </div>
+          <div class="segmented-pill-group">
+            <button id="ticket-side-buy" class="seg-pill-btn active" onclick="window.TZApp.setOrderSide('BUY')">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:-2px;margin-right:4px;"><path d="M21 7.5c-.8-.5-2.2-.5-3.3.3l-1.9 1.5C14.7 8.5 13.4 8 12 8s-2.7.5-3.8 1.3L6.3 7.8C5.2 7 3.8 7 3 7.5 1.9 8.2 2 9.5 2.5 11l1.5 4.5c.6 1.8 2.2 3 4.1 3.2L9 20h6l.9-1.3c1.9-.2 3.5-1.4 4.1-3.2L21.5 11c.5-1.5.6-2.8-.5-3.5zm-5.5 6.5c-.8 0-1.5-.7-1.5-1.5s.7-1.5 1.5-1.5 1.5.7 1.5 1.5-.7 1.5-1.5 1.5zm-7 0c-.8 0-1.5-.7-1.5-1.5s.7-1.5 1.5-1.5 1.5.7 1.5 1.5-.7 1.5-1.5 1.5z"/></svg>
+              <span>BUY (Long)</span>
+            </button>
+            <button id="ticket-side-sell" class="seg-pill-btn" onclick="window.TZApp.setOrderSide('SELL')">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:-2px;margin-right:4px;"><path d="M4.5 9c0-1.9 1.6-3.5 3.5-3.5.7 0 1.4.2 2 .6C10.7 5.4 11.3 5 12 5s1.3.4 2 1.1c.6-.4 1.3-.6 2-.6 1.9 0 3.5 1.6 3.5 3.5 0 .8-.3 1.5-.8 2.1.2.6.3 1.3.3 1.9 0 3.3-3.1 6-7 6s-7-2.7-7-6c0-.6.1-1.3.3-1.9-.5-.6-.8-1.3-.8-2.1zm4.5 4c-.8 0-1.5.7-1.5 1.5s.7 1.5 1.5 1.5 1.5-.7 1.5-1.5-.7-1.5-1.5-1.5zm6 0c-.8 0-1.5.7-1.5 1.5s.7 1.5 1.5 1.5 1.5-.7 1.5-1.5-.7-1.5-1.5-1.5z"/></svg>
+              <span>SELL (Short)</span>
             </button>
           </div>
         </div>
 
-        <!-- Timeframe & Indicator Selector Toolbar -->
-        <div id="chart-toolbar">
-          <button class="btn-tf" id="tf-1m" onclick="setTimeframe('1m')">1M</button>
-          <button class="btn-tf" id="tf-3m" onclick="setTimeframe('3m')">3M</button>
-          <button class="btn-tf active" id="tf-5m" onclick="setTimeframe('5m')">5M</button>
-          <button class="btn-tf" id="tf-15m" onclick="setTimeframe('15m')">15M</button>
-          <button class="btn-tf" id="tf-30m" onclick="setTimeframe('30m')">30M</button>
-          <button class="btn-tf" id="tf-1h" onclick="setTimeframe('1h')">1H</button>
-          <button class="btn-tf" id="tf-1D" onclick="setTimeframe('1D')">1D</button>
-          <div class="sep"></div>
-          <button class="btn-tf" id="btn-ind-ema" onclick="toggleEma()">EMA 20</button>
-          <button class="btn-tf" id="btn-ind-sma" onclick="toggleSma()">SMA 50</button>
-        </div>
-
-        <!-- Canvas Body with Left Drawing Toolbar -->
-        <div class="chart-body-container">
-          <div class="chart-draw-toolbar">
-            <button class="draw-btn active" id="tool-cross" onclick="setDrawTool('CROSS')" title="Crosshair">✛</button>
-            <button class="draw-btn" id="tool-hline" onclick="setDrawTool('HLINE')" title="Horizontal Price Level">―</button>
-            <button class="draw-btn" id="tool-measure" onclick="setDrawTool('MEASURE')" title="Measure Range">⤢</button>
-            <button class="draw-btn" id="tool-trash" onclick="clearDrawings()" title="Clear Lines">🗑</button>
-          </div>
-          <div id="chart-viewport">
-            <div id="tradingview-chart-box"></div>
-            <div id="chart-attribution">TradingView Lightweight Charts™ (Apache-2.0 Attribution)</div>
+        <!-- Product Type Selector (Delivery vs Intraday / Margin) -->
+        <div class="form-group">
+          <label class="form-label">Product Type</label>
+          <div id="ticket-product-group" class="segmented-pill-group" style="width:100%;display:grid;grid-template-columns:1fr 1fr;">
+            <button id="ticket-prod-intraday" class="seg-pill-btn active" onclick="window.TZApp.setOrderProduct('INTRADAY')">Intraday (MIS 20%)</button>
+            <button id="ticket-prod-delivery" class="seg-pill-btn" onclick="window.TZApp.setOrderProduct('DELIVERY')">Delivery (CNC 100%)</button>
           </div>
         </div>
 
-        <!-- Range Quick-Picker Bar (Reference Image 5) -->
-        <div class="range-bar">
-          <button class="range-btn active" onclick="setRange('1D')">1D</button>
-          <button class="range-btn" onclick="setRange('5D')">5D</button>
-          <button class="range-btn" onclick="setRange('1M')">1M</button>
-          <button class="range-btn" onclick="setRange('3M')">3M</button>
-          <button class="range-btn" onclick="setRange('6M')">6M</button>
-          <button class="range-btn" onclick="setRange('1Y')">1Y</button>
-          <button class="range-btn" onclick="setRange('ALL')">All</button>
+        <!-- Order Type Selector -->
+        <div class="form-group">
+          <label class="form-label">Order Type</label>
+          <div class="segmented-pill-group" style="width:100%;display:grid;grid-template-columns:repeat(3,1fr);">
+            <button id="ticket-type-market" class="seg-pill-btn active" onclick="window.TZApp.setOrderType('MARKET')">Market</button>
+            <button id="ticket-type-limit" class="seg-pill-btn" onclick="window.TZApp.setOrderType('LIMIT')">Limit</button>
+            <button id="ticket-type-sl" class="seg-pill-btn" onclick="window.TZApp.setOrderType('STOP_MARKET')">Stop (SL-M)</button>
+          </div>
         </div>
 
-        <!-- Quick Buy/Sell Actions -->
-        <div class="quick-trade-bar">
-          <button class="btn-quick-buy" onclick="openOrderSheet('BUY')">BUY / LONG</button>
-          <button class="btn-quick-sell" onclick="openOrderSheet('SELL')">SELL / SHORT</button>
-        </div>
-      </section>
-
-      <!-- TAB 3: TRADES & POSITIONS SCREEN (Reference Image 7) -->
-      <section class="screen" id="screen-trades">
-        <div class="trades-summary-card">
-          <div class="trades-summary-header">
-            <div>
-              <div class="trades-pnl-title">Total Simulated P&L</div>
-              <div class="trades-pnl-val change-pos" id="total-pnl-disp">₹0.00</div>
+        <!-- Quantity & Lot Stepper -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+          <div class="form-group">
+            <label id="ticket-qty-label" class="form-label" for="ticket-input-qty">Quantity (Lot: 1)</label>
+            <div style="display:flex;gap:6px;">
+              <button class="pin-key" style="width:42px;height:46px;background:var(--surface-light-secondary);color:var(--text-on-white-primary);" onclick="window.TZApp.stepOrderQty(-1)">−</button>
+              <input id="ticket-input-qty" class="form-input tabular-nums" style="text-align:center;" type="number" value="1" oninput="window.TZApp.recalcOrderMarginPreview()" />
+              <button class="pin-key" style="width:42px;height:46px;background:var(--surface-light-secondary);color:var(--text-on-white-primary);" onclick="window.TZApp.stepOrderQty(1)">+</button>
             </div>
-            <button class="btn-exit-all" onclick="exitAllPositions()">Exit All</button>
           </div>
-          <div class="trades-meta-row">
-            <span>Used Margin: <strong id="trades-used-margin" style="color: #fff;">₹0.00</strong></span>
-            <span>Brokerage & Charges: <strong id="trades-charges" style="color: #94a3b8;">₹0.00</strong></span>
+
+          <div class="form-group">
+            <label id="ticket-price-label" class="form-label" for="ticket-input-price">Execution Price</label>
+            <input id="ticket-input-price" class="form-input tabular-nums" type="number" step="0.05" disabled placeholder="Market" oninput="window.TZApp.recalcOrderMarginPreview()" />
           </div>
         </div>
 
-        <div class="subtabs">
-          <button class="subtab-btn active" id="tab-btn-act" onclick="showTradeSubTab('ACT')">ACTIVE (<span id="pos-count">0</span>)</button>
-          <button class="subtab-btn" id="tab-btn-opn" onclick="showTradeSubTab('OPN')">OPEN ORDERS (<span id="ord-count">0</span>)</button>
-          <button class="subtab-btn" id="tab-btn-his" onclick="showTradeSubTab('HIS')">HISTORY</button>
-        </div>
-
-        <div id="subtab-positions-content">
-          <div class="empty-state" id="pos-empty">No active positions. Place a simulated trade on NIFTY to open position.</div>
-          <div id="positions-list"></div>
-        </div>
-
-        <div id="subtab-orders-content" style="display: none;">
-          <div class="empty-state" id="ord-empty">No pending limit orders.</div>
-          <div id="orders-list"></div>
-        </div>
-
-        <div id="subtab-history-content" style="display: none;">
-          <div class="empty-state" id="his-empty">No closed trades in this session.</div>
-          <div id="history-list"></div>
-        </div>
-      </section>
-
-      <!-- TAB 4: TOOLS SCREEN (Reference Image 6) -->
-      <section class="screen" id="screen-tools">
-        <div class="tools-list">
-          <div class="tool-card" onclick="alert('FII/DII Net Activity is available in PRO Tier.')">
-            <span>🏛️ FII / DII Institutional Flow</span>
-            <span style="color: #64748b;">›</span>
+        <!-- Optional SL / Target with dynamic Risk Calculator -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+          <div class="form-group">
+            <label class="form-label" for="ticket-input-sl">Stop Loss (Optional)</label>
+            <input id="ticket-input-sl" class="form-input tabular-nums" type="number" step="0.05" placeholder="SL Price" oninput="window.TZApp.recalcOrderMarginPreview()" />
           </div>
-          <div class="tool-card" onclick="alert('Algorithmic Recommendations available in PRO Tier.')">
-            <span>👑 Algorithmic Signals</span>
-            <span style="color: #64748b;">›</span>
-          </div>
-          <div class="tool-card" onclick="alert('Real-time Market Movers available in PRO Tier.')">
-            <span>📈 Market Movers & Top Gainers</span>
-            <span style="color: #64748b;">›</span>
-          </div>
-          <div class="tool-card" onclick="alert('Pre-Market Analysis active during 09:00 - 09:15 IST.')">
-            <span>⏱️ Pre-Market Session Data</span>
-            <span style="color: #64748b;">›</span>
-          </div>
-        </div>
-      </section>
-
-      <!-- TAB 5: PROFILE & WALLET SCREEN (Reference Image 4) -->
-      <section class="screen" id="screen-profile">
-        <div class="profile-card">
-          <div class="avatar-circle">T</div>
-          <div class="profile-info">
-            <span class="profile-email" id="user-email-disp">dev-phone-01@tradingzone</span>
-            <span class="profile-badge">FREE User • Paper Trading</span>
+          <div class="form-group">
+            <label class="form-label" for="ticket-input-target">Target (Optional)</label>
+            <input id="ticket-input-target" class="form-input tabular-nums" type="number" step="0.05" placeholder="Target Price" oninput="window.TZApp.recalcOrderMarginPreview()" />
           </div>
         </div>
 
-        <div class="wallet-card">
-          <div class="wallet-header">
-            <span class="wallet-title">Your Practice Wallet</span>
-            <button class="btn-wallet-reset" onclick="resetVirtualAccount()">Reset to ₹1,00,000</button>
+        <!-- Pre-Trade Risk & Margin Preview Box -->
+        <div class="pre-trade-risk-box">
+          <div class="risk-preview-header">
+            <span class="risk-preview-title">Pre-Trade Risk &amp; Margin</span>
+            <span id="ticket-exposure-badge" class="tag-exch">Notional: ₹0.00</span>
           </div>
-          <div class="wallet-total" id="wallet-total-funds">₹1,00,000.00</div>
-          <div class="wallet-subrow">
-            <span>Available Margin: <strong id="wallet-avail" style="color: #10b981;">₹1,00,000.00</strong></span>
-            <span>Used Margin: <strong id="wallet-used" style="color: #38bdf8;">₹0.00</strong></span>
+          <div class="risk-grid-3">
+            <div>
+              <div class="summary-label">Required Margin</div>
+              <div id="ticket-margin-req" class="summary-sub-val" style="color:var(--text-on-white-primary);">₹0.00</div>
+            </div>
+            <div>
+              <div class="summary-label">Est. Charges</div>
+              <div id="ticket-charges-est" class="summary-sub-val" style="color:var(--text-on-white-primary);">₹20.00</div>
+            </div>
+            <div>
+              <div class="summary-label">Value Per Tick</div>
+              <div id="ticket-tick-val" class="summary-sub-val" style="color:var(--text-on-white-primary);">₹0.05</div>
+            </div>
+          </div>
+          <!-- Stop Loss Risk & R:R preview -->
+          <div id="ticket-sl-risk-row" class="risk-sl-banner" style="display:none;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div>
+                <span style="font-weight:600;">Max Stop Loss Risk:</span>
+                <span id="ticket-sl-distance-pts" style="margin-left:4px;color:var(--text-on-white-secondary);">(0 pts)</span>
+              </div>
+              <div id="ticket-sl-risk-amt" class="tabular-nums" style="font-weight:700;color:var(--negative-red);">-₹0.00</div>
+            </div>
+            <div id="ticket-rr-ratio-row" style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;font-size:11px;color:var(--positive-on-white);display:none;">
+              <span>Risk : Reward Ratio</span>
+              <strong id="ticket-rr-val" class="tabular-nums">1 : 2.0</strong>
+            </div>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;font-size:11.5px;color:var(--text-on-white-secondary);">
+            <span>Available Balance: <strong id="ticket-avail-bal" class="tabular-nums">₹1,00,000.00</strong></span>
+            <span id="ticket-unit-spec">Unit: 1 Lot</span>
+          </div>
+          <div id="ticket-simulation-disclaimer" class="simulation-notice-text">
+            Simulation Assumption: Margins and charges are computed using fixed educational models for paper trading practice.
           </div>
         </div>
 
-        <!-- Phone Backend Connectivity Settings -->
-        <div class="settings-section">
-          <div class="settings-title">Phone to PC Connectivity</div>
-          <p style="font-size: 11px; color: var(--text-muted); line-height: 1.4;">
-            Your phone reaches the PC via Wi-Fi LAN IP or USB ADB Reverse:
-          </p>
-          <div class="host-presets">
-            <button class="btn-preset" onclick="setPresetUrl('http://192.168.0.100:4000')">Wi-Fi (192.168.0.100)</button>
-            <button class="btn-preset" onclick="setPresetUrl('http://127.0.0.1:4000')">USB ADB Reverse</button>
-            <button class="btn-preset" onclick="setPresetUrl('http://10.0.2.2:4000')">Emulator</button>
-          </div>
-          <div class="input-group">
-            <span class="input-label">Backend API URL</span>
-            <input type="text" class="input-box" id="cfg-api-url" value="http://192.168.0.100:4000">
-          </div>
-          <div class="input-group">
-            <span class="input-label">WebSocket Stream URL</span>
-            <input type="text" class="input-box" id="cfg-ws-url" value="ws://192.168.0.100:4000/ws">
-          </div>
-          <button class="btn-test-conn" onclick="saveAndTestConnection()">Save & Test Connection</button>
-          <div id="conn-test-result" style="font-size: 11px; font-weight: 700; text-align: center; margin-top: 4px;"></div>
-        </div>
-      </section>
-    </main>
+        <div id="ticket-error-box" class="auth-error-box"></div>
 
-    <!-- Modal Order Sheet (Slide Up Bottom Sheet) -->
-    <div id="order-sheet-modal">
-      <div class="order-sheet-content">
-        <div class="order-sheet-header">
-          <span class="sheet-title" id="sheet-title-text">Place Simulated Order</span>
-          <button class="btn-close-sheet" onclick="closeOrderSheet()">✕</button>
-        </div>
-        <div class="side-toggle">
-          <button class="btn-side active-buy" id="side-buy" onclick="setOrderSide('BUY')">BUY / LONG</button>
-          <button class="btn-side" id="side-sell" onclick="setOrderSide('SELL')">SELL / SHORT</button>
-        </div>
-        <div class="order-controls">
-          <div class="input-group">
-            <span class="input-label">Type</span>
-            <select class="input-box" id="order-type" onchange="handleOrderTypeChange()">
-              <option value="MARKET">MARKET</option>
-              <option value="LIMIT">LIMIT</option>
-              <option value="STOP_LOSS">STOP LOSS</option>
-            </select>
-          </div>
-          <div class="input-group">
-            <span class="input-label" id="qty-label">Lots (Qty 65)</span>
-            <input type="number" class="input-box" id="order-lots" value="1" min="1" step="1" oninput="updateOrderCalc()">
-          </div>
-          <div class="input-group" id="limit-price-group" style="display: none;">
-            <span class="input-label">Price ₹</span>
-            <input type="number" class="input-box" id="order-price" step="0.10">
-          </div>
-        </div>
-        <div class="order-summary-row">
-          <span>Req. Margin: <strong id="req-margin-val" style="color: #38bdf8;">₹0.00</strong></span>
-          <span>Available: <strong id="avail-margin-val" style="color: #10b981;">₹1,00,000.00</strong></span>
-        </div>
-        <button class="btn-submit-order btn-buy" id="btn-submit-order" onclick="submitSimulatedOrder()">
-          Place Simulated Buy Order
+        <button id="ticket-submit-btn" class="btn-lime-primary" onclick="window.TZApp.submitPaperOrder()">
+          Place Paper BUY Order
         </button>
       </div>
     </div>
 
-    <!-- Bottom Navigation Dock (Reference Screenshots) -->
-    <nav>
-      <button class="nav-btn active" id="nav-watchlist" onclick="switchTab('watchlist')">
-        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" /></svg>
-        <span>Watchlist</span>
-      </button>
-      <button class="nav-btn" id="nav-trades" onclick="switchTab('trades')">
-        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
-        <span>Trades</span>
-      </button>
-      <button class="nav-btn" id="nav-tools" onclick="switchTab('tools')">
-        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
-        <span>Tools</span>
-      </button>
-      <button class="nav-btn" id="nav-profile" onclick="switchTab('profile')">
-        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>
-        <span>Profile</span>
-      </button>
-    </nav>
+    <!-- ==================================================================
+         MODAL 5: INDICATORS & DRAWINGS CONFIGURATION SHEETS
+         ================================================================== -->
+    <div id="modal-indicators" class="modal-backdrop" onclick="if(event.target===this) this.classList.remove('active')">
+      <div class="white-bottom-sheet">
+        <div class="sheet-handle"></div>
+        <div class="auth-card-title">Technical Indicators</div>
+        <div class="auth-card-sub">Toggle overlays and oscillators on the active chart</div>
+        <div id="indicators-list-box"></div>
+      </div>
+    </div>
+
+    <div id="modal-drawings" class="modal-backdrop" onclick="if(event.target===this) this.classList.remove('active')">
+      <div class="white-bottom-sheet">
+        <div class="sheet-handle"></div>
+        <div class="auth-card-title">Chart Drawing Tools</div>
+        <div class="auth-card-sub">Touch-arbitrated vector tools (chart pan locks automatically while drawing)</div>
+        <div id="drawings-tools-box" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;"></div>
+        <button onclick="window.TZApp.clearAllDrawings()" style="width:100%;min-height:42px;border-radius:10px;border:1px solid var(--negative-red);background:var(--bg-white);color:var(--negative-red);font-weight:700;cursor:pointer;">
+          Clear All Drawings on Symbol
+        </button>
+      </div>
+    </div>
+
+    <!-- ==================================================================
+         MODAL 6: TRADE JOURNAL & PERFORMANCE LOG
+         ================================================================== -->
+    <div id="modal-journal" class="chart-overlay-screen" style="background:var(--bg-white);color:var(--text-on-white-primary);">
+      <div class="top-dark-header">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <button class="chart-back-btn" onclick="document.getElementById('modal-journal').classList.remove('active')">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+                <path d="M19 12H5M12 19l-7-7 7-7"/>
+              </svg>
+            </button>
+            <div>
+              <div style="font-size:16px;font-weight:700;color:var(--text-on-black-primary);">Trade Journal &amp; Notes</div>
+              <div style="font-size:11.5px;color:var(--text-on-black-secondary);">Strategy tags, notes &amp; trade review</div>
+            </div>
+          </div>
+          <button class="link-btn" style="color:var(--accent-lime);font-size:12px;" onclick="window.TZApp.exportJournalCSV()">Export CSV</button>
+        </div>
+      </div>
+      <div style="padding:14px 16px;background:var(--surface-light-secondary);border-bottom:1px solid var(--surface-light-border);">
+        <div style="font-weight:700;font-size:13px;margin-bottom:8px;">Add New Trade Journal Entry</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+          <input id="journal-input-tag" class="form-input" type="text" placeholder="Strategy Tag (e.g. Breakout)" />
+          <input id="journal-input-ref" class="form-input" type="text" placeholder="Symbol / Order Ref" />
+        </div>
+        <textarea id="journal-input-notes" class="form-input" rows="2" placeholder="Write trade thesis, entry rationale, emotions or lessons learned..."></textarea>
+        <button class="btn-lime-primary" style="margin-top:8px;min-height:38px;font-size:13px;" onclick="window.TZApp.submitJournalEntry()">Save Journal Note</button>
+      </div>
+      <div id="journal-entries-container" class="white-content-scroll"></div>
+    </div>
+
+    <!-- ==================================================================
+         MODAL 7: PRICE ALERT MANAGER
+         ================================================================== -->
+    <div id="modal-alerts" class="modal-backdrop" onclick="if(event.target===this) this.classList.remove('active')">
+      <div class="white-bottom-sheet">
+        <div class="sheet-handle"></div>
+        <div class="auth-card-title">Set Price Alert</div>
+        <div id="alert-target-subtitle" class="auth-card-sub">Get notified when symbol crosses price threshold</div>
+        <div style="margin:14px 0;">
+          <div class="form-group">
+            <label class="form-label">Alert Condition</label>
+            <div class="segmented-pill-group" style="width:100%;display:grid;grid-template-columns:1fr 1fr;">
+              <button id="alert-cond-above" class="seg-pill-btn active" onclick="window.TZApp.setAlertCondition('ABOVE')">Crosses Above ≥</button>
+              <button id="alert-cond-below" class="seg-pill-btn" onclick="window.TZApp.setAlertCondition('BELOW')">Crosses Below ≤</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="alert-input-price">Target Price (₹)</label>
+            <input id="alert-input-price" class="form-input tabular-nums" type="number" step="0.05" placeholder="Enter target price" />
+          </div>
+          <button class="btn-lime-primary" onclick="window.TZApp.saveActiveAlert()">Create Alert</button>
+        </div>
+        <div class="section-title-dark" style="font-size:13px;margin:12px 0 6px;">Active Alerts for this Session</div>
+        <div id="alerts-list-container" style="max-height:160px;overflow-y:auto;"></div>
+      </div>
+    </div>
+
+    <!-- ==================================================================
+         MODAL 8: MCX COMMODITIES CONTRACT MATRIX
+         ================================================================== -->
+    <div id="modal-commodity-specs" class="chart-overlay-screen" style="background:var(--bg-white);color:var(--text-on-white-primary);">
+      <div class="top-dark-header">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <button class="chart-back-btn" onclick="document.getElementById('modal-commodity-specs').classList.remove('active')">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+              <path d="M19 12H5M12 19l-7-7 7-7"/>
+            </svg>
+          </button>
+          <div>
+            <div style="font-size:16px;font-weight:700;color:var(--text-on-black-primary);">MCX Contract Specifications</div>
+            <div style="font-size:11.5px;color:var(--text-on-black-secondary);">Official trading units, quotation units &amp; tick values</div>
+          </div>
+        </div>
+      </div>
+      <div id="commodity-specs-table-container" class="white-content-scroll" style="padding:10px 14px;"></div>
+    </div>
+
+    <!-- ==================================================================
+         MODAL 9: BACKEND SERVER CONFIGURATION
+         ================================================================== -->
+    <div id="modal-server-config" class="modal-backdrop" onclick="if(event.target===this) this.classList.remove('active')">
+      <div class="white-bottom-sheet">
+        <div class="sheet-handle"></div>
+        <div class="auth-card-title">Backend Server Settings</div>
+        <div class="auth-card-sub">Configure the paper trading gateway IP for your mobile network</div>
+        
+        <div style="margin:14px 0;">
+          <div class="form-group">
+            <label class="form-label" for="input-server-url">Gateway Server Base URL</label>
+            <input id="input-server-url" class="form-input" type="url" placeholder="http://192.168.0.100:4000" />
+          </div>
+
+          <div style="display:flex; gap:10px; margin-bottom:12px;">
+            <button type="button" class="btn-lime-primary" style="flex:1; min-height:42px; font-size:13px;" onclick="window.TZApp.testServerConnection()">Test Connection</button>
+            <button type="button" class="btn-lime-primary" style="flex:1; min-height:42px; font-size:13px; background:var(--bg-midnight); color:#fff;" onclick="window.TZApp.saveServerConfig()">Save &amp; Apply</button>
+          </div>
+
+          <div id="server-test-result" style="font-size:12px; margin-bottom:12px; min-height:18px; font-weight:500;"></div>
+
+          <div style="border-top:1px solid #E5E7EB; padding-top:12px;">
+            <div style="font-weight:700; font-size:12px; margin-bottom:8px; color:var(--text-on-white-secondary);">Quick Presets:</div>
+            <div style="display:flex; flex-direction:column; gap:8px;">
+              <button type="button" class="link-btn" style="text-align:left; color:#2563EB; font-size:12.5px; text-decoration:none;" onclick="window.TZApp.applyServerPreset('http://192.168.0.100:4000')">● Wi-Fi (Host PC): http://192.168.0.100:4000</button>
+              <button type="button" class="link-btn" style="text-align:left; color:#2563EB; font-size:12.5px; text-decoration:none;" onclick="window.TZApp.applyServerPreset('http://localhost:4000')">● USB ADB Reverse: http://localhost:4000</button>
+              <button type="button" class="link-btn" style="text-align:left; color:#2563EB; font-size:12.5px; text-decoration:none;" onclick="window.TZApp.applyServerPreset('http://10.0.2.2:4000')">● Android Emulator: http://10.0.2.2:4000</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
 
-  <script>
-    // State
-    let apiBase = localStorage.getItem('apiBase') || 'http://192.168.0.100:4000';
-    let wsBase = localStorage.getItem('wsBase') || 'ws://192.168.0.100:4000/ws';
-    let token = null;
-    let selectedInstrument = null;
-    let instruments = [];
-    let currentCandles = [];
-    let positions = [];
-    let orders = [];
-    let account = null;
-    let selectedTimeframe = '5m';
-    let orderSide = 'BUY';
-    let activeDrawTool = 'CROSS';
-    let socket = null;
-    let priceLines = [];
-
-    // Lightweight Charts instances
-    let chart, candleSeries, volumeSeries, emaSeries, smaSeries;
-
-    function formatINR(paise) {
-      const rupees = (Number(paise) / 100).toFixed(2);
-      return '₹' + Number(rupees).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    }
-
-    function initTradingView() {
-      const container = document.getElementById('tradingview-chart-box');
-      if (!container || chart) return;
-
-      chart = LightweightCharts.createChart(container, {
-        width: container.clientWidth || 340,
-        height: container.clientHeight || 280,
-        layout: { background: { color: '#0b0f19' }, textColor: '#94a3b8', fontSize: 11 },
-        grid: { vertLines: { color: '#151d2f' }, horzLines: { color: '#151d2f' } },
-        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-        timeScale: { borderColor: '#232f48', timeVisible: true, secondsVisible: false }
-      });
-
-      candleSeries = chart.addCandlestickSeries({
-        upColor: '#10b981', downColor: '#ef4444', borderVisible: false,
-        wickUpColor: '#10b981', wickDownColor: '#ef4444'
-      });
-
-      volumeSeries = chart.addHistogramSeries({
-        color: '#26a69a',
-        priceFormat: { type: 'volume' },
-        priceScaleId: '', // overlay volume on main pane with offset
-      });
-      volumeSeries.priceScale().applyOptions({
-        scaleMargins: { top: 0.8, bottom: 0 },
-      });
-
-      emaSeries = chart.addLineSeries({ color: '#38bdf8', lineWidth: 2, title: 'EMA 20', visible: false });
-      smaSeries = chart.addLineSeries({ color: '#f59e0b', lineWidth: 2, title: 'SMA 50', visible: false });
-
-      // Handle chart clicks for drawing tools (e.g., placing Horizontal Price Line)
-      chart.subscribeClick((param) => {
-        if (activeDrawTool === 'HLINE' && param.point && candleSeries) {
-          const price = candleSeries.coordinateToPrice(param.point.y);
-          if (price) {
-            const pLine = candleSeries.createPriceLine({
-              price: price,
-              color: '#38bdf8',
-              lineWidth: 2,
-              lineStyle: LightweightCharts.LineStyle.Dashed,
-              axisLabelVisible: true,
-              title: 'H-LINE ₹' + price.toFixed(2),
-            });
-            priceLines.push(pLine);
-            setDrawTool('CROSS');
-          }
-        }
-      });
-
-      window.addEventListener('resize', () => {
-        if (chart && container) {
-          chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
-        }
-      });
-    }
-
-    async function loginDev() {
-      try {
-        const res = await fetch(`${apiBase}/api/v1/auth/dev-login`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId: 'dev-phone-01', name: 'Phone Trader' })
-        });
-        if (!res.ok) throw new Error('Login failed: ' + res.status);
-        const data = await res.json();
-        token = data.token;
-        account = data.account;
-        updateAccountUI();
-        await loadFeedHealth();
-        await loadInstruments();
-        await loadOrdersAndPositions();
-        connectWebSocket();
-      } catch (err) {
-        console.error('Login error', err);
-        const el = document.getElementById('conn-test-result');
-        if (el) el.innerHTML = '<span style="color: #ef4444;">Cannot reach backend. Check host IP below!</span>';
-      }
-    }
-
-    async function loadFeedHealth() {
-      try {
-        const res = await fetch(`${apiBase}/api/v1/feed-health`);
-        if (!res.ok) return;
-        const d = await res.json();
-        const active = d.activeProvider;
-        const banner = document.getElementById('demo-banner-text');
-        const bar = document.getElementById('demo-banner-bar');
-        const isMarketOpen = d.marketSession?.isMarketOpen;
-
-        // Update exchange dots
-        ['bse', 'cds', 'mcx', 'ncdex', 'nse'].forEach(id => {
-          const dot = document.getElementById(`dot-${id}`);
-          if (dot) dot.className = isMarketOpen ? 'dot dot-open' : 'dot dot-closed';
-        });
-
-        if (banner && active) {
-          banner.innerText = active.uiBannerLabel;
-          if (bar) {
-            if (active.source === 'SMARTAPI') {
-              if (isMarketOpen) {
-                bar.style.background = '#064e3b';
-                bar.style.borderColor = '#047857';
-                bar.style.color = '#a7f3d0';
-              } else {
-                bar.style.background = '#1e293b';
-                bar.style.borderColor = '#334155';
-                bar.style.color = '#94a3b8';
-              }
-            } else {
-              bar.style.background = '#451a03';
-              bar.style.borderColor = '#78350f';
-              bar.style.color = '#fde68a';
-            }
-          }
-        }
-      } catch (e) {}
-    }
-
-    async function loadInstruments() {
-      try {
-        const res = await fetch(`${apiBase}/api/v1/instruments`);
-        if (!res.ok) return;
-        const data = await res.json();
-        instruments = data.instruments || [];
-        renderWatchlist();
-
-        // Default to NIFTY active tradable contract
-        const defaultInst = instruments.find(i => i.isTradable) || instruments[0];
-        if (defaultInst) selectInstrument(defaultInst.globalId);
-      } catch (err) {
-        console.error('Error loading instruments', err);
-      }
-    }
-
-    function selectInstrument(globalId) {
-      selectedInstrument = instruments.find(i => i.globalId === globalId);
-      if (!selectedInstrument) return;
-
-      document.getElementById('chart-sym-title').innerText = selectedInstrument.symbol;
-      document.getElementById('chart-exch-badge').innerText = selectedInstrument.exchange;
-      document.getElementById('qty-label').innerText = `Lots (Qty ${selectedInstrument.lotSize})`;
-      updateOrderCalc();
-      loadCandles();
-    }
-
-    function selectSpotIndex() {
-      const spot = instruments.find(i => i.instrumentType === 'INDEX_SPOT');
-      if (spot) {
-        selectInstrument(spot.globalId);
-        switchTab('chart');
-      }
-    }
-
-    async function loadCandles() {
-      if (!selectedInstrument) return;
-      try {
-        const res = await fetch(`${apiBase}/api/v1/market-data/candles?globalId=${encodeURIComponent(selectedInstrument.globalId)}&timeframe=${selectedTimeframe}&count=150`);
-        if (res.ok) {
-          const data = await res.json();
-          currentCandles = data.candles || [];
-          if (candleSeries && currentCandles.length > 0) {
-            candleSeries.setData(currentCandles);
-
-            // Populate Volume
-            const volData = currentCandles.map(c => ({
-              time: c.time,
-              value: c.volume || 100,
-              color: c.close >= c.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)'
-            }));
-            volumeSeries.setData(volData);
-
-            chart.timeScale().fitContent();
-            updateIndicators();
-            const last = currentCandles[currentCandles.length - 1];
-            const prev = currentCandles[0];
-            const chg = last.close - prev.open;
-            const chgPct = ((chg / prev.open) * 100).toFixed(2);
-            const isPos = chg >= 0;
-
-            const ltpEl = document.getElementById('chart-ltp-disp');
-            const chgEl = document.getElementById('chart-chg-disp');
-            if (ltpEl) {
-              ltpEl.innerText = '₹' + last.close.toFixed(2);
-              ltpEl.className = isPos ? 'change-pos' : 'change-neg';
-            }
-            if (chgEl) {
-              chgEl.innerText = `${isPos ? '+' : ''}${chg.toFixed(2)} (${chgPct}%)`;
-              chgEl.className = isPos ? 'change-pos' : 'change-neg';
-            }
-
-            // Also update top ticker
-            if (selectedInstrument.symbol.includes('NIFTY') && !selectedInstrument.symbol.includes('BANK')) {
-              document.getElementById('ticker-nifty-val').innerText = last.close.toFixed(2);
-              document.getElementById('ticker-nifty-chg').innerText = `${isPos ? '+' : ''}${chg.toFixed(2)} (${chgPct}%)`;
-            }
-
-            document.getElementById('order-price').value = last.close.toFixed(2);
-          }
-        }
-      } catch (err) {
-        console.error('Error loading candles', err);
-      }
-    }
-
-    function connectWebSocket() {
-      if (socket) socket.close();
-      try {
-        socket = new WebSocket(wsBase);
-        socket.onmessage = (event) => {
-          try {
-            const parsed = JSON.parse(event.data);
-            if (parsed.type === 'QUOTE_TICK' && parsed.data) {
-              const tick = parsed.data;
-              if (selectedInstrument && tick.globalId === selectedInstrument.globalId) {
-                document.getElementById('chart-ltp-disp').innerText = '₹' + tick.ltp.toFixed(2);
-                if (candleSeries) {
-                  const nowSec = Math.floor(tick.receiveTimestamp / 1000);
-                  const minSec = Math.floor(nowSec / (selectedTimeframe === '5m' ? 300 : 60)) * (selectedTimeframe === '5m' ? 300 : 60);
-                  candleSeries.update({
-                    time: minSec,
-                    open: tick.open,
-                    high: tick.high,
-                    low: tick.low,
-                    close: tick.ltp
-                  });
-                  volumeSeries.update({
-                    time: minSec,
-                    value: tick.volume || 100,
-                    color: tick.ltp >= tick.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)'
-                  });
-                }
-              }
-              // Update watchlist item
-              const cardLtp = document.getElementById(`ltp-${tick.globalId}`);
-              if (cardLtp) cardLtp.innerText = '₹' + tick.ltp.toFixed(2);
-            }
-          } catch (e) {}
-        };
-      } catch (e) {
-        console.warn('WS error', e);
-      }
-    }
-
-    function renderWatchlist() {
-      const container = document.getElementById('watchlist-items-container');
-      const search = (document.getElementById('watchlist-search-input').value || '').toUpperCase();
-      container.innerHTML = '';
-
-      instruments.filter(i => i.symbol.toUpperCase().includes(search)).forEach(inst => {
-        const card = document.createElement('div');
-        card.className = 'inst-card';
-        card.onclick = () => {
-          selectInstrument(inst.globalId);
-          switchTab('chart');
-        };
-        card.innerHTML = `
-          <div class="inst-card-meta">
-            <div class="inst-card-name">
-              <span>${inst.symbol}</span>
-              <span class="inst-badge">${inst.exchange}</span>
-            </div>
-            <div class="inst-card-sub">Lot Size: ${inst.lotSize} • Tick: ₹${inst.tickSize}${inst.expiry ? ' • Exp: ' + inst.expiry : ''}</div>
-          </div>
-          <div class="inst-card-prices">
-            <div class="inst-card-ltp change-pos" id="ltp-${inst.globalId}">₹24,350.00</div>
-            <div class="inst-card-range">${inst.isTradable ? 'F&O Practice' : 'Index Reference'}</div>
-          </div>
-        `;
-        container.appendChild(card);
-      });
-    }
-
-    function filterWatchlist() {
-      renderWatchlist();
-    }
-
-    function setTimeframe(tf) {
-      selectedTimeframe = tf;
-      ['1m', '3m', '5m', '15m', '30m', '1h', '1D'].forEach(t => {
-        const el = document.getElementById(`tf-${t}`);
-        if (el) el.classList.toggle('active', t === tf);
-      });
-      loadCandles();
-    }
-
-    function setRange(range) {
-      document.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active'));
-      event?.target?.classList.add('active');
-      if (chart) chart.timeScale().fitContent();
-    }
-
-    function toggleEma() {
-      const isVis = emaSeries.options().visible;
-      emaSeries.applyOptions({ visible: !isVis });
-      document.getElementById('btn-ind-ema').classList.toggle('active', !isVis);
-    }
-
-    function toggleSma() {
-      const isVis = smaSeries.options().visible;
-      smaSeries.applyOptions({ visible: !isVis });
-      document.getElementById('btn-ind-sma').classList.toggle('active', !isVis);
-    }
-
-    function setDrawTool(tool) {
-      activeDrawTool = tool;
-      ['tool-cross', 'tool-hline', 'tool-measure'].forEach(id => {
-        document.getElementById(id)?.classList.remove('active');
-      });
-      if (tool === 'CROSS') document.getElementById('tool-cross')?.classList.add('active');
-      if (tool === 'HLINE') document.getElementById('tool-hline')?.classList.add('active');
-      if (tool === 'MEASURE') document.getElementById('tool-measure')?.classList.add('active');
-    }
-
-    function clearDrawings() {
-      if (candleSeries && priceLines.length) {
-        for (const pl of priceLines) {
-          candleSeries.removePriceLine(pl);
-        }
-        priceLines = [];
-      }
-    }
-
-    function updateIndicators() {
-      if (!currentCandles || currentCandles.length < 20) return;
-      const k = 2 / 21;
-      let prevEma = currentCandles[0].close;
-      const emaData = [];
-      for (let i = 0; i < currentCandles.length; i++) {
-        const c = currentCandles[i].close;
-        const cur = i === 0 ? c : c * k + prevEma * (1 - k);
-        if (i >= 19) emaData.push({ time: currentCandles[i].time, value: Number(cur.toFixed(2)) });
-        prevEma = cur;
-      }
-      emaSeries.setData(emaData);
-
-      if (currentCandles.length >= 50) {
-        const smaData = [];
-        let sum = 0;
-        for (let i = 0; i < currentCandles.length; i++) {
-          sum += currentCandles[i].close;
-          if (i >= 50) sum -= currentCandles[i - 50].close;
-          if (i >= 49) smaData.push({ time: currentCandles[i].time, value: Number((sum / 50).toFixed(2)) });
-        }
-        smaSeries.setData(smaData);
-      }
-    }
-
-    function openOrderSheet(side) {
-      setOrderSide(side);
-      document.getElementById('order-sheet-modal').classList.add('open');
-      updateOrderCalc();
-    }
-
-    function closeOrderSheet() {
-      document.getElementById('order-sheet-modal').classList.remove('open');
-    }
-
-    function setOrderSide(side) {
-      orderSide = side;
-      document.getElementById('side-buy').className = 'btn-side' + (side === 'BUY' ? ' active-buy' : '');
-      document.getElementById('side-sell').className = 'btn-side' + (side === 'SELL' ? ' active-sell' : '');
-      const btn = document.getElementById('btn-submit-order');
-      btn.className = 'btn-submit-order ' + (side === 'BUY' ? 'btn-buy' : 'btn-sell');
-      btn.innerText = `Place Simulated ${side} ${document.getElementById('order-type').value}`;
-      updateOrderCalc();
-    }
-
-    function handleOrderTypeChange() {
-      const type = document.getElementById('order-type').value;
-      document.getElementById('limit-price-group').style.display = type === 'MARKET' ? 'none' : 'flex';
-      setOrderSide(orderSide);
-    }
-
-    function updateOrderCalc() {
-      if (!selectedInstrument) return;
-      const lots = parseInt(document.getElementById('order-lots').value) || 1;
-      const qty = lots * selectedInstrument.lotSize;
-      const ltp = currentCandles.length ? currentCandles[currentCandles.length - 1].close : 24350;
-      const margin = (qty * ltp * (selectedInstrument.marginMultiplier || 0.10)).toFixed(2);
-      document.getElementById('req-margin-val').innerText = '₹' + Number(margin).toLocaleString('en-IN', { minimumFractionDigits: 2 });
-    }
-
-    async function submitSimulatedOrder() {
-      if (!token || !selectedInstrument) {
-        alert('Please connect to backend first.');
-        return;
-      }
-      if (!selectedInstrument.isTradable) {
-        alert('Educational Guard: Spot indices cannot be traded directly. Please select the tradable Futures contract.');
-        return;
-      }
-      const lots = parseInt(document.getElementById('order-lots').value) || 1;
-      const quantity = lots * selectedInstrument.lotSize;
-      const orderType = document.getElementById('order-type').value;
-      const price = orderType === 'MARKET' ? undefined : parseFloat(document.getElementById('order-price').value);
-
-      try {
-        const res = await fetch(`${apiBase}/api/v1/orders/place`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({
-            globalInstrumentId: selectedInstrument.globalId,
-            side: orderSide,
-            orderType: orderType,
-            quantity: quantity,
-            price: price,
-            idempotencyKey: 'mob-' + Date.now()
-          })
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          alert('Order Error: ' + (data.error || 'Unknown error'));
-        } else {
-          closeOrderSheet();
-          alert(`Simulated ${orderSide} Order Placed! Status: ${data.order.status}`);
-          await loadOrdersAndPositions();
-          await refreshAccount();
-        }
-      } catch (e) {
-        alert('Order submission failed: ' + e.message);
-      }
-    }
-
-    async function loadOrdersAndPositions() {
-      if (!token) return;
-      try {
-        const [ordRes, posRes] = await Promise.all([
-          fetch(`${apiBase}/api/v1/orders`, { headers: { Authorization: `Bearer ${token}` } }),
-          fetch(`${apiBase}/api/v1/positions`, { headers: { Authorization: `Bearer ${token}` } })
-        ]);
-        if (ordRes.ok) {
-          const d = await ordRes.json();
-          orders = d.orders || [];
-          document.getElementById('ord-count').innerText = orders.length;
-          renderOrders();
-        }
-        if (posRes.ok) {
-          const d = await posRes.json();
-          positions = d.positions || [];
-          document.getElementById('pos-count').innerText = positions.length;
-          renderPositions();
-        }
-      } catch (e) {}
-    }
-
-    function renderPositions() {
-      const list = document.getElementById('positions-list');
-      const empty = document.getElementById('pos-empty');
-      list.innerHTML = '';
-      let totalPnl = 0;
-      let totalLocked = 0;
-
-      if (!positions || positions.length === 0) {
-        empty.style.display = 'block';
-        document.getElementById('total-pnl-disp').innerText = '₹0.00';
-        document.getElementById('trades-used-margin').innerText = '₹0.00';
-        return;
-      }
-      empty.style.display = 'none';
-
-      positions.forEach(pos => {
-        const pnl = pos.unrealizedPnlPaise || 0;
-        totalPnl += Number(pnl);
-        totalLocked += Number(pos.lockedMarginPaise || 0);
-
-        const card = document.createElement('div');
-        card.className = 'pos-card';
-        const pnlClass = pnl >= 0 ? 'change-pos' : 'change-neg';
-        card.innerHTML = `
-          <div class="pos-card-header">
-            <span class="pos-inst">${pos.globalInstrumentId}</span>
-            <span class="pos-pnl ${pnlClass}">${formatINR(pnl)}</span>
-          </div>
-          <div class="pos-grid">
-            <div class="pos-grid-cell">
-              <span class="pos-grid-label">Quantity</span>
-              <span class="pos-grid-val">${pos.quantity}</span>
-            </div>
-            <div class="pos-grid-cell">
-              <span class="pos-grid-label">Avg Entry</span>
-              <span class="pos-grid-val">₹${(pos.averageEntryPricePaise / 100).toFixed(2)}</span>
-            </div>
-            <div class="pos-grid-cell">
-              <span class="pos-grid-label">Margin Locked</span>
-              <span class="pos-grid-val">${formatINR(pos.lockedMarginPaise)}</span>
-            </div>
-          </div>
-          <button class="btn-sqoff" onclick="squareOffPosition('${pos.globalInstrumentId}')">Square Off Position</button>
-        `;
-        list.appendChild(card);
-      });
-
-      const pnlDisp = document.getElementById('total-pnl-disp');
-      pnlDisp.innerText = formatINR(totalPnl);
-      pnlDisp.className = 'trades-pnl-val ' + (totalPnl >= 0 ? 'change-pos' : 'change-neg');
-      document.getElementById('trades-used-margin').innerText = formatINR(totalLocked);
-    }
-
-    function renderOrders() {
-      const list = document.getElementById('orders-list');
-      const empty = document.getElementById('ord-empty');
-      list.innerHTML = '';
-      if (!orders || orders.length === 0) {
-        empty.style.display = 'block';
-        return;
-      }
-      empty.style.display = 'none';
-      orders.forEach(ord => {
-        const card = document.createElement('div');
-        card.className = 'pos-card';
-        card.innerHTML = `
-          <div class="pos-card-header">
-            <span class="pos-inst">${ord.side} ${ord.globalInstrumentId}</span>
-            <span class="inst-badge">${ord.status}</span>
-          </div>
-          <div class="pos-grid">
-            <div class="pos-grid-cell">
-              <span class="pos-grid-label">Type</span>
-              <span class="pos-grid-val">${ord.orderType}</span>
-            </div>
-            <div class="pos-grid-cell">
-              <span class="pos-grid-label">Quantity</span>
-              <span class="pos-grid-val">${ord.quantity}</span>
-            </div>
-            <div class="pos-grid-cell">
-              <span class="pos-grid-label">Price</span>
-              <span class="pos-grid-val">${ord.pricePaise ? formatINR(ord.pricePaise) : 'MARKET'}</span>
-            </div>
-          </div>
-        `;
-        list.appendChild(card);
-      });
-    }
-
-    async function squareOffPosition(globalId) {
-      if (!token) return;
-      try {
-        const res = await fetch(`${apiBase}/api/v1/positions/square-off`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ globalInstrumentId: globalId })
-        });
-        const d = await res.json();
-        if (res.ok) {
-          alert('Position squared off successfully!');
-          await loadOrdersAndPositions();
-          await refreshAccount();
-        } else {
-          alert('Error: ' + d.error);
-        }
-      } catch (e) {
-        alert('Square off failed: ' + e.message);
-      }
-    }
-
-    async function exitAllPositions() {
-      if (!positions.length) return alert('No active positions to exit.');
-      if (!confirm('Square off all open positions?')) return;
-      for (const pos of positions) {
-        await squareOffPosition(pos.globalInstrumentId);
-      }
-    }
-
-    async function refreshAccount() {
-      if (!token) return;
-      try {
-        const res = await fetch(`${apiBase}/api/v1/account`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        if (res.ok) {
-          account = await res.json();
-          updateAccountUI();
-        }
-      } catch (e) {}
-    }
-
-    function updateAccountUI() {
-      if (!account) return;
-      const locked = account.lockedMarginPaise || account.usedMarginPaise || 0;
-      const free = account.availableBalancePaise || account.availableMarginPaise || 0;
-      const cash = account.cashBalancePaise || 0;
-
-      document.getElementById('wallet-total-funds').innerText = formatINR(cash);
-      document.getElementById('wallet-avail').innerText = formatINR(free);
-      document.getElementById('wallet-used').innerText = formatINR(locked);
-      document.getElementById('avail-margin-val').innerText = formatINR(free);
-    }
-
-    async function resetVirtualAccount() {
-      if (!token) return;
-      if (!confirm('Reset virtual funds back to ₹1,00,000 baseline?')) return;
-      try {
-        const res = await fetch(`${apiBase}/api/v1/account/reset`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        const d = await res.json();
-        if (res.ok) {
-          account = d.account;
-          updateAccountUI();
-          await loadOrdersAndPositions();
-          alert('Virtual balance restored to ₹1,00,000.00!');
-        }
-      } catch (e) {
-        alert('Reset failed: ' + e.message);
-      }
-    }
-
-    function showTradeSubTab(tab) {
-      document.getElementById('tab-btn-act').classList.toggle('active', tab === 'ACT');
-      document.getElementById('tab-btn-opn').classList.toggle('active', tab === 'OPN');
-      document.getElementById('tab-btn-his').classList.toggle('active', tab === 'HIS');
-      document.getElementById('subtab-positions-content').style.display = tab === 'ACT' ? 'block' : 'none';
-      document.getElementById('subtab-orders-content').style.display = tab === 'OPN' ? 'block' : 'none';
-      document.getElementById('subtab-history-content').style.display = tab === 'HIS' ? 'block' : 'none';
-    }
-
-    function switchTab(name) {
-      ['watchlist', 'chart', 'trades', 'tools', 'profile'].forEach(t => {
-        document.getElementById(`screen-${t}`)?.classList.toggle('active', t === name);
-        document.getElementById(`nav-${t}`)?.classList.toggle('active', t === name);
-      });
-      if (name === 'chart' && chart) {
-        setTimeout(() => {
-          const c = document.getElementById('tradingview-chart-box');
-          chart.applyOptions({ width: c.clientWidth, height: c.clientHeight });
-        }, 50);
-      }
-      if (name === 'trades') loadOrdersAndPositions();
-    }
-
-    function setPresetUrl(url) {
-      document.getElementById('cfg-api-url').value = url;
-      document.getElementById('cfg-ws-url').value = url.replace('http', 'ws') + '/ws';
-    }
-
-    async function saveAndTestConnection() {
-      const api = document.getElementById('cfg-api-url').value.trim();
-      const ws = document.getElementById('cfg-ws-url').value.trim();
-      apiBase = api;
-      wsBase = ws;
-      localStorage.setItem('apiBase', api);
-      localStorage.setItem('wsBase', ws);
-
-      const statusEl = document.getElementById('conn-test-result');
-      statusEl.innerHTML = '<span style="color: #38bdf8;">Testing connection to ' + api + '...</span>';
-
-      try {
-        const t0 = Date.now();
-        const res = await fetch(`${api}/api/v1/feed-health`);
-        const latency = Date.now() - t0;
-        if (res.ok) {
-          const d = await res.json();
-          statusEl.innerHTML = `<span style="color: #10b981;">Connected! Provider: ${d.activeProvider?.source} (${latency}ms)</span>`;
-          await loginDev();
-        } else {
-          statusEl.innerHTML = `<span style="color: #ef4444;">HTTP Error: ${res.status}</span>`;
-        }
-      } catch (e) {
-        statusEl.innerHTML = `<span style="color: #ef4444;">Failed to connect: ${e.message}</span>`;
-      }
-    }
-
-    window.onload = () => {
-      initTradingView();
-      loginDev();
-    };
-  </script>
+  <script src="app.js"></script>
 </body>
 </html>

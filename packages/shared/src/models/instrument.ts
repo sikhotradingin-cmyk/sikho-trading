@@ -6,15 +6,17 @@ export type InstrumentType =
   | 'FUTIDX' // E.g. NIFTY Monthly Futures
   | 'OPTIDX' // E.g. NIFTY Call/Put Options
   | 'FUTSTK' // Stock Futures
-  | 'OPTSTK'; // Stock Options
+  | 'OPTSTK' // Stock Options
+  | 'FUTCOM' // Commodity Futures (E.g. GOLD, CRUDEOIL, NATURALGAS)
+  | 'OPTCOM'; // Commodity Options (E.g. CRUDEOIL CE/PE)
 
 export interface InstrumentMetadata {
   /**
    * Globally safe composite identity: `${exchange}:${symbol}:${token}`
-   * E.g. "NFO:NIFTY26OCTFUT:999001" or "NSE:NIFTY50:999000"
+   * E.g. "NFO:NIFTY26OCTFUT:999001" or "NSE:NIFTY50:999000" or "MCX:CRUDEOIL26NOVFUT:573422"
    */
   globalId: string;
-  provider: 'DEMO' | 'SMARTAPI' | 'MOCK';
+  provider: 'DEMO' | 'SMARTAPI' | 'UPSTOX' | 'MOCK';
   exchange: Exchange;
   token: string;
   symbol: string;
@@ -23,10 +25,24 @@ export interface InstrumentMetadata {
   isTradable: boolean; // SPOT indices are false!
   lotSize: number; // MUST be dynamically resolved, never hardcoded
   tickSize: number; // E.g. 0.05
-  expiry?: string; // ISO Date "YYYY-MM-DD" where applicable
+  expiry?: string; // ISO Date "YYYY-MM-DD" or Angel DDMMMYYYY where applicable
   strikePrice?: number;
-  underlying?: string; // E.g. "NIFTY"
+  optionType?: 'CE' | 'PE';
+  underlying?: string; // E.g. "NIFTY", "CRUDEOIL"
+  hasDerivatives?: boolean; // For INDEX_SPOT: true if exchange-traded F&O exist
+  marginMultiplier?: number; // Optional custom margin multiplier
+  upstoxInstrumentKey?: string; // E.g. "NSE_INDEX|Nifty 50", "MCX_FO|573422"
+  isin?: string;
+  canonicalId?: string;
   isSimulatedFixture: boolean; // Labeled explicitly when DEMO
+  segment?: 'EQUITY' | 'FNO' | 'COMMODITY';
+  commodityCategory?: 'METALS' | 'ENERGY' | 'AGRICULTURE';
+  quotationUnit?: string;
+  tradingUnit?: string;
+  qtyMultiplier?: number;
+  priceQuoteMultiplier?: number;
+  tickValue?: number;
+  underlyingKey?: string;
 }
 
 export function makeGlobalInstrumentId(exchange: Exchange, symbol: string, token: string): string {

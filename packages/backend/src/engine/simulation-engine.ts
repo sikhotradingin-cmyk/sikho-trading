@@ -8,6 +8,7 @@ import {
   QuoteSnapshot,
   SimulatedOrder,
   SimulatedPosition,
+  getExchangeSessionStatus,
 } from '@trading/shared';
 import { randomUUID } from 'node:crypto';
 import { SecurityAirGap } from './security-airgap.js';
@@ -22,6 +23,7 @@ export interface ExecutionResult {
 
 export class SimulationEngine {
   private pendingOrders: SimulatedOrder[] = [];
+  private lockedOrderMargins: Map<string, Paise> = new Map();
 
   constructor(private repo: PostgresRepository) {}
 
@@ -57,21 +59,40 @@ export class SimulationEngine {
       return { order: existingOrder };
     }
 
-    // 3. Stale Quote Defense (5.0 seconds maximum allowable age)
-    const quoteAgeMs = Date.now() - quote.receiveTimestamp;
-    if (quoteAgeMs > 5000) {
+    const defaultProduct =
+      request.productType || (_instrument.instrumentType === 'EQUITY_STOCK' ? 'INTRADAY' : 'MARGIN');
+
+    // 3. Stale, Closed-Market, or Unsuitable Quote Defense (5.0 seconds maximum allowable age; no live-feed fills when exchange is closed)
+    const quoteAgeMs = Math.max(
+      Date.now() - quote.receiveTimestamp,
+      !quote.isSimulated && quote.providerTimestamp > 0 ? Date.now() - quote.providerTimestamp : 0
+    );
+    const sessionStatus = getExchangeSessionStatus(_instrument.exchange, new Date());
+    const isClosedMarketLiveQuote = !quote.isSimulated && !sessionStatus.isOpen;
+    if (
+      !Number.isFinite(quote.ltp) ||
+      quote.ltp <= 0 ||
+      isClosedMarketLiveQuote ||
+      quoteAgeMs > 5000
+    ) {
       const rejectedOrder: SimulatedOrder = {
         id: randomUUID(),
         accountId: request.accountId,
         globalInstrumentId: request.globalInstrumentId,
         side: request.side,
         orderType: request.orderType,
+        productType: defaultProduct,
         quantity: request.quantity,
         requestedPrice: request.requestedPrice,
         triggerPrice: request.triggerPrice,
         status: 'REJECTED',
         idempotencyKey: request.idempotencyKey,
-        rejectionReason: `ERR_STALE_MARKET_DATA: Market quote age is ${quoteAgeMs}ms (threshold 5000ms). Execution prevented.`,
+        rejectionReason:
+          !Number.isFinite(quote.ltp) || quote.ltp <= 0
+            ? 'ERR_UNSUITABLE_MARKET_DATA: Quote price is invalid or zero.'
+            : isClosedMarketLiveQuote
+              ? `ERR_MARKET_CLOSED: ${_instrument.exchange} market is currently closed (${sessionStatus.sessionName}: ${sessionStatus.nextEventDescription}). Normal paper market orders cannot execute against last-session quotes.`
+              : `ERR_STALE_MARKET_DATA: Market quote age is ${quoteAgeMs}ms (threshold 5000ms). Execution prevented.`,
         estimatedChargesPaise: 0n,
         createdAt: Date.now(),
         updatedAt: Date.now(),
@@ -88,6 +109,7 @@ export class SimulationEngine {
       globalInstrumentId: request.globalInstrumentId,
       side: request.side,
       orderType: request.orderType,
+      productType: defaultProduct,
       quantity: request.quantity,
       requestedPrice: request.requestedPrice,
       triggerPrice: request.triggerPrice,
@@ -98,7 +120,16 @@ export class SimulationEngine {
       updatedAt: Date.now(),
     };
 
-    // 5. Margin Reservation in PostgreSQL
+    // 5. Margin Reservation in PostgreSQL (ensure account has requiredMarginPaise + estimatedChargesPaise)
+    const acc = await this.repo.getAccount(request.accountId);
+    if (!acc || acc.availableBalancePaise < requiredMarginPaise + estimatedChargesPaise) {
+      order.status = 'REJECTED';
+      order.rejectionReason = 'ERR_INSUFFICIENT_MARGIN: Account cannot lock required margin and estimated charges.';
+      order.updatedAt = Date.now();
+      await this.repo.saveOrder(order);
+      return { order };
+    }
+
     const marginLocked = await this.repo.lockMargin(request.accountId, requiredMarginPaise);
     if (!marginLocked) {
       order.status = 'REJECTED';
@@ -110,8 +141,16 @@ export class SimulationEngine {
 
     // 6. Immediate Execution vs. Pending Queue
     if (request.orderType === 'MARKET') {
-      const executedPrice = this.computeFillPrice(order.side, quote, request.orderType);
-      const res = await this.executeFill(order, executedPrice, quote, requiredMarginPaise);
+      const executedPrice = this.computeFillPrice(order.side, quote, request.orderType, undefined, _instrument.tickSize);
+      const res = await this.executeFill(
+        order,
+        executedPrice,
+        quote,
+        requiredMarginPaise,
+        _instrument,
+        request.stopLossPrice,
+        request.targetPrice
+      );
       await this.repo.saveOrder(res.order);
       if (res.position) {
         await this.repo.saveOrUpdatePosition(res.position);
@@ -120,26 +159,81 @@ export class SimulationEngine {
     } else {
       await this.repo.saveOrder(order);
       this.pendingOrders.push(order);
+      if (requiredMarginPaise > 0n) {
+        this.lockedOrderMargins.set(order.id, requiredMarginPaise);
+      }
       return { order };
     }
   }
 
-  private computeFillPrice(side: OrderSide, quote: QuoteSnapshot, _type: OrderType, gapPrice?: number): number {
+  private computeFillPrice(
+    side: OrderSide,
+    quote: QuoteSnapshot,
+    _type: OrderType,
+    gapPrice?: number,
+    tickSize: number = 0.05
+  ): number {
     if (gapPrice !== undefined) {
       return gapPrice;
     }
     if (side === 'BUY') {
-      return quote.askPrice ?? Number((quote.ltp * 1.0005).toFixed(2));
+      if (quote.askPrice !== undefined) return quote.askPrice;
+      const raw = quote.ltp * 1.0005;
+      return tickSize > 0 ? Number((Math.ceil(raw / tickSize - 1e-9) * tickSize).toFixed(2)) : Number(raw.toFixed(2));
     } else {
-      return quote.bidPrice ?? Number((quote.ltp * 0.9995).toFixed(2));
+      if (quote.bidPrice !== undefined) return quote.bidPrice;
+      const raw = quote.ltp * 0.9995;
+      return tickSize > 0 ? Number((Math.floor(raw / tickSize + 1e-9) * tickSize).toFixed(2)) : Number(raw.toFixed(2));
     }
+  }
+
+  private calculateReleasedMarginRupees(
+    position: SimulatedPosition,
+    closedQty: number,
+    instrument?: InstrumentMetadata
+  ): number {
+    const multiplier =
+      instrument?.exchange === 'MCX' && instrument?.priceQuoteMultiplier
+        ? instrument.priceQuoteMultiplier / (instrument.lotSize || 1)
+        : 1;
+    const entryVal = position.averageEntryPrice * closedQty * multiplier;
+    if (position.productType === 'DELIVERY') {
+      return entryVal * 1.0;
+    }
+    if (
+      instrument?.instrumentType === 'OPTIDX' ||
+      instrument?.instrumentType === 'OPTSTK' ||
+      instrument?.instrumentType === 'OPTCOM'
+    ) {
+      if (position.quantity > 0) {
+        return entryVal * 1.0;
+      } else {
+        const refUnderlying = (instrument.strikePrice || position.averageEntryPrice * 50) * multiplier;
+        return entryVal + refUnderlying * closedQty * 0.15;
+      }
+    }
+    if (instrument?.instrumentType === 'FUTCOM') {
+      const rate = instrument.marginMultiplier ?? 0.05;
+      return entryVal * rate;
+    }
+    if (instrument?.instrumentType === 'FUTSTK') {
+      const rate = instrument.marginMultiplier ?? 0.2;
+      return entryVal * rate;
+    }
+    const marginRate =
+      instrument?.marginMultiplier ??
+      (instrument?.instrumentType === 'EQUITY_STOCK' ? 0.2 : 0.12);
+    return entryVal * marginRate;
   }
 
   private async executeFill(
     order: SimulatedOrder,
     fillPrice: number,
     quote: QuoteSnapshot,
-    _marginPaise: Paise
+    lockedForThisOrderPaise: Paise,
+    instrument?: InstrumentMetadata,
+    stopLossPrice?: number,
+    targetPrice?: number
   ): Promise<ExecutionResult> {
     order.status = 'EXECUTED';
     order.executedPrice = fillPrice;
@@ -157,14 +251,24 @@ export class SimulationEngine {
         id: position?.id || randomUUID(),
         accountId: order.accountId,
         globalInstrumentId: order.globalInstrumentId,
+        productType: order.productType || 'INTRADAY',
         quantity: deltaQty,
         averageEntryPrice: fillPrice,
-        realizedPnlPaise: 0n,
+        realizedPnlPaise: position?.realizedPnlPaise || 0n,
         unrealizedPnlPaise: 0n,
         currentPrice: quote.ltp,
+        stopLossPrice,
+        targetPrice,
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };
+      // Deduct opening order charges once from cash_balance_paise and record SIMULATED_CHARGES ledger entry
+      await this.repo.applyOrderCharges(
+        order.accountId,
+        order.estimatedChargesPaise,
+        order.id,
+        `${order.side} ${order.quantity} @ ₹${fillPrice}`
+      );
     } else {
       const isSameSide = (position.quantity > 0 && deltaQty > 0) || (position.quantity < 0 && deltaQty < 0);
 
@@ -174,24 +278,42 @@ export class SimulationEngine {
           Math.abs(position.quantity) * position.averageEntryPrice + Math.abs(deltaQty) * fillPrice;
         position.averageEntryPrice = Number((totalValue / Math.abs(totalQty)).toFixed(2));
         position.quantity = totalQty;
+        if (stopLossPrice !== undefined) position.stopLossPrice = stopLossPrice;
+        if (targetPrice !== undefined) position.targetPrice = targetPrice;
         position.updatedAt = Date.now();
+
+        // Deduct scale-in order charges once from cash_balance_paise and record SIMULATED_CHARGES ledger entry
+        await this.repo.applyOrderCharges(
+          order.accountId,
+          order.estimatedChargesPaise,
+          order.id,
+          `${order.side} ${order.quantity} @ ₹${fillPrice}`
+        );
       } else {
         const closedQty = Math.min(Math.abs(position.quantity), Math.abs(deltaQty));
         const priceDiff =
           position.quantity > 0 ? fillPrice - position.averageEntryPrice : position.averageEntryPrice - fillPrice;
-        const pnlRupees = priceDiff * closedQty;
+        const multiplier =
+          instrument?.exchange === 'MCX' && instrument?.priceQuoteMultiplier
+            ? instrument.priceQuoteMultiplier / (instrument.lotSize || 1)
+            : 1;
+        const pnlRupees = priceDiff * multiplier * closedQty;
         realizedPnlPaise = Money.fromRupees(pnlRupees);
+
+        const releasedMarginRupees = this.calculateReleasedMarginRupees(position, closedQty, instrument);
+        const releasedMarginPaise = Money.fromRupees(releasedMarginRupees) + lockedForThisOrderPaise;
 
         position.realizedPnlPaise += realizedPnlPaise;
         position.quantity += deltaQty;
+        if (position.quantity === 0) {
+          position.stopLossPrice = undefined;
+          position.targetPrice = undefined;
+        }
         position.updatedAt = Date.now();
 
-        // Futures Margin collateral release (Collateral is not cash equity debit)
-        const marginRate = 0.12; // 12% for Index Futures
-        const releasedMarginRupees = position.averageEntryPrice * closedQty * marginRate;
-        const releasedMarginPaise = Money.fromRupees(releasedMarginRupees);
         await this.repo.releaseMargin(order.accountId, releasedMarginPaise);
 
+        // Settle realized P&L and deduct closing order charges once
         await this.repo.applyTradeSettlement(
           order.accountId,
           realizedPnlPaise,
@@ -202,7 +324,7 @@ export class SimulationEngine {
       }
     }
 
-    this.updatePositionUnrealized(position, quote.ltp);
+    this.updatePositionUnrealized(position, quote.ltp, instrument);
 
     return {
       order,
@@ -254,6 +376,7 @@ export class SimulationEngine {
         }
 
         const fillPrice = this.computeFillPrice(order.side, quote, order.orderType, gapPrice);
+        this.lockedOrderMargins.delete(order.id);
         const res = await this.executeFill(order, fillPrice, quote, 0n);
         await this.repo.updateOrder(res.order);
         if (res.position) {
@@ -272,9 +395,26 @@ export class SimulationEngine {
   public async squareOffPosition(
     accountId: string,
     globalInstrumentId: string,
-    quote: QuoteSnapshot
+    quote: QuoteSnapshot,
+    instrument?: InstrumentMetadata
   ): Promise<ExecutionResult> {
     SecurityAirGap.verifySimulatedActionExclusivity('SQUARE_OFF');
+
+    const quoteAgeMs = Date.now() - quote.receiveTimestamp;
+    const exchange = instrument?.exchange || (globalInstrumentId.startsWith('MCX') ? 'MCX' : 'NSE');
+    const sessionStatus = getExchangeSessionStatus(exchange, new Date());
+    const isClosedMarketLiveQuote = !quote.isSimulated && !sessionStatus.isOpen;
+    if (!Number.isFinite(quote.ltp) || quote.ltp <= 0) {
+      throw new Error('ERR_UNSUITABLE_MARKET_DATA: Quote price is invalid or zero.');
+    }
+    if (isClosedMarketLiveQuote) {
+      throw new Error(
+        `ERR_MARKET_CLOSED: ${exchange} market is currently closed (${sessionStatus.sessionName}: ${sessionStatus.nextEventDescription}). Cannot execute market square-off against last-session quotes.`
+      );
+    }
+    if (quoteAgeMs > 5000) {
+      throw new Error(`ERR_STALE_MARKET_DATA: Market quote age is ${quoteAgeMs}ms (threshold 5000ms). Execution prevented.`);
+    }
 
     const positions = await this.repo.getPositions(accountId);
     const position = positions.find((p) => p.globalInstrumentId === globalInstrumentId && p.quantity !== 0);
@@ -291,6 +431,7 @@ export class SimulationEngine {
       globalInstrumentId,
       side,
       orderType: 'MARKET',
+      productType: position.productType || 'INTRADAY',
       quantity,
       status: 'PENDING',
       idempotencyKey: `sqoff-${Date.now()}-${randomUUID()}`,
@@ -299,8 +440,8 @@ export class SimulationEngine {
       updatedAt: Date.now(),
     };
 
-    const fillPrice = this.computeFillPrice(side, quote, 'MARKET');
-    const res = await this.executeFill(closeOrder, fillPrice, quote, 0n);
+    const fillPrice = this.computeFillPrice(side, quote, 'MARKET', undefined, instrument?.tickSize);
+    const res = await this.executeFill(closeOrder, fillPrice, quote, 0n, instrument);
     await this.repo.saveOrder(res.order);
     if (res.position) {
       await this.repo.saveOrUpdatePosition(res.position);
@@ -319,21 +460,32 @@ export class SimulationEngine {
     }
 
     order.status = 'CANCELLED';
+    order.rejectionReason = 'USER_CANCELLED: Cancelled by user.';
     order.updatedAt = Date.now();
     await this.repo.updateOrder(order);
     this.pendingOrders = this.pendingOrders.filter((o) => o.id !== orderId);
 
+    const lockedMargin = this.lockedOrderMargins.get(orderId);
+    if (lockedMargin && lockedMargin > 0n) {
+      await this.repo.releaseMargin(accountId, lockedMargin);
+      this.lockedOrderMargins.delete(orderId);
+    }
+
     return order;
   }
 
-  private updatePositionUnrealized(pos: SimulatedPosition, currentLtp: number): void {
+  private updatePositionUnrealized(pos: SimulatedPosition, currentLtp: number, instrument?: InstrumentMetadata): void {
     pos.currentPrice = currentLtp;
     if (pos.quantity === 0) {
       pos.unrealizedPnlPaise = 0n;
       return;
     }
+    const multiplier =
+      instrument?.exchange === 'MCX' && instrument?.priceQuoteMultiplier
+        ? instrument.priceQuoteMultiplier / (instrument.lotSize || 1)
+        : 1;
     const diff = pos.quantity > 0 ? currentLtp - pos.averageEntryPrice : pos.averageEntryPrice - currentLtp;
-    const unrealizedRupees = diff * Math.abs(pos.quantity);
+    const unrealizedRupees = diff * multiplier * Math.abs(pos.quantity);
     pos.unrealizedPnlPaise = Money.fromRupees(unrealizedRupees);
     pos.updatedAt = Date.now();
   }
