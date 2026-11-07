@@ -396,6 +396,32 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+
+        @JavascriptInterface
+        fun getAdDiagnostics(): String {
+            if (!verifyCallerIsTrusted()) return "{}"
+            return if (::adMobManager.isInitialized) {
+                adMobManager.getAdDiagnostics().toString()
+            } else {
+                "{}"
+            }
+        }
+
+        @JavascriptInterface
+        fun setSystemBarTheme(isLight: Boolean, colorHex: String) {
+            if (!verifyCallerIsTrusted()) return
+            runOnUiThread {
+                try {
+                    val parsedColor = Color.parseColor(colorHex)
+                    window.decorView.setBackgroundColor(parsedColor)
+                    val insetsController = WindowCompat.getInsetsController(window, window.decorView)
+                    insetsController.isAppearanceLightStatusBars = isLight
+                    insetsController.isAppearanceLightNavigationBars = isLight
+                } catch (e: Exception) {
+                    Log.w("TradingzoneBridge", "Failed to setSystemBarTheme: ${e.message}")
+                }
+            }
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -404,18 +430,17 @@ class MainActivity : AppCompatActivity() {
 
         credentialManager = CredentialManager.create(this)
 
-        WindowCompat.setDecorFitsSystemWindows(window, true)
-        @Suppress("DEPRECATION")
-        window.statusBarColor = Color.parseColor("#080C12")
-        @Suppress("DEPRECATION")
-        window.navigationBarColor = Color.parseColor("#080C12")
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        val insetsController = WindowCompat.getInsetsController(window, window.decorView)
+        insetsController.isAppearanceLightStatusBars = true
+        insetsController.isAppearanceLightNavigationBars = true
 
         val rootLayout = FrameLayout(this).apply {
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
-            setBackgroundColor(Color.parseColor("#080C12"))
+            setBackgroundColor(Color.parseColor("#F8FAFC"))
         }
 
         webView = WebView(this).apply {
@@ -423,7 +448,7 @@ class MainActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
-            setBackgroundColor(Color.parseColor("#080C12"))
+            setBackgroundColor(Color.parseColor("#F8FAFC"))
 
             settings.apply {
                 javaScriptEnabled = true
@@ -536,11 +561,21 @@ class MainActivity : AppCompatActivity() {
             val insets = windowInsets.getInsets(
                 WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
             )
-            webView.setPadding(insets.left, insets.top, insets.right, insets.bottom)
+            // Apply margins directly to WebView layout params so that HTML headers (including fixed/absolute)
+            // never render under the status bar, notch or camera cutout.
+            (webView.layoutParams as? FrameLayout.LayoutParams)?.apply {
+                topMargin = insets.top
+                bottomMargin = insets.bottom
+                leftMargin = insets.left
+                rightMargin = insets.right
+                webView.layoutParams = this
+            }
 
             val bottomNavPx = (60 * resources.displayMetrics.density).roundToInt()
             (bannerContainer.layoutParams as? FrameLayout.LayoutParams)?.apply {
                 bottomMargin = bottomNavPx + insets.bottom
+                leftMargin = insets.left
+                rightMargin = insets.right
                 bannerContainer.layoutParams = this
             }
             WindowInsetsCompat.CONSUMED

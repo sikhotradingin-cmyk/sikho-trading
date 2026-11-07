@@ -230,6 +230,45 @@
   }
 
   // =========================================================================
+  // BRANDED MODAL DIALOGS (REPLACING BROWSER ALERT / CONFIRM)
+  // =========================================================================
+  function showBrandedAlert(titleOrMsg, msg) {
+    const title = msg !== undefined ? titleOrMsg : 'Notification';
+    const message = msg !== undefined ? msg : titleOrMsg;
+    const titleEl = document.getElementById('branded-alert-title');
+    const msgEl = document.getElementById('branded-alert-message');
+    const modal = document.getElementById('modal-branded-alert');
+    if (titleEl) titleEl.textContent = title;
+    if (msgEl) msgEl.textContent = message;
+    if (modal) modal.classList.add('active');
+  }
+
+  window.alert = function (msg) {
+    showBrandedAlert('Notification', String(msg));
+  };
+
+  let confirmSheetCallback = null;
+  function showConfirmSheet(title, message, callback) {
+    const titleEl = document.getElementById('branded-confirm-title');
+    const msgEl = document.getElementById('branded-confirm-message');
+    const modal = document.getElementById('modal-branded-confirm');
+    if (titleEl) titleEl.textContent = title || 'Confirm Action';
+    if (msgEl) msgEl.textContent = message || 'Are you sure you want to proceed?';
+    confirmSheetCallback = callback;
+    if (modal) modal.classList.add('active');
+  }
+
+  function closeConfirmSheet(accepted) {
+    const modal = document.getElementById('modal-branded-confirm');
+    if (modal) modal.classList.remove('active');
+    if (typeof confirmSheetCallback === 'function') {
+      const cb = confirmSheetCallback;
+      confirmSheetCallback = null;
+      cb(Boolean(accepted));
+    }
+  }
+
+  // =========================================================================
   // SCREEN NAVIGATION, ADMOB STATE COORDINATION & ANDROID BACK BUTTON
   // =========================================================================
   function notifyNativeScreenState() {
@@ -806,20 +845,95 @@
 
   async function refreshAccountAndPortfolio() {
     try {
-      const [acc, posRes, ordRes] = await Promise.all([
+      const [acc, posRes, ordRes, perfRes, subRes] = await Promise.all([
         apiFetch('/api/v1/account'),
         apiFetch('/api/v1/positions'),
         apiFetch('/api/v1/orders'),
+        apiFetch('/api/v1/account/performance').catch(() => null),
+        apiFetch('/api/v1/billing/status').catch(() => null),
       ]);
       state.account = acc;
       state.positionsData = posRes;
       state.orders = ordRes.orders || [];
+      if (perfRes) {
+        state.performance = perfRes;
+      }
+      if (subRes) {
+        state.subscription = subRes;
+        if (state.user) {
+          state.user.tier = subRes.tier;
+        }
+      }
       renderAccountBalancesUI();
       renderPortfolioTab();
       renderOrdersTab();
+      renderProfileStatsUI();
       notifyNativeScreenState();
       notifyNativeUserTier();
     } catch { }
+  }
+
+  function renderProfileStatsUI() {
+    updateProfileHeaderUI();
+    const isPro = (state.user?.tier === 'PRO') || (state.subscription?.tier === 'PRO');
+    const badgeEl = document.getElementById('prof-tier-badge');
+    if (badgeEl) {
+      badgeEl.textContent = isPro ? 'PREMIUM PRO' : 'FREE PLAN';
+      badgeEl.className = isPro ? 'tier-pill-pro' : 'tier-pill-free';
+    }
+    const subTitle = document.getElementById('prof-sub-title');
+    const subDesc = document.getElementById('prof-sub-desc');
+    const subBtn = document.getElementById('prof-btn-manage-sub');
+    if (subTitle && subDesc && subBtn) {
+      if (isPro) {
+        subTitle.textContent = 'Sikho Trading Premium Active';
+        subDesc.textContent = 'Unlimited Access • All Equities, F&O & MCX Commodities • Zero Ads';
+        subBtn.textContent = 'Manage Plan ➔';
+      } else {
+        subTitle.textContent = 'Sikho Trading Free Tier';
+        subDesc.textContent = 'NIFTY & BANKNIFTY Futures & Options Practice';
+        subBtn.textContent = 'Upgrade ➔';
+      }
+    }
+
+    if (state.performance) {
+      const cur = state.performance.currentSession || {};
+      const life = state.performance.lifetime || {};
+
+      const sessPnlEl = document.getElementById('prof-session-pnl');
+      if (sessPnlEl) {
+        const pnl = Number(cur.realizedPnlINR || 0);
+        sessPnlEl.textContent = (pnl >= 0 ? '+' : '') + fmtINR(pnl);
+        sessPnlEl.style.color = pnl >= 0 ? '#C7F542' : '#EF4444';
+      }
+
+      const sessWrEl = document.getElementById('prof-session-winrate');
+      if (sessWrEl) {
+        sessWrEl.textContent = (Number(cur.winRatePercent || 0)).toFixed(1) + '%';
+      }
+
+      const lifePnlEl = document.getElementById('prof-lifetime-pnl');
+      if (lifePnlEl) {
+        const netPnl = Number(life.netPnlINR || 0);
+        lifePnlEl.textContent = (netPnl >= 0 ? '+' : '') + fmtINR(netPnl);
+        lifePnlEl.style.color = netPnl >= 0 ? '#0F172A' : '#EF4444';
+      }
+
+      const lifeChgEl = document.getElementById('prof-lifetime-charges');
+      if (lifeChgEl) {
+        lifeChgEl.textContent = fmtINR(Number(life.totalChargesINR || 0));
+      }
+
+      const lifeTrdEl = document.getElementById('prof-lifetime-trades');
+      if (lifeTrdEl) {
+        lifeTrdEl.textContent = String(life.totalClosedTrades || 0);
+      }
+
+      const lifeWrEl = document.getElementById('prof-lifetime-winrate');
+      if (lifeWrEl) {
+        lifeWrEl.textContent = (Number(life.winRatePercent || 0)).toFixed(1) + '%';
+      }
+    }
   }
 
   function renderAccountBalancesUI() {
@@ -1339,6 +1453,9 @@
     closeOptionChainModal();
     state.chartOpen = true;
     document.getElementById('screen-chart').classList.add('active');
+    if (window.TradingzoneNative && typeof window.TradingzoneNative.setSystemBarTheme === 'function') {
+      window.TradingzoneNative.setSystemBarTheme(false, '#0D1117');
+    }
     notifyNativeScreenState();
 
     const commList = [
@@ -1385,6 +1502,9 @@
   function closeChartWorkspace() {
     state.chartOpen = false;
     document.getElementById('screen-chart').classList.remove('active');
+    if (window.TradingzoneNative && typeof window.TradingzoneNative.setSystemBarTheme === 'function') {
+      window.TradingzoneNative.setSystemBarTheme(true, '#FFFFFF');
+    }
     notifyNativeScreenState();
   }
 
@@ -2159,15 +2279,22 @@
   }
 
   async function squareOffPosition(globalId) {
-    try {
-      await apiFetch('/api/v1/positions/square-off', {
-        method: 'POST',
-        body: JSON.stringify({ globalInstrumentId: globalId }),
-      });
-      await refreshAccountAndPortfolio();
-    } catch (err) {
-      alert(err.message);
-    }
+    showConfirmSheet(
+      'Exit Position',
+      `Square off position for ${globalId.split(':')[1] || globalId}?`,
+      async (ok) => {
+        if (!ok) return;
+        try {
+          await apiFetch('/api/v1/positions/square-off', {
+            method: 'POST',
+            body: JSON.stringify({ globalInstrumentId: globalId }),
+          });
+          await refreshAccountAndPortfolio();
+        } catch (err) {
+          showBrandedAlert('Square Off Failed', err.message);
+        }
+      }
+    );
   }
 
   function setOrdersFilter(filter, btnEl) {
@@ -2227,24 +2354,188 @@
   }
 
   async function cancelPendingOrder(orderId) {
-    try {
-      await apiFetch(`/api/v1/orders/${encodeURIComponent(orderId)}/cancel`, { method: 'POST', body: '{}' });
-      await refreshAccountAndPortfolio();
-    } catch (err) {
-      alert(err.message);
-    }
+    showConfirmSheet(
+      'Cancel Order',
+      'Are you sure you want to cancel this pending order?',
+      async (ok) => {
+        if (!ok) return;
+        try {
+          await apiFetch(`/api/v1/orders/${encodeURIComponent(orderId)}/cancel`, { method: 'POST', body: '{}' });
+          await refreshAccountAndPortfolio();
+        } catch (err) {
+          showBrandedAlert('Cancel Failed', err.message);
+        }
+      }
+    );
   }
 
   // =========================================================================
-  // 9. PROFILE ACTIONS: WALLET RESET, PIN SETUP & AUDIT LEDGER
+  // 9. PROFILE ACTIONS: CAPITAL RESET PRESETS, SUBSCRIPTIONS, PIN & LEDGER
   // =========================================================================
+  let selectedResetPresetINR = 100000;
+
+  function openCapitalResetModal() {
+    const modal = document.getElementById('modal-capital-reset');
+    if (!modal) return;
+
+    // Check positions and pending orders
+    const allPos = state.positionsData?.positions || [];
+    const hasOpenPos = allPos.some((p) => Math.abs(p.quantity || 0) > 0);
+    const hasPendingOrd = (state.orders || []).some((o) => o.status === 'PENDING' || o.status === 'TRIGGER_PENDING');
+
+    const warningEl = document.getElementById('reset-positions-warning');
+    const confirmBtn = document.getElementById('btn-confirm-capital-reset');
+    if (warningEl) {
+      warningEl.style.display = (hasOpenPos || hasPendingOrd) ? 'block' : 'none';
+    }
+    if (confirmBtn) {
+      confirmBtn.disabled = (hasOpenPos || hasPendingOrd);
+      confirmBtn.style.opacity = (hasOpenPos || hasPendingOrd) ? '0.5' : '1';
+    }
+
+    const isPro = (state.user?.tier === 'PRO') || (state.subscription?.tier === 'PRO');
+    const presets = isPro
+      ? [100000, 1000000, 2000000, 3000000, 4000000, 5000000, 6000000, 7000000, 8000000, 9000000, 10000000]
+      : [100000];
+
+    selectedResetPresetINR = 100000;
+
+    const grid = document.getElementById('capital-preset-grid');
+    if (grid) {
+      grid.innerHTML = presets.map((amount) => {
+        let label = '₹1 Lakh';
+        if (amount >= 10000000) label = `₹${amount / 10000000} Crore`;
+        else if (amount >= 100000) label = `₹${amount / 100000} Lakh`;
+
+        const isActive = amount === selectedResetPresetINR;
+        return `
+          <button type="button" class="preset-chip ${isActive ? 'active' : ''}" data-amount="${amount}" onclick="window.TZApp.selectCapitalPreset(${amount}, this)">
+            <span class="preset-chip-amount">${label}</span>
+            <span class="preset-chip-sub">${fmtINR(amount)}</span>
+          </button>
+        `;
+      }).join('');
+    }
+
+    if (confirmBtn) {
+      confirmBtn.textContent = `Confirm Reset to ${fmtINR(selectedResetPresetINR)}`;
+    }
+
+    modal.classList.add('active');
+  }
+
+  function selectCapitalPreset(amount, btn) {
+    selectedResetPresetINR = amount;
+    document.querySelectorAll('#capital-preset-grid .preset-chip').forEach((c) => c.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    const confirmBtn = document.getElementById('btn-confirm-capital-reset');
+    if (confirmBtn) {
+      confirmBtn.textContent = `Confirm Reset to ${fmtINR(amount)}`;
+    }
+  }
+
+  async function executeCapitalReset() {
+    const allPos = state.positionsData?.positions || [];
+    const hasOpenPos = allPos.some((p) => Math.abs(p.quantity || 0) > 0);
+    const hasPendingOrd = (state.orders || []).some((o) => o.status === 'PENDING' || o.status === 'TRIGGER_PENDING');
+
+    if (hasOpenPos || hasPendingOrd) {
+      showBrandedAlert('Cannot Reset Capital', 'Please square off all open positions and cancel pending orders before resetting your practice capital.');
+      return;
+    }
+
+    showConfirmSheet(
+      'Reset Practice Capital',
+      `Are you sure you want to reset your starting practice balance to ${fmtINR(selectedResetPresetINR)}? This will archive your current session and start fresh. Your lifetime track record will be preserved.`,
+      async (confirmed) => {
+        if (!confirmed) return;
+        try {
+          const res = await apiFetch('/api/v1/account/reset', {
+            method: 'POST',
+            body: JSON.stringify({ startingCapitalINR: selectedResetPresetINR }),
+          });
+          document.getElementById('modal-capital-reset')?.classList.remove('active');
+          await refreshAccountAndPortfolio();
+          showBrandedAlert('Capital Reset Successful', `Your virtual practice account has been reset to ${fmtINR(selectedResetPresetINR)}.`);
+        } catch (err) {
+          showBrandedAlert('Reset Failed', err.message);
+        }
+      }
+    );
+  }
+
   async function resetVirtualWallet() {
+    openCapitalResetModal();
+  }
+
+  let selectedPlanId = 'plan_month_100';
+
+  function openSubscriptionPlansModal() {
+    const modal = document.getElementById('modal-subscription');
+    if (!modal) return;
+    selectPlanCard('plan_month_100');
+    modal.classList.add('active');
+  }
+
+  function selectPlanCard(planId) {
+    selectedPlanId = planId;
+    ['day', 'month', 'year'].forEach((p) => {
+      const card = document.getElementById(`plan-card-${p}`);
+      if (card) card.classList.remove('active');
+    });
+
+    const ctaBtn = document.getElementById('btn-subscribe-cta');
+    if (planId === 'plan_day_10') {
+      document.getElementById('plan-card-day')?.classList.add('active');
+      if (ctaBtn) ctaBtn.textContent = 'Get Day Pass • ₹10';
+    } else if (planId === 'plan_month_100') {
+      document.getElementById('plan-card-month')?.classList.add('active');
+      if (ctaBtn) ctaBtn.textContent = 'Upgrade to Monthly Pro • ₹100';
+    } else if (planId === 'plan_year_800') {
+      document.getElementById('plan-card-year')?.classList.add('active');
+      if (ctaBtn) ctaBtn.textContent = 'Upgrade to Annual Pro • ₹800';
+    }
+  }
+
+  async function initiateSubscriptionPurchase() {
+    if (window.TradingzoneNative && typeof window.TradingzoneNative.launchBillingFlow === 'function') {
+      window.TradingzoneNative.launchBillingFlow(selectedPlanId);
+      return;
+    }
+
     try {
-      await apiFetch('/api/v1/account/reset', { method: 'POST', body: '{}' });
+      const res = await apiFetch('/api/v1/billing/verify-purchase', {
+        method: 'POST',
+        body: JSON.stringify({
+          productId: selectedPlanId,
+          planId: selectedPlanId,
+          purchaseToken: 'token_' + Date.now(),
+        }),
+      });
+      if (state.user) {
+        state.user.tier = res.tier || 'PRO';
+      }
+      document.getElementById('modal-subscription')?.classList.remove('active');
       await refreshAccountAndPortfolio();
-      alert('Practice wallet reset to ₹1,00,000.00!');
+      showBrandedAlert('Subscription Activated', 'Welcome to Sikho Trading Premium! All equities, F&O derivatives, and MCX commodities are now unlocked.');
     } catch (err) {
-      alert(err.message);
+      showBrandedAlert('Subscription Error', err.message);
+    }
+  }
+
+  async function restorePurchases() {
+    try {
+      const res = await apiFetch('/api/v1/billing/restore-purchases', {
+        method: 'POST',
+        body: '{}',
+      });
+      if (state.user) {
+        state.user.tier = res.tier || 'FREE';
+      }
+      await refreshAccountAndPortfolio();
+      showBrandedAlert('Purchases Restored', res.isProActive ? 'Your Pro subscription is active!' : 'No active Pro subscription found.');
+    } catch (err) {
+      showBrandedAlert('Restore Failed', err.message);
     }
   }
 
@@ -2317,6 +2608,9 @@
     if (tab === 'portfolio' || tab === 'orders' || tab === 'profile') {
       refreshAccountAndPortfolio();
     }
+    if (window.TradingzoneNative && typeof window.TradingzoneNative.setSystemBarTheme === 'function') {
+      window.TradingzoneNative.setSystemBarTheme(true, '#FFFFFF');
+    }
     notifyNativeScreenState();
     recordEligibleAction('switch_tab_' + tab);
   }
@@ -2375,10 +2669,36 @@
   }
 
   function handleIncomingQuoteTick(quote) {
+    if (!quote) return;
+    const latencyMs = quote.timestamp ? Math.max(0, Date.now() - Number(quote.timestamp)) : null;
+    const latencyPill = document.getElementById('header-latency-pill');
+    if (latencyPill && latencyMs !== null) {
+      latencyPill.textContent = `${latencyMs}ms`;
+      latencyPill.style.display = 'inline-block';
+    }
+
     // Update DOM price elements matching data-ltp-id
     document.querySelectorAll(`[data-ltp-id="${quote.globalId}"]`).forEach((el) => {
       el.textContent = fmtNum(quote.ltp);
     });
+
+    // Authoritative Live P&L streaming: update open positions live even when chart is closed
+    if (state.positionsData && state.positionsData.positions) {
+      let pnlChanged = false;
+      state.positionsData.positions.forEach((pos) => {
+        if (pos.globalInstrumentId === quote.globalId && pos.quantity !== 0) {
+          const entryPrice = Number(pos.averageEntryPriceINR || 0);
+          const currentPrice = Number(quote.ltp || 0);
+          const mult = pos.side === 'BUY' ? 1 : -1;
+          pos.currentLtpINR = currentPrice;
+          pos.unrealizedPnlINR = Math.round((currentPrice - entryPrice) * pos.quantity * mult * 100) / 100;
+          pnlChanged = true;
+        }
+      });
+      if (pnlChanged) {
+        renderAccountBalancesUI();
+      }
+    }
 
     if (state.chartOpen && state.activeInstrument && state.activeInstrument.globalId === quote.globalId) {
       updateChartHeaderQuote(quote);
@@ -2662,6 +2982,16 @@
     setOrdersFilter,
     cancelPendingOrder,
     resetVirtualWallet,
+    openCapitalResetModal,
+    selectCapitalPreset,
+    executeCapitalReset,
+    openSubscriptionPlansModal,
+    selectPlanCard,
+    initiateSubscriptionPurchase,
+    restorePurchases,
+    showBrandedAlert,
+    showConfirmSheet,
+    closeConfirmSheet,
     promptSetupPin,
     loadAndShowLedger,
     openAdPrivacyOptions,

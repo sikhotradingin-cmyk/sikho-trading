@@ -52,10 +52,10 @@ class AdMobManager(
         private const val KEY_24H_IMPRESSIONS = "interstitial_impressions_24h"
 
         private const val ACTIONS_REQUIRED_FOR_INTERSTITIAL = 5
-        private const val FIVE_MINUTES_MS = 5 * 60 * 1000L
+        private const val TWO_MINUTES_MS = 2 * 60 * 1000L
         private const val TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000L
-        private const val MAX_INTERSTITIALS_PER_SESSION = 3
-        private const val MAX_INTERSTITIALS_PER_24H = 6
+        private const val MAX_INTERSTITIALS_PER_SESSION = 6
+        private const val MAX_INTERSTITIALS_PER_24H = 12
 
         private val ALLOWED_BANNER_SCREENS = setOf("explore", "watchlists", "portfolio", "orders", "profile")
     }
@@ -401,18 +401,18 @@ class AdMobManager(
             return
         }
 
-        // 3. Time elapsed >= 5 min since session start
+        // 3. Time elapsed >= 2 min since session start
         val timeSinceSessionStart = now - sessionStartTime
-        if (timeSinceSessionStart < FIVE_MINUTES_MS) {
-            val remSec = (FIVE_MINUTES_MS - timeSinceSessionStart) / 1000
+        if (timeSinceSessionStart < TWO_MINUTES_MS) {
+            val remSec = (TWO_MINUTES_MS - timeSinceSessionStart) / 1000
             Log.d(TAG, "Interstitial blocked: session start cooldown active ($remSec s remaining).")
             return
         }
 
-        // 4. Time elapsed >= 5 min since last interstitial
+        // 4. Time elapsed >= 2 min since last interstitial
         val timeSinceLastAd = now - lastInterstitialTime
-        if (lastInterstitialTime > 0 && timeSinceLastAd < FIVE_MINUTES_MS) {
-            val remSec = (FIVE_MINUTES_MS - timeSinceLastAd) / 1000
+        if (lastInterstitialTime > 0 && timeSinceLastAd < TWO_MINUTES_MS) {
+            val remSec = (TWO_MINUTES_MS - timeSinceLastAd) / 1000
             Log.d(TAG, "Interstitial blocked: interval cooldown active ($remSec s remaining).")
             return
         }
@@ -484,6 +484,29 @@ class AdMobManager(
         val arr = JSONArray()
         timestamps.forEach { arr.put(it) }
         prefs.edit().putString(KEY_24H_IMPRESSIONS, arr.toString()).apply()
+    }
+
+    fun getAdDiagnostics(): org.json.JSONObject {
+        val now = System.currentTimeMillis()
+        val timeSinceSessionStart = (now - sessionStartTime) / 1000
+        val timeSinceLastAd = if (lastInterstitialTime > 0) (now - lastInterstitialTime) / 1000 else -1
+        val recent24hCount = getRecent24hImpressionsCount()
+        return org.json.JSONObject().apply {
+            put("tier", currentUserTier)
+            put("sessionInterstitialCount", sessionInterstitialCount)
+            put("maxSessionInterstitials", MAX_INTERSTITIALS_PER_SESSION)
+            put("recent24hCount", recent24hCount)
+            put("max24hInterstitials", MAX_INTERSTITIALS_PER_24H)
+            put("eligibleActionCounter", eligibleActionCounter)
+            put("actionsRequired", ACTIONS_REQUIRED_FOR_INTERSTITIAL)
+            put("sessionDurationSec", timeSinceSessionStart)
+            put("secondsSinceLastInterstitial", timeSinceLastAd)
+            put("isTradingWorkspaceOpen", isTradingWorkspaceOpen)
+            put("hasOpenPositions", hasOpenPositions)
+            put("hasPendingOrders", hasPendingOrders)
+            put("currentScreen", currentScreen)
+            put("bannerVisible", bannerContainer.visibility == View.VISIBLE)
+        }
     }
 
     fun onResume() {

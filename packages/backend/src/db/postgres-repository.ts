@@ -6,6 +6,11 @@ import {
   SimulatedOrder,
   SimulatedPosition,
   VirtualAccount,
+  PracticeSession,
+  LifetimePerformance,
+  FREE_CAPITAL_PRESETS_INR,
+  PREMIUM_CAPITAL_PRESETS_INR,
+  UserTier,
 } from '@trading/shared';
 import { pbkdf2Sync, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { IDatabase } from './database.js';
@@ -377,6 +382,19 @@ export class PostgresRepository {
           ]
         );
 
+        // Initialize active practice session
+        const sessionId = randomUUID();
+        await client.query(
+          `INSERT INTO practice_sessions 
+           (id, account_id, user_id, starting_capital_paise, realized_pnl_paise, total_charges_paise, trades_count, win_trades_count, is_active, started_at)
+           VALUES ($1, $2, $3, $4, 0, 0, 0, 0, true, $5)`,
+          [sessionId, accountId, userId, initialPaise.toString(), now]
+        );
+        await client.query(
+          'UPDATE virtual_accounts SET active_session_id = $1 WHERE id = $2',
+          [sessionId, accountId]
+        );
+
         const accRes = await client.query('SELECT * FROM virtual_accounts WHERE id = $1', [accountId]);
         return this.mapAccount(accRes.rows[0]);
       });
@@ -547,42 +565,82 @@ export class PostgresRepository {
   public async resetAccount(
     accountId: string,
     openPositions: SimulatedPosition[],
-    currentPrices: Map<string, number>
-  ): Promise<{ success: boolean; error?: string }> {
-    for (const pos of openPositions) {
-      if (pos.quantity !== 0) {
-        const price = currentPrices.get(pos.globalInstrumentId);
-        if (!price || price <= 0) {
-          return {
-            success: false,
-            error: `Cannot safely reset account: open position in ${pos.globalInstrumentId} has missing quote.`,
-          };
-        }
-      }
+    _currentPrices: Map<string, number>,
+    requestedCapitalRupees: number = 100000,
+    tier: UserTier = 'FREE'
+  ): Promise<{ success: boolean; newSessionId?: string; error?: string }> {
+    const hasOpenPositions = openPositions.some((pos) => pos.quantity !== 0);
+    if (hasOpenPositions) {
+      return {
+        success: false,
+        error: 'Cannot reset capital while active open positions exist. Please square off all open positions first.',
+      };
+    }
+
+    const allowed = tier === 'PRO' ? PREMIUM_CAPITAL_PRESETS_INR : FREE_CAPITAL_PRESETS_INR;
+    if (!allowed.includes(requestedCapitalRupees)) {
+      return {
+        success: false,
+        error: `Invalid capital preset ₹${requestedCapitalRupees.toLocaleString('en-IN')}. Free tier is limited to ₹100,000. Upgrade to Premium for presets up to ₹1,00,00,000.`,
+      };
     }
 
     return this.db.transaction(async (client) => {
       const res = await client.query('SELECT * FROM virtual_accounts WHERE id = $1 FOR UPDATE', [accountId]);
       if (res.rows.length === 0) return { success: false, error: 'Account not found' };
 
+      const posCheck = await client.query(
+        'SELECT COUNT(*) as count FROM positions WHERE account_id = $1 AND quantity != 0',
+        [accountId]
+      );
+      if (parseInt(posCheck.rows[0].count, 10) > 0) {
+        return {
+          success: false,
+          error: 'Cannot reset capital while active open positions exist. Please square off all open positions first.',
+        };
+      }
+
+      const ordCheck = await client.query(
+        "SELECT COUNT(*) as count FROM orders WHERE account_id = $1 AND status = 'PENDING'",
+        [accountId]
+      );
+      if (parseInt(ordCheck.rows[0].count, 10) > 0) {
+        return {
+          success: false,
+          error: 'Cannot reset capital while pending orders exist. Please cancel all pending orders first.',
+        };
+      }
+
       const oldCash = BigInt(res.rows[0].cash_balance_paise);
-      const initialPaise = Money.fromRupees(100000);
+      const activeSessionId = res.rows[0].active_session_id;
+      const initialPaise = Money.fromRupees(requestedCapitalRupees);
       const adjustmentPaise = initialPaise - oldCash;
       const now = Date.now();
+      const userId = res.rows[0].user_id;
 
+      if (activeSessionId) {
+        await client.query(
+          `UPDATE practice_sessions 
+           SET is_active = false, final_cash_paise = $1, ended_at = $2 
+           WHERE id = $3`,
+          [oldCash.toString(), now, activeSessionId]
+        );
+      }
+
+      const newSessionId = randomUUID();
       await client.query(
-        'UPDATE virtual_accounts SET cash_balance_paise = $1, locked_margin_paise = 0, baseline_reset_at = $2, updated_at = $2 WHERE id = $3',
-        [initialPaise.toString(), now, accountId]
+        `INSERT INTO practice_sessions 
+         (id, account_id, user_id, starting_capital_paise, realized_pnl_paise, total_charges_paise, trades_count, win_trades_count, is_active, started_at)
+         VALUES ($1, $2, $3, $4, 0, 0, 0, 0, true, $5)`,
+        [newSessionId, accountId, userId, initialPaise.toString(), now]
       );
 
-      // Close any open positions and cancel pending orders on reset
       await client.query(
-        'UPDATE positions SET quantity = 0, updated_at = $1 WHERE account_id = $2 AND quantity != 0',
-        [now, accountId]
-      );
-      await client.query(
-        "UPDATE orders SET status = 'CANCELLED', rejection_reason = 'ACCOUNT_RESET', updated_at = $1 WHERE account_id = $2 AND status = 'PENDING'",
-        [now, accountId]
+        `UPDATE virtual_accounts 
+         SET cash_balance_paise = $1, starting_balance_paise = $1, locked_margin_paise = 0, 
+             active_session_id = $2, baseline_reset_at = $3, updated_at = $3 
+         WHERE id = $4`,
+        [initialPaise.toString(), newSessionId, now, accountId]
       );
 
       await client.query(
@@ -595,13 +653,95 @@ export class PostgresRepository {
           'RESET',
           adjustmentPaise.toString(),
           initialPaise.toString(),
-          `Account virtual balance reset to ₹100,000.00. Previous cash balance: ${Money.formatINR(oldCash)}`,
+          `Practice capital reset to ${Money.formatINR(initialPaise)}. Previous cash balance: ${Money.formatINR(oldCash)}. New session started.`,
           now,
         ]
       );
 
-      return { success: true };
+      return { success: true, newSessionId };
     });
+  }
+
+  public async getActiveSession(accountId: string): Promise<PracticeSession | null> {
+    const res = await this.db.query(
+      'SELECT * FROM practice_sessions WHERE account_id = $1 AND is_active = true LIMIT 1',
+      [accountId]
+    );
+    if (res.rows.length === 0) {
+      const accRes = await this.db.query('SELECT * FROM virtual_accounts WHERE id = $1', [accountId]);
+      if (accRes.rows.length === 0) return null;
+      const acc = accRes.rows[0];
+      const sessionId = randomUUID();
+      const now = Date.now();
+      const startingPaise = acc.starting_balance_paise || acc.cash_balance_paise || '10000000';
+      await this.db.query(
+        `INSERT INTO practice_sessions 
+         (id, account_id, user_id, starting_capital_paise, realized_pnl_paise, total_charges_paise, trades_count, win_trades_count, is_active, started_at)
+         VALUES ($1, $2, $3, $4, 0, 0, 0, 0, true, $5)`,
+        [sessionId, accountId, acc.user_id, startingPaise, now]
+      );
+      await this.db.query('UPDATE virtual_accounts SET active_session_id = $1 WHERE id = $2', [sessionId, accountId]);
+      return {
+        id: sessionId,
+        accountId,
+        userId: acc.user_id,
+        startingCapitalPaise: BigInt(startingPaise),
+        realizedPnlPaise: 0n,
+        totalChargesPaise: 0n,
+        tradesCount: 0,
+        winTradesCount: 0,
+        isActive: true,
+        startedAt: now,
+      };
+    }
+    return this.mapSession(res.rows[0]);
+  }
+
+  public async getLifetimePerformance(userId: string): Promise<LifetimePerformance> {
+    const sessRes = await this.db.query(
+      `SELECT 
+         COUNT(*) as total_sessions,
+         COALESCE(SUM(realized_pnl_paise), 0) as total_pnl,
+         COALESCE(SUM(total_charges_paise), 0) as total_charges,
+         COALESCE(SUM(trades_count), 0) as total_trades,
+         COALESCE(SUM(win_trades_count), 0) as total_wins
+       FROM practice_sessions
+       WHERE user_id = $1`,
+      [userId]
+    );
+    const row = sessRes.rows[0] || {};
+    const totalPnl = BigInt(row.total_pnl || 0);
+    const totalCharges = BigInt(row.total_charges || 0);
+    const totalTrades = parseInt(row.total_trades || '0', 10);
+    const winTrades = parseInt(row.total_wins || '0', 10);
+    const totalSessions = parseInt(row.total_sessions || '0', 10);
+
+    return {
+      lifetimeRealizedPnlPaise: totalPnl,
+      lifetimeChargesPaise: totalCharges,
+      lifetimeNetTradingPnlPaise: totalPnl - totalCharges,
+      lifetimeTradesCount: totalTrades,
+      lifetimeWinTradesCount: winTrades,
+      winRatePct: totalTrades > 0 ? Math.round((winTrades / totalTrades) * 10000) / 100 : 0,
+      totalSessionsCount: totalSessions,
+    };
+  }
+
+  private mapSession(row: any): PracticeSession {
+    return {
+      id: row.id,
+      accountId: row.account_id,
+      userId: row.user_id,
+      startingCapitalPaise: BigInt(row.starting_capital_paise),
+      finalCashPaise: row.final_cash_paise !== null ? BigInt(row.final_cash_paise) : null,
+      realizedPnlPaise: BigInt(row.realized_pnl_paise || 0),
+      totalChargesPaise: BigInt(row.total_charges_paise || 0),
+      tradesCount: parseInt(row.trades_count || '0', 10),
+      winTradesCount: parseInt(row.win_trades_count || '0', 10),
+      isActive: Boolean(row.is_active),
+      startedAt: Number(row.started_at),
+      endedAt: row.ended_at !== null ? Number(row.ended_at) : null,
+    };
   }
 
   public async saveOrder(order: SimulatedOrder): Promise<void> {

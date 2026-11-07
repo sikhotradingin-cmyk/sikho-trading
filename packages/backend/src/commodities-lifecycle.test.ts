@@ -18,7 +18,7 @@ describe('MCX Commodities Paper Trading & Contract Lifecycle', () => {
     const loginRes = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/dev-login',
-      payload: { email: 'commodity_trader@example.com', name: 'Commodity Trader' },
+      payload: { email: 'commodity_trader@example.com', name: 'Commodity Trader', tier: 'PRO' },
     });
     assert.strictEqual(loginRes.statusCode, 200);
     const body = JSON.parse(loginRes.payload);
@@ -87,6 +87,7 @@ describe('MCX Commodities Paper Trading & Contract Lifecycle', () => {
     const res = await app.inject({
       method: 'GET',
       url: '/api/v1/option-chain?underlying=CRUDEOIL',
+      headers: { authorization: `Bearer ${authToken}` },
     });
     assert.strictEqual(res.statusCode, 200);
     const body = JSON.parse(res.payload);

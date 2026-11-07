@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>Sikho Trading — Indian Paper Trading</title>
   <link rel="stylesheet" href="styles.css" />
   <script src="lightweight-charts.standalone.production.js"></script>
@@ -316,68 +316,111 @@
         <div id="orders-list-container"></div>
       </main>
 
-      <!-- TAB 5: PROFILE & VIRTUAL WALLET (newui1.jpeg inspired) -->
-      <main id="tab-profile" class="white-content-scroll" style="display:none;">
-        <div style="background:var(--bg-midnight);color:var(--text-on-black-primary);padding:20px 16px 22px;">
-          <div style="display:flex;align-items:center;gap:14px;">
-            <div id="prof-avatar-circle" class="avatar-circle-btn" style="width:54px;height:54px;font-size:22px;">T</div>
-            <div>
-              <div id="prof-user-name" style="font-size:18px;font-weight:700;">Trader</div>
-              <div id="prof-user-email" style="font-size:12.5px;color:var(--text-on-black-secondary);margin-top:2px;"></div>
-              <div class="auth-paper-pill" style="margin-top:6px;">Paper Trading Account • Isolated</div>
+      <!-- TAB 5: PROFILE & PRACTICE PERFORMANCE (Light-First Design) -->
+      <main id="tab-profile" class="white-content-scroll" style="display:none;background:#F8FAFC;">
+        <!-- Clean User Identity Header -->
+        <div style="background:#FFFFFF;border-bottom:1px solid #E2E8F0;padding:22px 18px 20px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <div style="display:flex;align-items:center;gap:14px;">
+              <div id="prof-avatar-circle" class="avatar-circle-btn" style="width:52px;height:52px;font-size:20px;background:#0F172A;color:#FFFFFF;box-shadow:0 4px 12px rgba(15,23,42,0.15);">T</div>
+              <div>
+                <div id="prof-user-name" style="font-size:18px;font-weight:700;color:#0F172A;">Trader</div>
+                <div id="prof-user-email" style="font-size:12.5px;color:#64748B;margin-top:2px;"></div>
+              </div>
             </div>
+            <!-- Subscription Tier Badge -->
+            <div id="prof-tier-badge-container">
+              <span id="prof-tier-badge" class="tier-pill-free">FREE PLAN</span>
+            </div>
+          </div>
+
+          <!-- Subscription Banner / Upgrade CTA -->
+          <div id="prof-sub-banner" style="margin-top:16px;padding:12px 14px;border-radius:12px;background:#F1F5F9;border:1px solid #E2E8F0;display:flex;align-items:center;justify-content:space-between;">
+            <div>
+              <div id="prof-sub-title" style="font-size:13px;font-weight:700;color:#0F172A;">Sikho Trading Free Tier</div>
+              <div id="prof-sub-desc" style="font-size:11.5px;color:#64748B;margin-top:2px;">NIFTY &amp; BANKNIFTY Futures &amp; Options Practice</div>
+            </div>
+            <button id="prof-btn-manage-sub" class="btn-lime-primary" style="width:auto;min-height:34px;padding:0 14px;font-size:12px;" onclick="window.TZApp.openSubscriptionPlansModal()">
+              Upgrade ➔
+            </button>
           </div>
         </div>
 
+        <!-- Practice Capital & Session Metrics Card -->
         <div class="dark-summary-card">
           <div style="display:flex;justify-content:space-between;align-items:center;">
             <div>
-              <div class="summary-label">VIRTUAL PRACTICE WALLET</div>
+              <div class="summary-label">ACTIVE PRACTICE CAPITAL</div>
               <div id="prof-cash-balance" class="summary-big-val">₹1,00,000.00</div>
             </div>
-            <button class="btn-lime-primary" style="width:auto;min-height:38px;padding:0 14px;font-size:12.5px;" onclick="window.TZApp.resetVirtualWallet()">
-              Reset to ₹1L
+            <button class="btn-lime-primary" style="width:auto;min-height:36px;padding:0 14px;font-size:12.5px;" onclick="window.TZApp.openCapitalResetModal()">
+              Reset Capital
             </button>
           </div>
           <div class="summary-grid-2">
             <div>
-              <div class="summary-label">Available to Trade</div>
+              <div class="summary-label">Available Cash</div>
               <div id="prof-avail-balance" class="summary-sub-val">₹1,00,000.00</div>
             </div>
             <div>
-              <div class="summary-label">Margin Utilized</div>
+              <div class="summary-label">Locked Margin</div>
               <div id="prof-locked-balance" class="summary-sub-val">₹0.00</div>
+            </div>
+            <div>
+              <div class="summary-label">Session Realized P&amp;L</div>
+              <div id="prof-session-pnl" class="summary-sub-val" style="color:#C7F542;">₹0.00</div>
+            </div>
+            <div>
+              <div class="summary-label">Session Win Rate</div>
+              <div id="prof-session-winrate" class="summary-sub-val">0.0%</div>
             </div>
           </div>
         </div>
 
-        <div class="section-header-white">
+        <!-- Immutable Lifetime Performance Card -->
+        <div style="margin:0 16px 14px;background:#FFFFFF;border:1px solid #E2E8F0;border-radius:14px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+            <div style="font-size:13px;font-weight:700;color:#0F172A;text-transform:uppercase;letter-spacing:0.5px;">Lifetime Track Record</div>
+            <span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:6px;background:#F1F5F9;color:#64748B;">IMMUTABLE</span>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div>
+              <div class="summary-label" style="color:#64748B;">Lifetime Net Trading P&amp;L</div>
+              <div id="prof-lifetime-pnl" class="tabular-nums" style="font-size:16px;font-weight:700;color:#0F172A;margin-top:2px;">₹0.00</div>
+            </div>
+            <div>
+              <div class="summary-label" style="color:#64748B;">Lifetime Charges Paid</div>
+              <div id="prof-lifetime-charges" class="tabular-nums" style="font-size:16px;font-weight:700;color:#0F172A;margin-top:2px;">₹0.00</div>
+            </div>
+            <div>
+              <div class="summary-label" style="color:#64748B;">Total Completed Trades</div>
+              <div id="prof-lifetime-trades" class="tabular-nums" style="font-size:16px;font-weight:700;color:#0F172A;margin-top:2px;">0</div>
+            </div>
+            <div>
+              <div class="summary-label" style="color:#64748B;">Overall Win Rate</div>
+              <div id="prof-lifetime-winrate" class="tabular-nums" style="font-size:16px;font-weight:700;color:#0F172A;margin-top:2px;">0.0%</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Settings & Security Rows -->
+        <div class="section-header-white" style="margin-top:6px;">
           <div class="section-title-dark">Security &amp; App Lock</div>
         </div>
         <div class="instrument-row-white" onclick="window.TZApp.promptSetupPin()">
           <div class="inst-left">
             <div class="inst-badge-icon">PIN</div>
             <div class="inst-meta">
-              <div class="inst-symbol">4-Digit Sikho Trading PIN &amp; Biometric</div>
+              <div class="inst-symbol">4-Digit Security PIN &amp; Biometric</div>
               <div id="prof-pin-status-sub" class="inst-name-sub">Protect your practice session on this phone</div>
             </div>
           </div>
-          <div style="font-weight:700;font-size:12.5px;color:var(--text-on-white-primary);">Configure ➔</div>
+          <div style="font-weight:700;font-size:12.5px;color:#0F172A;">Configure ➔</div>
         </div>
 
         <div class="section-header-white">
           <div class="section-title-dark">Market Data &amp; Audit Ledger</div>
         </div>
-        <div class="instrument-row-white">
-          <div class="inst-left">
-            <div class="inst-badge-icon">FEED</div>
-            <div class="inst-meta">
-              <div id="prof-provider-title" class="inst-symbol">Primary Provider: Upstox V3</div>
-              <div id="prof-provider-sub" class="inst-name-sub">Checking feed status...</div>
-            </div>
-          </div>
-        </div>
-
         <div class="instrument-row-white" onclick="window.TZApp.loadAndShowLedger()">
           <div class="inst-left">
             <div class="inst-badge-icon">LOG</div>
@@ -386,7 +429,7 @@
               <div class="inst-name-sub">View every virtual grant, P&amp;L settlement &amp; charge</div>
             </div>
           </div>
-          <div style="font-weight:700;font-size:12.5px;">View ➔</div>
+          <div style="font-weight:700;font-size:12.5px;color:#0F172A;">View ➔</div>
         </div>
 
         <div class="instrument-row-white" onclick="window.TZApp.openTradeJournalModal()">
@@ -397,23 +440,23 @@
               <div class="inst-name-sub">Log trade rationale, review performance analytics &amp; notes</div>
             </div>
           </div>
-          <div style="font-weight:700;font-size:12.5px;">Open ➔</div>
+          <div style="font-weight:700;font-size:12.5px;color:#0F172A;">Open ➔</div>
         </div>
 
-        <div id="prof-ledger-box" style="display:none;padding:12px 16px;background:var(--surface-light-secondary);border-bottom:1px solid var(--surface-light-border);"></div>
+        <div id="prof-ledger-box" style="display:none;padding:12px 16px;background:#F8FAFC;border-bottom:1px solid #E2E8F0;"></div>
 
         <div style="padding:14px 16px 0 16px;">
-          <button onclick="window.TZApp.openAdPrivacyOptions()" style="width:100%;min-height:44px;border-radius:12px;border:1px solid var(--surface-light-border);background:var(--surface-light-secondary);color:var(--text-on-white-primary);font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:space-between;padding:0 14px;cursor:pointer;">
+          <button onclick="window.TZApp.openAdPrivacyOptions()" style="width:100%;min-height:44px;border-radius:12px;border:1px solid #E2E8F0;background:#FFFFFF;color:#0F172A;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:space-between;padding:0 14px;cursor:pointer;">
             <span style="display:flex;align-items:center;gap:8px;">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
               <span>Privacy &amp; Ad Consent Settings</span>
             </span>
-            <span style="font-size:12px;color:var(--text-on-white-secondary);">Manage ➔</span>
+            <span style="font-size:12px;color:#64748B;">Manage ➔</span>
           </button>
         </div>
 
         <div style="padding:16px 16px 20px 16px;">
-          <button onclick="window.TZApp.signOut()" style="width:100%;min-height:46px;border-radius:12px;border:1.5px solid var(--negative-red);background:var(--bg-white);color:var(--negative-red);font-size:14px;font-weight:700;cursor:pointer;">
+          <button onclick="window.TZApp.signOut()" style="width:100%;min-height:46px;border-radius:12px;border:1.5px solid #EF4444;background:#FFFFFF;color:#EF4444;font-size:14px;font-weight:700;cursor:pointer;">
             Sign Out of Sikho Trading
           </button>
         </div>
@@ -914,6 +957,126 @@
               <button type="button" class="link-btn" style="text-align:left; color:#2563EB; font-size:12.5px; text-decoration:none;" onclick="window.TZApp.applyServerPreset('http://10.0.2.2:4000')">● Android Emulator: http://10.0.2.2:4000</button>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================================================================
+         MODAL 10: SUBSCRIPTION PLANS BOTTOM SHEET
+         ================================================================== -->
+    <div id="modal-subscription" class="modal-backdrop" onclick="if(event.target===this) this.classList.remove('active')">
+      <div class="white-bottom-sheet">
+        <div class="sheet-handle"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div class="auth-card-title">Sikho Trading Premium</div>
+          <button class="chart-back-btn" style="width:32px;height:32px;border:none;background:transparent;color:#64748B;" onclick="document.getElementById('modal-subscription').classList.remove('active')">✕</button>
+        </div>
+        <div class="auth-card-sub">Unlock All Equities, Derivatives, MCX Commodities &amp; Ad-Free Experience</div>
+
+        <div class="plan-cards-container">
+          <!-- Day Pass: ₹10 -->
+          <div id="plan-card-day" class="plan-card" onclick="window.TZApp.selectPlanCard('plan_day_10')">
+            <div class="plan-card-left">
+              <div class="plan-title">Day Pass</div>
+              <div class="plan-desc">1 day full access (Prepaid, no auto-renewal)</div>
+            </div>
+            <div class="plan-price-tag">₹10</div>
+          </div>
+
+          <!-- Monthly: ₹100 -->
+          <div id="plan-card-month" class="plan-card active" onclick="window.TZApp.selectPlanCard('plan_month_100')">
+            <div class="plan-card-left">
+              <div style="display:flex;align-items:center;">
+                <span class="plan-title">Monthly Pro</span>
+                <span class="plan-popular-badge">POPULAR</span>
+              </div>
+              <div class="plan-desc">₹100/month, auto-renews monthly</div>
+            </div>
+            <div class="plan-price-tag">₹100<span style="font-size:11px;font-weight:500;color:#64748B;">/mo</span></div>
+          </div>
+
+          <!-- Annual: ₹800 -->
+          <div id="plan-card-year" class="plan-card" onclick="window.TZApp.selectPlanCard('plan_year_800')">
+            <div class="plan-card-left">
+              <div style="display:flex;align-items:center;">
+                <span class="plan-title">Annual Pro</span>
+                <span class="plan-popular-badge" style="background:#0F172A;color:#C7F542;">SAVE 33%</span>
+              </div>
+              <div class="plan-desc">₹800/year (₹66/month), auto-renews yearly</div>
+            </div>
+            <div class="plan-price-tag">₹800<span style="font-size:11px;font-weight:500;color:#64748B;">/yr</span></div>
+          </div>
+        </div>
+
+        <button id="btn-subscribe-cta" class="btn-lime-primary" onclick="window.TZApp.initiateSubscriptionPurchase()">
+          Upgrade to Monthly Pro • ₹100
+        </button>
+
+        <div style="display:flex;justify-content:center;margin-top:12px;">
+          <button class="link-btn" style="font-size:12px;color:#64748B;" onclick="window.TZApp.restorePurchases()">
+            Restore Previous Purchases
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================================================================
+         MODAL 11: CAPITAL RESET & PRESET SELECTION BOTTOM SHEET
+         ================================================================== -->
+    <div id="modal-capital-reset" class="modal-backdrop" onclick="if(event.target===this) this.classList.remove('active')">
+      <div class="white-bottom-sheet">
+        <div class="sheet-handle"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div class="auth-card-title">Reset Practice Capital</div>
+          <button class="chart-back-btn" style="width:32px;height:32px;border:none;background:transparent;color:#64748B;" onclick="document.getElementById('modal-capital-reset').classList.remove('active')">✕</button>
+        </div>
+        <div class="auth-card-sub">Select your starting practice funds. Starts a fresh session while preserving your lifetime P&amp;L history.</div>
+
+        <div id="reset-positions-warning" style="display:none;margin-top:10px;padding:10px 12px;border-radius:10px;background:#FEF2F2;border:1px solid #FCA5A5;color:#991B1B;font-size:12px;font-weight:600;">
+          ⚠️ You have active open positions or pending orders. Please square off all positions and cancel pending orders before resetting capital.
+        </div>
+
+        <div style="margin-top:14px;font-size:12px;font-weight:700;color:#0F172A;text-transform:uppercase;letter-spacing:0.5px;">Choose Capital Preset</div>
+        <div id="capital-preset-grid" class="preset-grid">
+          <!-- Preset buttons dynamically injected -->
+        </div>
+
+        <div style="margin:14px 0;padding:12px;border-radius:12px;background:#F8FAFC;border:1px solid #E2E8F0;font-size:12px;color:#64748B;line-height:1.45;">
+          ℹ️ <strong>Atomic Reset:</strong> All pending orders and open margins are wiped. Previous session performance is archived to your immutable ledger.
+        </div>
+
+        <button id="btn-confirm-capital-reset" class="btn-lime-primary" onclick="window.TZApp.executeCapitalReset()">
+          Confirm Reset to ₹1,00,000
+        </button>
+      </div>
+    </div>
+
+    <!-- ==================================================================
+         MODAL 12: BRANDED MODAL ALERT & CONFIRM DIALOGS
+         ================================================================== -->
+    <div id="modal-branded-alert" class="modal-backdrop" onclick="if(event.target===this) this.classList.remove('active')">
+      <div class="modal-branded-box">
+        <div class="sheet-handle"></div>
+        <div id="branded-alert-title" class="modal-branded-title">Notification</div>
+        <div id="branded-alert-message" class="modal-branded-msg">Message goes here.</div>
+        <button class="btn-lime-primary" onclick="document.getElementById('modal-branded-alert').classList.remove('active')">
+          Understood
+        </button>
+      </div>
+    </div>
+
+    <div id="modal-branded-confirm" class="modal-backdrop">
+      <div class="modal-branded-box">
+        <div class="sheet-handle"></div>
+        <div id="branded-confirm-title" class="modal-branded-title">Confirm Action</div>
+        <div id="branded-confirm-message" class="modal-branded-msg">Are you sure you want to proceed?</div>
+        <div class="modal-branded-actions">
+          <button id="btn-branded-confirm-cancel" class="btn-lime-primary" style="flex:1;background:#F1F5F9;color:#0F172A;" onclick="window.TZApp.closeConfirmSheet(false)">
+            Cancel
+          </button>
+          <button id="btn-branded-confirm-ok" class="btn-lime-primary" style="flex:1;" onclick="window.TZApp.closeConfirmSheet(true)">
+            Confirm
+          </button>
         </div>
       </div>
     </div>

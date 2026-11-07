@@ -14,6 +14,8 @@ import {
   COMMODITY_CONTRACT_SPECS,
   getExchangeSessionStatus,
   InstrumentMetadata,
+  isFreeTierAllowedInstrument,
+  UserTier,
 } from '@trading/shared';
 import { config, isPlaceholderCredential, validateSmartApiEnv, validateUpstoxEnv } from './config.js';
 import { DeterministicProvider } from './providers/deterministic-provider.js';
@@ -231,18 +233,19 @@ export async function buildServer(
     if (process.env.NODE_ENV === 'production' || !config.enableDevAuth) {
       return reply.status(403).send({ error: 'Development authentication is disabled in production.' });
     }
-    const body = req.body as { userId?: string; name?: string } | undefined;
+    const body = req.body as { userId?: string; name?: string; tier?: 'FREE' | 'PRO' } | undefined;
     const rawUserId = body?.userId || 'dev-trader-01';
     const userId =
       activeProvider.providerId !== 'DEMO' && !rawUserId.includes(':')
         ? `${rawUserId}:${activeProvider.providerId.toLowerCase()}`
         : rawUserId;
     const userName = body?.name || 'Practicing Retail Trader';
+    const tier = body?.tier || 'FREE';
 
     const account = await repo.provisionInitialAccount(
       userId,
       `${userName}'s Virtual Account (${activeProvider.providerId})`,
-      'FREE'
+      tier
     );
     accountEngine.provisionInitialAccount(userId, `${userName}'s Virtual Account (${activeProvider.providerId})`);
 
@@ -762,6 +765,22 @@ export async function buildServer(
     };
   });
 
+  const resolveUserTierFromReq = async (req: any): Promise<UserTier> => {
+    try {
+      const authHeader = req.headers?.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.substring(7);
+        const decoded = (app as any).jwt?.verify(token);
+        if (decoded && decoded.userId) {
+          return await billingService.getAccountTier(decoded.userId);
+        }
+      }
+    } catch {
+      // Unauthenticated or invalid token
+    }
+    return 'FREE';
+  };
+
   // 3B. Commodities Discovery Endpoint (Grouped into Metals, Energy, Agriculture)
   app.get('/api/v1/commodities', async () => {
     let allCom: InstrumentMetadata[] = [];
@@ -829,7 +848,19 @@ export async function buildServer(
   // 3C. Option Chain Endpoint
   app.get('/api/v1/option-chain', async (req, reply) => {
     const query = req.query as { underlying?: string; expiry?: string };
-    const underlying = (query.underlying || 'NIFTY').trim();
+    const underlying = (query.underlying || 'NIFTY').trim().toUpperCase();
+
+    const tier = await resolveUserTierFromReq(req);
+    if (tier === 'FREE') {
+      const isAllowed = underlying === 'NIFTY' || underlying === 'BANKNIFTY';
+      if (!isAllowed) {
+        return reply.status(403).send({
+          error: 'UPGRADE_REQUIRED: Option chains for equities and other indices are exclusive to Premium subscribers.',
+          code: 'UPGRADE_REQUIRED',
+        });
+      }
+    }
+
     if (activeProvider.getOptionChain) {
       const chain = await activeProvider.getOptionChain(underlying, query.expiry);
       return chain;
@@ -854,6 +885,20 @@ export async function buildServer(
     if (!query.globalId) {
       return reply.status(400).send({ error: 'Missing globalId query parameter' });
     }
+
+    const tier = await resolveUserTierFromReq(req);
+    if (tier === 'FREE') {
+      const inst = activeProvider.getInstrumentById
+        ? await activeProvider.getInstrumentById(query.globalId)
+        : (await activeProvider.getInstruments()).find((i) => i.globalId === query.globalId);
+      if (inst && !isFreeTierAllowedInstrument(inst)) {
+        return reply.status(403).send({
+          error: 'UPGRADE_REQUIRED: Historical charts for equities, commodities, and other indices are exclusive to Premium subscribers.',
+          code: 'UPGRADE_REQUIRED',
+        });
+      }
+    }
+
     const timeframe: Timeframe = query.timeframe || '5m';
     const rawLimit = query.limit || query.count;
     const limit = rawLimit ? parseInt(rawLimit, 10) : undefined;
@@ -917,6 +962,20 @@ export async function buildServer(
     if (!query.globalId) {
       return reply.status(400).send({ error: 'Missing globalId query parameter' });
     }
+
+    const tier = await resolveUserTierFromReq(req);
+    if (tier === 'FREE') {
+      const inst = activeProvider.getInstrumentById
+        ? await activeProvider.getInstrumentById(query.globalId)
+        : (await activeProvider.getInstruments()).find((i) => i.globalId === query.globalId);
+      if (inst && !isFreeTierAllowedInstrument(inst)) {
+        return reply.status(403).send({
+          error: 'UPGRADE_REQUIRED: Live quotes for equities, commodities, and other indices are exclusive to Premium subscribers.',
+          code: 'UPGRADE_REQUIRED',
+        });
+      }
+    }
+
     const quote = await activeProvider.getQuote(query.globalId);
     if (!quote) {
       return reply.status(404).send({ error: 'Quote not found' });
@@ -950,9 +1009,20 @@ export async function buildServer(
     return formatAccountResponse(account);
   });
 
-  // 7. Virtual Account Reset
+  // 7. Virtual Account Reset & Performance
+  app.get('/api/v1/account/performance', { preHandler: [(app as any).authenticate] }, async (req: any) => {
+    const accountId = req.user.accountId;
+    const session = await repo.getActiveSession(accountId);
+    const lifetime = await repo.getLifetimePerformance(req.user.userId);
+    return { session, lifetime };
+  });
+
   app.post('/api/v1/account/reset', { preHandler: [(app as any).authenticate] }, async (req: any, reply) => {
     const accountId = req.user.accountId;
+    const body = (req.body as { startingCapitalINR?: number }) || {};
+    const requestedCapitalINR = body.startingCapitalINR || 100000;
+    const tier = await billingService.getAccountTier(req.user.userId);
+
     const positions = await repo.getPositions(accountId);
     const quotes = new Map<string, number>();
     for (const p of positions) {
@@ -963,7 +1033,13 @@ export async function buildServer(
       }
     }
 
-    const resetResult = await repo.resetAccount(accountId, positions, quotes);
+    const resetResult = await repo.resetAccount(
+      accountId,
+      positions,
+      quotes,
+      requestedCapitalINR,
+      tier
+    );
     if (!resetResult.success) {
       return reply.status(400).send({ error: resetResult.error });
     }
@@ -971,9 +1047,16 @@ export async function buildServer(
     accountEngine.resetAccount(accountId, positions, quotes);
 
     const updated = await repo.getAccount(accountId);
+    const session = await repo.getActiveSession(accountId);
+    const lifetime = await repo.getLifetimePerformance(req.user.userId);
+
     return {
-      message: 'Account reset successfully to ₹100,000.00',
+      success: true,
+      message: `Account reset successfully to ₹${requestedCapitalINR.toLocaleString('en-IN')}`,
       account: updated ? formatAccountResponse(updated) : null,
+      session,
+      lifetime,
+      newSessionId: resetResult.newSessionId,
     };
   });
 
@@ -1007,16 +1090,19 @@ export async function buildServer(
     await repo.syncInstruments([instrument]);
     ensureEngineSubscription(instrument.globalId);
 
-    // Free vs Pro Access Gate: Free dev users restricted to NIFTY & MCX Commodity Practice modules
-    const userTier = await billingService.getAccountTier(userId);
-    const isAllowedPractice =
-      instrument.symbol.startsWith('NIFTY') ||
-      instrument.underlying === 'NIFTY' ||
-      instrument.exchange === 'MCX';
+    // 1. Spot Index Check: Spot is reference only and cannot be traded by anyone
+    if (instrument.instrumentType === 'INDEX_SPOT') {
+      return reply.status(400).send({
+        error: 'Spot indices are reference only and cannot be traded. Please trade NIFTY or BANKNIFTY Futures or Options contracts.',
+        code: 'ERR_SPOT_NOT_TRADABLE',
+      });
+    }
 
-    if (userTier === 'FREE' && !isAllowedPractice) {
+    // 2. Server-Enforced Tier Gate: Free users can ONLY trade NIFTY and BANKNIFTY derivatives
+    const userTier = await billingService.getAccountTier(userId);
+    if (userTier === 'FREE' && !isFreeTierAllowedInstrument(instrument)) {
       return reply.status(403).send({
-        error: `ERR_PRO_TIER_REQUIRED: Access to equities and stock derivatives requires a Pro Practice account. Upgrade to trade ${instrument.symbol}.`,
+        error: `ERR_PRO_TIER_REQUIRED: Free tier users can only trade NIFTY and BANKNIFTY futures and options. Upgrade to Premium to trade ${instrument.symbol}.`,
         code: 'ERR_PRO_TIER_REQUIRED',
       });
     }
@@ -1387,15 +1473,29 @@ export async function buildServer(
   });
 
   // 14. Monetization & Ads Endpoints
+  app.get('/api/v1/billing/plans', async () => {
+    return { plans: billingService.getPlans() };
+  });
+
   app.post('/api/v1/billing/verify-purchase', { preHandler: [(app as any).authenticate] }, async (req: any) => {
-    const body = req.body as { productId: string; purchaseToken: string };
-    const res = await billingService.verifyPurchaseToken(req.user.userId, body.productId, body.purchaseToken);
+    const body = req.body as { productId?: string; planId?: string; purchaseToken: string };
+    const productId = body.productId || body.planId || 'plan_month_100';
+    const res = await billingService.verifyPurchaseToken(req.user.userId, productId, body.purchaseToken);
     return res;
   });
 
   app.get('/api/v1/billing/status', { preHandler: [(app as any).authenticate] }, async (req: any) => {
-    const tier = await billingService.getAccountTier(req.user.userId);
-    return { tier, isPro: tier === 'PRO' };
+    const status = await billingService.getSubscriptionStatus(req.user.userId);
+    return status;
+  });
+
+  app.post('/api/v1/billing/restore-purchases', { preHandler: [(app as any).authenticate] }, async (req: any) => {
+    const status = await billingService.getSubscriptionStatus(req.user.userId);
+    return {
+      success: true,
+      restored: status.tier === 'PRO',
+      status,
+    };
   });
 
   app.post('/api/v1/ads/app-open/opportunity', { preHandler: [(app as any).authenticate] }, async (req: any) => {
@@ -1410,21 +1510,43 @@ export async function buildServer(
     return { recorded };
   });
 
-  // 15. WebSocket Real-time Channel (with token-based client ownership)
+  // 15. WebSocket Real-time Channel (with token-based client ownership & entitlement gating)
   app.get('/ws', { websocket: true }, (connection: any) => {
     const ws = (connection.socket || connection) as WebSocket;
-    const clientState = { ws, subscriptions: new Set<string>() };
-    wsClients.add(clientState);
+    const clientState: { ws: WebSocket; userId?: string; tier: UserTier; subscriptions: Set<string> } = {
+      ws,
+      tier: 'FREE',
+      subscriptions: new Set<string>(),
+    };
+    wsClients.add(clientState as any);
 
     for (const inst of instruments) {
-      clientState.subscriptions.add(inst.globalId);
+      if (isFreeTierAllowedInstrument(inst)) {
+        clientState.subscriptions.add(inst.globalId);
+      }
     }
 
-    ws.on('message', (raw: any) => {
+    ws.on('message', async (raw: any) => {
       try {
         const msg = JSON.parse(raw.toString());
-        if (msg.action === 'SUBSCRIBE' && Array.isArray(msg.symbols)) {
+        if (msg.action === 'AUTH' && msg.token) {
+          try {
+            const decoded = (app as any).jwt?.verify(msg.token);
+            if (decoded && decoded.userId) {
+              clientState.userId = decoded.userId;
+              clientState.tier = await billingService.getAccountTier(decoded.userId);
+              ws.send(JSON.stringify({ type: 'AUTH_SUCCESS', tier: clientState.tier }));
+            }
+          } catch {
+            ws.send(JSON.stringify({ type: 'AUTH_ERROR', error: 'Invalid token' }));
+          }
+        } else if (msg.action === 'SUBSCRIBE' && Array.isArray(msg.symbols)) {
           for (const s of msg.symbols) {
+            const inst = instruments.find((i) => i.globalId === s || i.symbol === s);
+            if (clientState.tier === 'FREE' && inst && !isFreeTierAllowedInstrument(inst)) {
+              ws.send(JSON.stringify({ type: 'RESTRICTED_ACCESS', symbol: s, error: 'UPGRADE_REQUIRED' }));
+              continue;
+            }
             clientState.subscriptions.add(s);
             ensureEngineSubscription(s);
           }
@@ -1437,7 +1559,7 @@ export async function buildServer(
     });
 
     ws.on('close', () => {
-      wsClients.delete(clientState);
+      wsClients.delete(clientState as any);
     });
   });
 
