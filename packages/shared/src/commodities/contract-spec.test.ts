@@ -11,6 +11,7 @@ describe('MCX Commodity Contract Specifications & Math Verification', () => {
   it('correctly resolves specifications for Gold, Silver, Crude Oil, Natural Gas and Copper', () => {
     const gold = resolveCommoditySpec('GOLD');
     assert.ok(gold);
+    if (!gold) throw new Error('Expected GOLD spec to be defined');
     assert.strictEqual(gold.symbol, 'GOLD');
     assert.strictEqual(gold.category, 'METALS');
     assert.strictEqual(gold.priceQuoteMultiplier, 10);
@@ -19,6 +20,7 @@ describe('MCX Commodity Contract Specifications & Math Verification', () => {
 
     const crude = resolveCommoditySpec('CRUDEOIL');
     assert.ok(crude);
+    if (!crude) throw new Error('Expected CRUDEOIL spec to be defined');
     assert.strictEqual(crude.symbol, 'CRUDEOIL');
     assert.strictEqual(crude.category, 'ENERGY');
     assert.strictEqual(crude.priceQuoteMultiplier, 100);
@@ -27,6 +29,7 @@ describe('MCX Commodity Contract Specifications & Math Verification', () => {
 
     const natgas = resolveCommoditySpec('NATURALGAS');
     assert.ok(natgas);
+    if (!natgas) throw new Error('Expected NATURALGAS spec to be defined');
     assert.strictEqual(natgas.symbol, 'NATURALGAS');
     assert.strictEqual(natgas.category, 'ENERGY');
     assert.strictEqual(natgas.priceQuoteMultiplier, 1250);
@@ -35,6 +38,7 @@ describe('MCX Commodity Contract Specifications & Math Verification', () => {
 
     const copper = resolveCommoditySpec('COPPER');
     assert.ok(copper);
+    if (!copper) throw new Error('Expected COPPER spec to be defined');
     assert.strictEqual(copper.symbol, 'COPPER');
     assert.strictEqual(copper.category, 'METALS');
     assert.strictEqual(copper.priceQuoteMultiplier, 2500);
@@ -43,6 +47,7 @@ describe('MCX Commodity Contract Specifications & Math Verification', () => {
 
     const silver = resolveCommoditySpec('SILVER');
     assert.ok(silver);
+    if (!silver) throw new Error('Expected SILVER spec to be defined');
     assert.strictEqual(silver.symbol, 'SILVER');
     assert.strictEqual(silver.category, 'METALS');
     assert.strictEqual(silver.priceQuoteMultiplier, 30);
@@ -53,6 +58,7 @@ describe('MCX Commodity Contract Specifications & Math Verification', () => {
   it('independently verifies Gold contract value and tick P&L without double multiplier', () => {
     const gold = resolveCommoditySpec('GOLD');
     assert.ok(gold);
+    if (!gold) throw new Error('Expected GOLD spec to be defined');
     // Gold quote: ₹142,167 per 10g. 1 lot = 100g.
     // Exposure = 1 lot * 142167 * (100g / 10g) = ₹1,421,670
     const exposure = calculateContractExposure(142167, 1, gold);
@@ -70,6 +76,7 @@ describe('MCX Commodity Contract Specifications & Math Verification', () => {
   it('independently verifies Crude Oil contract value and short position P&L', () => {
     const crude = resolveCommoditySpec('CRUDEOIL');
     assert.ok(crude);
+    if (!crude) throw new Error('Expected CRUDEOIL spec to be defined');
     // 2 lots Crude Oil at ₹8,459 (quoted per barrel). 1 lot = 100 barrels.
     // Exposure = 2 * 8459 * 100 = ₹1,691,800
     const exposure = calculateContractExposure(8459, 2, crude);
@@ -83,6 +90,7 @@ describe('MCX Commodity Contract Specifications & Math Verification', () => {
   it('independently verifies Natural Gas contract value, tick size and P&L', () => {
     const natgas = resolveCommoditySpec('NATURALGAS');
     assert.ok(natgas);
+    if (!natgas) throw new Error('Expected NATURALGAS spec to be defined');
     // 1 lot Natural Gas at ₹283.60. 1 lot = 1250 mmBtu.
     // Exposure = 1 * 283.60 * 1250 = ₹354,500
     const exposure = calculateContractExposure(283.6, 1, natgas);

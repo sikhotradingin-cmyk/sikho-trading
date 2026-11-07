@@ -6,7 +6,7 @@ services:
     runtime: node
     plan: starter
     region: singapore # Low latency to India (NSE / Upstox servers)
-    buildCommand: npm ci && npm run build:shared && npm run build:backend
+    buildCommand: npm ci --include=dev && npm run build:shared && npm run build:backend
     startCommand: npm run start:backend:prod
     healthCheckPath: /health
     autoDeploy: true

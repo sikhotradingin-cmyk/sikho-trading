@@ -21,6 +21,9 @@
     "migrate:backend": "npm --workspace=packages/backend run migrate",
     "start:mobile": "npm --workspace=packages/mobile run start"
   },
+  "dependencies": {
+    "@types/node": "^22.8.7"
+  },
   "devDependencies": {
     "typescript": "^5.6.3"
   }

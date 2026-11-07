@@ -5,10 +5,13 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "tsc",
-    "test": "node --test dist/**/*.test.js"
+    "build": "tsc -p tsconfig.json",
+    "build:test": "tsc -p tsconfig.test.json",
+    "test": "npm run build:test && node --test dist/**/*.test.js",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit"
   },
   "dependencies": {
+    "@types/node": "^22.8.7",
     "zod": "^3.23.8"
   },
   "devDependencies": {

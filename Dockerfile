@@ -18,10 +18,10 @@ COPY packages/backend/package.json ./packages/backend/
 COPY packages/mobile/package.json ./packages/mobile/
 
 # Install all dependencies (including devDependencies required for compilation)
-RUN npm ci
+RUN npm ci --include=dev
 
 # Copy source code and migration files
-COPY tsconfig.json ./
+COPY tsconfig.json tsconfig.base.json ./
 COPY packages/shared ./packages/shared
 COPY packages/backend ./packages/backend
 
