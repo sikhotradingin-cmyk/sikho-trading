@@ -49,8 +49,8 @@ interface TradingState {
 }
 
 export const useTradingStore = create<TradingState>((set, get) => ({
-  apiBaseUrl: 'http://10.0.2.2:4000', // Standard Android Emulator loopback to host
-  wsUrl: 'ws://10.0.2.2:4000/ws',
+  apiBaseUrl: 'https://sikho-trading-api.onrender.com',
+  wsUrl: 'wss://sikho-trading-api.onrender.com/ws',
   authToken: null,
   userId: null,
   userName: null,

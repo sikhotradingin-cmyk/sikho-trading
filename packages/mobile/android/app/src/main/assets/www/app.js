@@ -8,8 +8,22 @@
   const DEFAULT_HOST = nativeDefault || (
     window.location.hostname && window.location.hostname !== '' && window.location.protocol.startsWith('http')
       ? `${window.location.protocol}//${window.location.host}`
-      : 'https://api.sikhotrading.com'
+      : 'https://sikho-trading-api.onrender.com'
   );
+
+  // Invalidate any legacy or stale local LAN addresses stored in WebView localStorage
+  try {
+    const savedBase = localStorage.getItem('tz_api_base');
+    if (savedBase && (
+      savedBase.includes('192.168.') ||
+      savedBase.includes('10.0.2.2') ||
+      savedBase.includes('localhost') ||
+      savedBase.includes('127.0.0.1') ||
+      savedBase.includes('api.sikhotrading.com')
+    )) {
+      localStorage.removeItem('tz_api_base');
+    }
+  } catch {}
 
   let API_BASE = (isDevPickerEnabled ? localStorage.getItem('tz_api_base') : null) || DEFAULT_HOST;
 
@@ -592,31 +606,16 @@
       if (serverStatusEl) serverStatusEl.style.display = 'none';
       if (isNative && typeof window.TradingzoneNative.getDefaultServerUrl === 'function') {
         API_BASE = window.TradingzoneNative.getDefaultServerUrl();
+      } else {
+        API_BASE = DEFAULT_HOST;
       }
       return;
     }
 
     if (localStorage.getItem('tz_api_base')) {
-      updateServerDisplay();
-      return;
-    }
-    const candidates = [
-      'http://192.168.0.100:4000',
-      'http://localhost:4000',
-      'http://10.0.2.2:4000',
-    ];
-    for (const c of candidates) {
-      try {
-        const ctrl = new AbortController();
-        const tm = setTimeout(() => ctrl.abort(), 800);
-        const res = await fetch(`${c}/health`, { signal: ctrl.signal });
-        clearTimeout(tm);
-        if (res.ok) {
-          API_BASE = c;
-          console.log(`Auto-detected active backend at: ${c}`);
-          break;
-        }
-      } catch {}
+      API_BASE = localStorage.getItem('tz_api_base');
+    } else {
+      API_BASE = DEFAULT_HOST;
     }
     updateServerDisplay();
   }

@@ -1968,16 +1968,16 @@ android {
         applicationId "com.indianpapertrading"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 6
-        versionName "2.3.0"
+        versionCode 7
+        versionName "2.4.0"
     }
 
     buildFeatures {
         buildConfig true
     }
 
-    def prodServerUrl = project.hasProperty("serverUrl") ? project.property("serverUrl") : (System.getenv("SERVER_URL") ?: "https://api.sikhotrading.com")
-    def debugServerUrl = project.hasProperty("debugServerUrl") ? project.property("debugServerUrl") : (System.getenv("DEBUG_SERVER_URL") ?: "https://api.sikhotrading.com")
+    def prodServerUrl = project.hasProperty("serverUrl") ? project.property("serverUrl") : (System.getenv("SERVER_URL") ?: "https://sikho-trading-api.onrender.com")
+    def debugServerUrl = project.hasProperty("debugServerUrl") ? project.property("debugServerUrl") : (System.getenv("DEBUG_SERVER_URL") ?: "https://sikho-trading-api.onrender.com")
 
     buildTypes {
         debug {
@@ -1992,6 +1992,7 @@ android {
             buildConfigField "boolean", "ENABLE_DEV_SERVER_PICKER", "true"
         }
         release {
+            signingConfig signingConfigs.debug
             minifyEnabled false
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
             manifestPlaceholders = [

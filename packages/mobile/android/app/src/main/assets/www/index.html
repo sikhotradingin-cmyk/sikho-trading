@@ -895,7 +895,7 @@
         <div style="margin:14px 0;">
           <div class="form-group">
             <label class="form-label" for="input-server-url">Gateway Server Base URL</label>
-            <input id="input-server-url" class="form-input" type="url" placeholder="http://192.168.0.100:4000" />
+            <input id="input-server-url" class="form-input" type="url" placeholder="https://sikho-trading-api.onrender.com" />
           </div>
 
           <div style="display:flex; gap:10px; margin-bottom:12px;">
@@ -908,6 +908,7 @@
           <div style="border-top:1px solid #E5E7EB; padding-top:12px;">
             <div style="font-weight:700; font-size:12px; margin-bottom:8px; color:var(--text-on-white-secondary);">Quick Presets:</div>
             <div style="display:flex; flex-direction:column; gap:8px;">
+              <button type="button" class="link-btn" style="text-align:left; color:#10B981; font-weight:600; font-size:12.5px; text-decoration:none;" onclick="window.TZApp.applyServerPreset('https://sikho-trading-api.onrender.com')">● Public Cloud (Render): https://sikho-trading-api.onrender.com</button>
               <button type="button" class="link-btn" style="text-align:left; color:#2563EB; font-size:12.5px; text-decoration:none;" onclick="window.TZApp.applyServerPreset('http://192.168.0.100:4000')">● Wi-Fi (Host PC): http://192.168.0.100:4000</button>
               <button type="button" class="link-btn" style="text-align:left; color:#2563EB; font-size:12.5px; text-decoration:none;" onclick="window.TZApp.applyServerPreset('http://localhost:4000')">● USB ADB Reverse: http://localhost:4000</button>
               <button type="button" class="link-btn" style="text-align:left; color:#2563EB; font-size:12.5px; text-decoration:none;" onclick="window.TZApp.applyServerPreset('http://10.0.2.2:4000')">● Android Emulator: http://10.0.2.2:4000</button>
