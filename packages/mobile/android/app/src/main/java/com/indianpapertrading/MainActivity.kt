@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import android.view.Gravity
@@ -16,6 +17,7 @@ import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -41,6 +43,8 @@ import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+import java.io.File
+import java.security.KeyStore
 import kotlin.math.roundToInt
 
 class MainActivity : AppCompatActivity() {
@@ -50,13 +54,30 @@ class MainActivity : AppCompatActivity() {
     private lateinit var adMobManager: AdMobManager
     private lateinit var credentialManager: CredentialManager
 
+    // Starts as completely untrusted until verified main-frame navigation completes
     @Volatile
-    private var currentTrustedUrl: String = "file:///android_asset/www/index.html"
+    private var currentTrustedUrl: String = ""
 
-    private fun isTrustedOrigin(url: String?): Boolean {
-        if (url.isNullOrBlank()) return false
-        return url.startsWith("file:///android_asset/www/") ||
-               url.startsWith("https://appassets.androidplatform.net/")
+    private fun isPermittedUri(uriString: String?): Boolean {
+        if (uriString.isNullOrBlank()) return false
+        return try {
+            val uri = Uri.parse(uriString)
+            val scheme = uri.scheme?.lowercase() ?: return false
+            if (scheme == "file") {
+                val path = uri.path ?: return false
+                // Strict check: must reside inside /android_asset/www/ and have no host or query
+                (path == "/android_asset/www/index.html" || path.startsWith("/android_asset/www/")) &&
+                    uri.host.isNullOrEmpty() &&
+                    uri.query.isNullOrEmpty()
+            } else if (scheme == "https") {
+                val host = uri.host?.lowercase() ?: return false
+                host == "appassets.androidplatform.net"
+            } else {
+                false
+            }
+        } catch (e: Exception) {
+            false
+        }
     }
 
     private val credentialUnlockLauncher = registerForActivityResult(
@@ -75,42 +96,70 @@ class MainActivity : AppCompatActivity() {
 
     inner class TradingzoneNativeBridge(private val context: Context) {
         @Synchronized
-        private fun getSecurePrefs(): SharedPreferences {
+        private fun getSecurePrefs(): SharedPreferences? {
             return try {
-                val masterKey = MasterKey.Builder(context)
-                    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                    .build()
-                EncryptedSharedPreferences.create(
-                    context,
-                    "tradingzone_keystore_vault",
-                    masterKey,
-                    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-                )
-            } catch (e: Throwable) {
-                Log.w("TradingzoneBridge", "Keystore-backed EncryptedSharedPreferences unavailable; falling back to private storage: ${e.message}")
-                context.getSharedPreferences("tradingzone_secure_store", Context.MODE_PRIVATE)
+                createEncryptedPrefs()
+            } catch (t: Throwable) {
+                Log.w("TradingzoneBridge", "Initial EncryptedSharedPreferences creation failed: ${t.message}. Attempting targeted recovery...", t)
+                try {
+                    // Targeted recovery: remove only this vault's shared prefs file and reset keystore alias
+                    val sharedPrefsFile = File(context.filesDir.parent, "shared_prefs/tradingzone_keystore_vault.xml")
+                    if (sharedPrefsFile.exists()) {
+                        sharedPrefsFile.delete()
+                    }
+                    try {
+                        val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+                        if (keyStore.containsAlias(MasterKey.DEFAULT_MASTER_KEY_ALIAS)) {
+                            keyStore.deleteEntry(MasterKey.DEFAULT_MASTER_KEY_ALIAS)
+                        }
+                    } catch (ke: Throwable) {
+                        Log.w("TradingzoneBridge", "Could not remove MasterKey alias: ${ke.message}")
+                    }
+                    createEncryptedPrefs()
+                } catch (recoveryErr: Throwable) {
+                    Log.e("TradingzoneBridge", "Unrecoverable encryption failure: ${recoveryErr.message}", recoveryErr)
+                    null
+                }
             }
+        }
+
+        private fun createEncryptedPrefs(): SharedPreferences {
+            val masterKey = MasterKey.Builder(context)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+            return EncryptedSharedPreferences.create(
+                context,
+                "tradingzone_keystore_vault",
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
         }
 
         private fun verifyCallerIsTrusted(): Boolean {
-            return isTrustedOrigin(currentTrustedUrl)
+            return currentTrustedUrl.isNotBlank() && isPermittedUri(currentTrustedUrl)
         }
 
         @JavascriptInterface
-        fun saveSession(jsonPayload: String) {
+        fun saveSession(jsonPayload: String): Boolean {
             if (!verifyCallerIsTrusted()) {
                 Log.e("TradingzoneBridge", "Rejected saveSession from untrusted origin: $currentTrustedUrl")
-                return
+                return false
             }
-            if (jsonPayload.length > 32768) {
-                Log.e("TradingzoneBridge", "Payload exceeds allowed size.")
-                return
+            if (jsonPayload.isBlank() || jsonPayload.length > 32768) {
+                Log.e("TradingzoneBridge", "Payload is empty or exceeds allowed size.")
+                return false
             }
-            try {
-                getSecurePrefs().edit().putString("auth_session_v2", jsonPayload).commit()
+            return try {
+                val prefs = getSecurePrefs()
+                if (prefs == null) {
+                    Log.e("TradingzoneBridge", "saveSession failed: securePrefs is null")
+                    return false
+                }
+                prefs.edit().putString("auth_session_v2", jsonPayload).commit()
             } catch (t: Throwable) {
                 Log.e("TradingzoneBridge", "Failed to saveSession: ${t.message}", t)
+                false
             }
         }
 
@@ -121,7 +170,7 @@ class MainActivity : AppCompatActivity() {
                 return ""
             }
             return try {
-                getSecurePrefs().getString("auth_session_v2", "") ?: ""
+                getSecurePrefs()?.getString("auth_session_v2", "") ?: ""
             } catch (t: Throwable) {
                 Log.e("TradingzoneBridge", "Failed to readSession: ${t.message}", t)
                 ""
@@ -129,23 +178,27 @@ class MainActivity : AppCompatActivity() {
         }
 
         @JavascriptInterface
-        fun clearSession() {
-            if (!verifyCallerIsTrusted()) return
-            try {
-                getSecurePrefs().edit().remove("auth_session_v2").commit()
+        fun clearSession(): Boolean {
+            if (!verifyCallerIsTrusted()) return false
+            return try {
+                val prefs = getSecurePrefs() ?: return false
+                prefs.edit().remove("auth_session_v2").commit()
             } catch (t: Throwable) {
                 Log.e("TradingzoneBridge", "Failed to clearSession: ${t.message}", t)
+                false
             }
         }
 
         @JavascriptInterface
-        fun saveKey(key: String, value: String) {
-            if (!verifyCallerIsTrusted()) return
-            if (key.length > 128 || value.length > 32768) return
-            try {
-                getSecurePrefs().edit().putString(key, value).commit()
+        fun saveKey(key: String, value: String): Boolean {
+            if (!verifyCallerIsTrusted()) return false
+            if (key.length > 128 || value.length > 32768) return false
+            return try {
+                val prefs = getSecurePrefs() ?: return false
+                prefs.edit().putString(key, value).commit()
             } catch (t: Throwable) {
                 Log.e("TradingzoneBridge", "Failed to saveKey: ${t.message}", t)
+                false
             }
         }
 
@@ -153,7 +206,7 @@ class MainActivity : AppCompatActivity() {
         fun readKey(key: String): String {
             if (!verifyCallerIsTrusted()) return ""
             return try {
-                getSecurePrefs().getString(key, "") ?: ""
+                getSecurePrefs()?.getString(key, "") ?: ""
             } catch (t: Throwable) {
                 Log.e("TradingzoneBridge", "Failed to readKey: ${t.message}", t)
                 ""
@@ -390,34 +443,62 @@ class MainActivity : AppCompatActivity() {
             webViewClient = object : WebViewClient() {
                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                     super.onPageStarted(view, url, favicon)
-                    if (url != null && isTrustedOrigin(url)) {
+                    // Invalidate trusted state first
+                    currentTrustedUrl = ""
+                    // If verified main-frame navigation to permitted local asset, establish trust
+                    if (url != null && isPermittedUri(url)) {
                         currentTrustedUrl = url
-                    } else {
-                        currentTrustedUrl = ""
                     }
                 }
 
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
-                    if (url != null && isTrustedOrigin(url)) {
+                    // Confirm verified main-frame navigation with exact permitted URI
+                    if (view != null && url != null && view.url == url && isPermittedUri(url)) {
                         currentTrustedUrl = url
                     } else {
                         currentTrustedUrl = ""
                     }
                 }
 
+                override fun onReceivedError(view: WebView?, errorCode: Int, description: String?, failingUrl: String?) {
+                    super.onReceivedError(view, errorCode, description, failingUrl)
+                    currentTrustedUrl = ""
+                }
+
                 override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                    val targetUrl = request?.url?.toString() ?: return true
-                    if (isTrustedOrigin(targetUrl)) {
+                    val reqUrl = request?.url ?: return true
+                    // Only allow main-frame navigation to permitted local assets
+                    if (request.isForMainFrame && isPermittedUri(reqUrl.toString())) {
                         return false
                     }
-                    try {
-                        val intent = Intent(Intent.ACTION_VIEW, request.url)
-                        startActivity(intent)
-                    } catch (e: Exception) {
-                        Log.e("TradingzoneWebView", "Failed to launch external browser for $targetUrl: ${e.message}")
+                    // Remote frames or external navigation -> open in browser, never inside WebView
+                    if (request.isForMainFrame) {
+                        try {
+                            val intent = Intent(Intent.ACTION_VIEW, reqUrl)
+                            startActivity(intent)
+                        } catch (e: Exception) {
+                            Log.e("TradingzoneWebView", "Failed to launch external browser for $reqUrl: ${e.message}")
+                        }
+                    } else {
+                        Log.w("TradingzoneWebView", "Blocked subframe navigation to $reqUrl")
                     }
                     return true
+                }
+
+                override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                    // Block remote frames or iframes requesting untrusted endpoints
+                    if (request != null && !request.isForMainFrame) {
+                        val dest = request.requestHeaders?.get("Sec-Fetch-Dest") ?: ""
+                        if (dest.equals("iframe", ignoreCase = true) || dest.equals("frame", ignoreCase = true)) {
+                            val reqUrl = request.url?.toString()
+                            if (!isPermittedUri(reqUrl)) {
+                                Log.w("TradingzoneWebView", "Blocked untrusted iframe request: $reqUrl")
+                                return WebResourceResponse("text/plain", "UTF-8", 403, "Forbidden", null, null)
+                            }
+                        }
+                    }
+                    return super.shouldInterceptRequest(view, request)
                 }
             }
             webChromeClient = WebChromeClient()

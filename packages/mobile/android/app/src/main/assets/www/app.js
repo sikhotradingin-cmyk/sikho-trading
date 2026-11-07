@@ -1,4 +1,8 @@
 (function () {
+  if (window.top !== window.self) {
+    console.error('Sikho Trading cannot run inside an embedded frame.');
+    return;
+  }
   const isNative = Boolean(window.TradingzoneNative);
   const nativeDefault = isNative && typeof window.TradingzoneNative.getDefaultServerUrl === 'function'
     ? window.TradingzoneNative.getDefaultServerUrl()
@@ -112,14 +116,24 @@
     const raw = JSON.stringify(sessionObj);
     if (window.TradingzoneNative && typeof window.TradingzoneNative.saveSession === 'function') {
       try {
-        window.TradingzoneNative.saveSession(raw);
+        const ok = window.TradingzoneNative.saveSession(raw);
+        if (!ok) {
+          console.error('Native saveSession returned false');
+          return false;
+        }
+        return true;
       } catch (e) {
-        console.warn('Native saveSession failed:', e);
+        console.error('Native saveSession threw exception:', e);
+        return false;
       }
     }
+    // Web fallback mode (browser only)
     try {
       sessionStorage.setItem('tz_session_v2', raw);
-    } catch { }
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   function readSessionSecure() {
@@ -127,6 +141,7 @@
       if (window.TradingzoneNative && typeof window.TradingzoneNative.readSession === 'function') {
         const nativeRaw = window.TradingzoneNative.readSession();
         if (nativeRaw) return JSON.parse(nativeRaw);
+        return null;
       }
       const webRaw = sessionStorage.getItem('tz_session_v2');
       if (webRaw) return JSON.parse(webRaw);
@@ -631,10 +646,16 @@
   }
 
   function completeAuthenticatedSession(token, user, account, skipPinNow) {
+    const saved = saveSessionSecure({ token, user, account });
+    if (!saved) {
+      showAuthError('Secure session storage failed on this device. Please sign in again.');
+      clearSessionSecure();
+      showTopScreen('screen-auth');
+      return false;
+    }
     state.token = token;
     state.user = user;
     state.account = account;
-    saveSessionSecure({ token, user, account });
 
     if (user.hasPin && !skipPinNow) {
       state.pinUnlocked = false;
@@ -645,6 +666,7 @@
       state.pinUnlocked = true;
       enterMainWorkspace();
     }
+    return true;
   }
 
   function renderPinUnlockScreen() {
