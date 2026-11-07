@@ -6,6 +6,7 @@ import { FastifyInstance } from 'fastify';
 describe('End-to-End Server Integration & API Flow', () => {
   let app: FastifyInstance;
   let authToken: string;
+  const testRunId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
   before(async () => {
     const s = await buildServer();
@@ -21,7 +22,7 @@ describe('End-to-End Server Integration & API Flow', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/dev-login',
-      payload: { userId: 'e2e-tester-01', name: 'Tester One' },
+      payload: { userId: `e2e-tester-${testRunId}`, name: 'Tester One' },
     });
 
     assert.equal(res.statusCode, 200);
@@ -71,7 +72,7 @@ describe('End-to-End Server Integration & API Flow', () => {
         side: 'BUY',
         orderType: 'MARKET',
         quantity: 25,
-        idempotencyKey: 'e2e-order-1',
+        idempotencyKey: `e2e-order-1-${testRunId}`,
       },
     });
 

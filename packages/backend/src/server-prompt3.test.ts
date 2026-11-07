@@ -6,6 +6,7 @@ import { FastifyInstance } from 'fastify';
 describe('Prompt 3 Features: Tier Gating, Watchlists, Ads, Journal & Security', () => {
   let app: FastifyInstance;
   let authToken: string;
+  const testRunId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
   before(async () => {
     const s = await buildServer();
@@ -16,7 +17,7 @@ describe('Prompt 3 Features: Tier Gating, Watchlists, Ads, Journal & Security', 
     const loginRes = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/dev-login',
-      payload: { userId: 'p3-tester-01', name: 'Prompt 3 Tester' },
+      payload: { userId: `p3-tester-${testRunId}`, name: 'Prompt 3 Tester' },
     });
     const body = JSON.parse(loginRes.body);
     authToken = body.token;
@@ -37,7 +38,7 @@ describe('Prompt 3 Features: Tier Gating, Watchlists, Ads, Journal & Security', 
         side: 'BUY',
         orderType: 'MARKET',
         quantity: 1,
-        idempotencyKey: 'pro-gate-test-1',
+        idempotencyKey: `pro-gate-test-1-${testRunId}`,
       },
     });
 
@@ -56,7 +57,7 @@ describe('Prompt 3 Features: Tier Gating, Watchlists, Ads, Journal & Security', 
         side: 'BUY',
         orderType: 'MARKET',
         quantity: 25,
-        idempotencyKey: 'nifty-practice-order',
+        idempotencyKey: `nifty-practice-order-${testRunId}`,
       },
     });
 

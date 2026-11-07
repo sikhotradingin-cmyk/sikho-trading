@@ -8,6 +8,7 @@ describe('Tradingzone v2.0: Upstox V3 Adapter, Real Auth, PIN, User Isolation, D
   let app: FastifyInstance;
   let userAToken: string;
   let userBToken: string;
+  const testRunId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
   before(async () => {
     const s = await buildServer(undefined, 'DEMO');
@@ -107,11 +108,13 @@ describe('Tradingzone v2.0: Upstox V3 Adapter, Real Auth, PIN, User Isolation, D
 
   test('User Registration, Sign-In, PIN setup/verification, and Account Recovery work end-to-end', async () => {
     // 1. Register User A
+    const userAEmail = `arjun.mehta.${testRunId}@example.com`;
+    const userBEmail = `priya.sharma.${testRunId}@example.com`;
     const regARes = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/register',
       payload: {
-        email: 'arjun.mehta@example.com',
+        email: userAEmail,
         name: 'Arjun Mehta',
         password: 'SecurePass#2026',
       },
@@ -119,7 +122,7 @@ describe('Tradingzone v2.0: Upstox V3 Adapter, Real Auth, PIN, User Isolation, D
     assert.equal(regARes.statusCode, 200);
     const regABody = JSON.parse(regARes.body);
     assert.ok(regABody.token);
-    assert.equal(regABody.user.email, 'arjun.mehta@example.com');
+    assert.equal(regABody.user.email, userAEmail);
     assert.equal(regABody.account.cashBalanceINR, 100000);
     userAToken = regABody.token;
 
@@ -128,7 +131,7 @@ describe('Tradingzone v2.0: Upstox V3 Adapter, Real Auth, PIN, User Isolation, D
       method: 'POST',
       url: '/api/v1/auth/register',
       payload: {
-        email: 'priya.sharma@example.com',
+        email: userBEmail,
         name: 'Priya Sharma',
         password: 'PriyaPassword!99',
       },
@@ -141,7 +144,7 @@ describe('Tradingzone v2.0: Upstox V3 Adapter, Real Auth, PIN, User Isolation, D
       method: 'POST',
       url: '/api/v1/auth/login',
       payload: {
-        email: 'arjun.mehta@example.com',
+        email: userAEmail,
         password: 'WrongPassword123',
       },
     });
@@ -217,7 +220,7 @@ describe('Tradingzone v2.0: Upstox V3 Adapter, Real Auth, PIN, User Isolation, D
         orderType: 'MARKET',
         productType: 'DELIVERY',
         quantity: 5,
-        idempotencyKey: 'deliv-buy-1',
+        idempotencyKey: `deliv-buy-1-${testRunId}`,
       },
     });
     assert.equal(buyDeliv.statusCode, 200);
@@ -254,7 +257,7 @@ describe('Tradingzone v2.0: Upstox V3 Adapter, Real Auth, PIN, User Isolation, D
         orderType: 'MARKET',
         productType: 'DELIVERY',
         quantity: 10,
-        idempotencyKey: 'deliv-oversell-1',
+        idempotencyKey: `deliv-oversell-1-${testRunId}`,
       },
     });
     assert.equal(overSell.statusCode, 400);
@@ -281,7 +284,7 @@ describe('Tradingzone v2.0: Upstox V3 Adapter, Real Auth, PIN, User Isolation, D
         orderType: 'LIMIT',
         quantity: 25,
         requestedPrice: 20000.0, // Below current price so it stays PENDING
-        idempotencyKey: 'limit-cancel-test-1',
+        idempotencyKey: `limit-cancel-test-1-${testRunId}`,
       },
     });
     assert.equal(limitRes.statusCode, 200);
