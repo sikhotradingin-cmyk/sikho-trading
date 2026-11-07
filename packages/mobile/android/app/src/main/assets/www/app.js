@@ -111,7 +111,11 @@
   function saveSessionSecure(sessionObj) {
     const raw = JSON.stringify(sessionObj);
     if (window.TradingzoneNative && typeof window.TradingzoneNative.saveSession === 'function') {
-      window.TradingzoneNative.saveSession(raw);
+      try {
+        window.TradingzoneNative.saveSession(raw);
+      } catch (e) {
+        console.warn('Native saveSession failed:', e);
+      }
     }
     try {
       sessionStorage.setItem('tz_session_v2', raw);
@@ -126,13 +130,19 @@
       }
       const webRaw = sessionStorage.getItem('tz_session_v2');
       if (webRaw) return JSON.parse(webRaw);
-    } catch { }
+    } catch (e) {
+      console.warn('Native readSession failed:', e);
+    }
     return null;
   }
 
   function clearSessionSecure() {
     if (window.TradingzoneNative && typeof window.TradingzoneNative.clearSession === 'function') {
-      window.TradingzoneNative.clearSession();
+      try {
+        window.TradingzoneNative.clearSession();
+      } catch (e) {
+        console.warn('Native clearSession failed:', e);
+      }
     }
     try {
       sessionStorage.removeItem('tz_session_v2');

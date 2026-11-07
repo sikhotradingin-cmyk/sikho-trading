@@ -6,6 +6,7 @@ import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.Bundle
 import android.util.Log
@@ -14,6 +15,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -36,6 +38,7 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import kotlin.math.roundToInt
@@ -46,6 +49,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var bannerContainer: FrameLayout
     private lateinit var adMobManager: AdMobManager
     private lateinit var credentialManager: CredentialManager
+
+    @Volatile
+    private var currentTrustedUrl: String = "file:///android_asset/www/index.html"
+
+    private fun isTrustedOrigin(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        return url.startsWith("file:///android_asset/www/") ||
+               url.startsWith("https://appassets.androidplatform.net/")
+    }
 
     private val credentialUnlockLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -62,8 +74,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     inner class TradingzoneNativeBridge(private val context: Context) {
-        private val securePrefs: SharedPreferences by lazy {
-            try {
+        @Synchronized
+        private fun getSecurePrefs(): SharedPreferences {
+            return try {
                 val masterKey = MasterKey.Builder(context)
                     .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
                     .build()
@@ -74,58 +87,77 @@ class MainActivity : AppCompatActivity() {
                     EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
                     EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
                 )
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.w("TradingzoneBridge", "Keystore-backed EncryptedSharedPreferences unavailable; falling back to private storage: ${e.message}")
                 context.getSharedPreferences("tradingzone_secure_store", Context.MODE_PRIVATE)
             }
         }
 
         private fun verifyCallerIsTrusted(): Boolean {
-            val url = webView.url ?: webView.originalUrl ?: ""
-            return url.startsWith("file:///android_asset/www/") ||
-                   url.startsWith("https://appassets.androidplatform.net/") ||
-                   url.isBlank()
+            return isTrustedOrigin(currentTrustedUrl)
         }
 
         @JavascriptInterface
         fun saveSession(jsonPayload: String) {
             if (!verifyCallerIsTrusted()) {
-                Log.e("TradingzoneBridge", "Rejected saveSession from untrusted origin: ${webView.url}")
+                Log.e("TradingzoneBridge", "Rejected saveSession from untrusted origin: $currentTrustedUrl")
                 return
             }
             if (jsonPayload.length > 32768) {
                 Log.e("TradingzoneBridge", "Payload exceeds allowed size.")
                 return
             }
-            securePrefs.edit().putString("auth_session_v2", jsonPayload).apply()
+            try {
+                getSecurePrefs().edit().putString("auth_session_v2", jsonPayload).commit()
+            } catch (t: Throwable) {
+                Log.e("TradingzoneBridge", "Failed to saveSession: ${t.message}", t)
+            }
         }
 
         @JavascriptInterface
         fun readSession(): String {
             if (!verifyCallerIsTrusted()) {
-                Log.e("TradingzoneBridge", "Rejected readSession from untrusted origin: ${webView.url}")
+                Log.e("TradingzoneBridge", "Rejected readSession from untrusted origin: $currentTrustedUrl")
                 return ""
             }
-            return securePrefs.getString("auth_session_v2", "") ?: ""
+            return try {
+                getSecurePrefs().getString("auth_session_v2", "") ?: ""
+            } catch (t: Throwable) {
+                Log.e("TradingzoneBridge", "Failed to readSession: ${t.message}", t)
+                ""
+            }
         }
 
         @JavascriptInterface
         fun clearSession() {
             if (!verifyCallerIsTrusted()) return
-            securePrefs.edit().remove("auth_session_v2").apply()
+            try {
+                getSecurePrefs().edit().remove("auth_session_v2").commit()
+            } catch (t: Throwable) {
+                Log.e("TradingzoneBridge", "Failed to clearSession: ${t.message}", t)
+            }
         }
 
         @JavascriptInterface
         fun saveKey(key: String, value: String) {
             if (!verifyCallerIsTrusted()) return
             if (key.length > 128 || value.length > 32768) return
-            securePrefs.edit().putString(key, value).apply()
+            try {
+                getSecurePrefs().edit().putString(key, value).commit()
+            } catch (t: Throwable) {
+                Log.e("TradingzoneBridge", "Failed to saveKey: ${t.message}", t)
+            }
         }
 
         @JavascriptInterface
         fun readKey(key: String): String {
             if (!verifyCallerIsTrusted()) return ""
-            return securePrefs.getString(key, "") ?: ""
+            return try {
+                getSecurePrefs().getString(key, "") ?: ""
+            } catch (t: Throwable) {
+                Log.e("TradingzoneBridge", "Failed to readKey: ${t.message}", t)
+                ""
+            }
         }
 
         @JavascriptInterface
@@ -152,21 +184,23 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun triggerDeviceBiometricPrompt(title: String, description: String) {
             if (!verifyCallerIsTrusted()) return
-            val km = context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
-            if (km != null && km.isDeviceSecure) {
-                @Suppress("DEPRECATION")
-                val intent: Intent? = km.createConfirmDeviceCredentialIntent(title, description)
-                if (intent != null) {
-                    credentialUnlockLauncher.launch(intent)
-                    return
+            runOnUiThread {
+                val km = context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+                if (km != null && km.isDeviceSecure) {
+                    @Suppress("DEPRECATION")
+                    val intent: Intent? = km.createConfirmDeviceCredentialIntent(title, description)
+                    if (intent != null) {
+                        credentialUnlockLauncher.launch(intent)
+                        return@runOnUiThread
+                    }
                 }
-            }
-            if (::webView.isInitialized) {
-                webView.post {
-                    webView.evaluateJavascript(
-                        "if (window.onTradingzoneBiometricResult) window.onTradingzoneBiometricResult(false);",
-                        null
-                    )
+                if (::webView.isInitialized) {
+                    webView.post {
+                        webView.evaluateJavascript(
+                            "if (window.onTradingzoneBiometricResult) window.onTradingzoneBiometricResult(false);",
+                            null
+                        )
+                    }
                 }
             }
         }
@@ -178,9 +212,9 @@ class MainActivity : AppCompatActivity() {
          */
         @JavascriptInterface
         fun startNativeGoogleSignIn(webServerClientId: String) {
-            Log.i("TradingzoneAuth", "startNativeGoogleSignIn called with clientId: $webServerClientId, callerUrl: ${webView.url}")
+            Log.i("TradingzoneAuth", "startNativeGoogleSignIn called with clientId: $webServerClientId")
             if (!verifyCallerIsTrusted()) {
-                Log.w("TradingzoneAuth", "Rejected startNativeGoogleSignIn from untrusted origin: ${webView.url}")
+                Log.w("TradingzoneAuth", "Rejected startNativeGoogleSignIn from untrusted origin: $currentTrustedUrl")
                 return
             }
             if (webServerClientId.isBlank()) {
@@ -188,51 +222,58 @@ class MainActivity : AppCompatActivity() {
                 return
             }
 
-            lifecycleScope.launch {
-                try {
-                    val googleIdOption = GetGoogleIdOption.Builder()
-                        .setFilterByAuthorizedAccounts(false)
-                        .setServerClientId(webServerClientId.trim())
-                        .setAutoSelectEnabled(false)
-                        .build()
+            runOnUiThread {
+                if (isFinishing || isDestroyed) {
+                    Log.w("TradingzoneAuth", "Activity is finishing or destroyed; aborting Google Sign-In.")
+                    return@runOnUiThread
+                }
 
-                    val request = GetCredentialRequest.Builder()
-                        .addCredentialOption(googleIdOption)
-                        .build()
+                lifecycleScope.launch(Dispatchers.Main) {
+                    try {
+                        val googleIdOption = GetGoogleIdOption.Builder()
+                            .setFilterByAuthorizedAccounts(false)
+                            .setServerClientId(webServerClientId.trim())
+                            .setAutoSelectEnabled(false)
+                            .build()
 
-                    val result: GetCredentialResponse = credentialManager.getCredential(
-                        request = request,
-                        context = this@MainActivity
-                    )
+                        val request = GetCredentialRequest.Builder()
+                            .addCredentialOption(googleIdOption)
+                            .build()
 
-                    val credential = result.credential
-                    if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
-                        val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
-                        val idToken = googleIdTokenCredential.idToken
-                        val displayName = googleIdTokenCredential.displayName ?: ""
-                        val email = googleIdTokenCredential.id
+                        val result: GetCredentialResponse = credentialManager.getCredential(
+                            request = request,
+                            context = this@MainActivity
+                        )
 
-                        val payload = JSONObject().apply {
-                            put("idToken", idToken)
-                            put("email", email)
-                            put("name", displayName)
+                        val credential = result.credential
+                        if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
+                            val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
+                            val idToken = googleIdTokenCredential.idToken
+                            val displayName = googleIdTokenCredential.displayName ?: ""
+                            val email = googleIdTokenCredential.id
+
+                            val payload = JSONObject().apply {
+                                put("idToken", idToken)
+                                put("email", email)
+                                put("name", displayName)
+                            }
+                            sendGoogleSignInResult(true, payload.toString(), null)
+                        } else {
+                            sendGoogleSignInResult(false, null, "Unexpected credential type received.")
                         }
-                        sendGoogleSignInResult(true, payload.toString(), null)
-                    } else {
-                        sendGoogleSignInResult(false, null, "Unexpected credential type received.")
+                    } catch (e: GetCredentialCancellationException) {
+                        Log.i("TradingzoneAuth", "Google sign-in was cancelled by user.")
+                        sendGoogleSignInResult(false, null, "USER_CANCELLED")
+                    } catch (e: NoCredentialException) {
+                        Log.w("TradingzoneAuth", "No Google credentials available on device: ${e.message}")
+                        sendGoogleSignInResult(false, null, "NO_CREDENTIALS: No Google accounts found on this device.")
+                    } catch (e: GetCredentialException) {
+                        Log.e("TradingzoneAuth", "Credential Manager error: ${e.message}", e)
+                        sendGoogleSignInResult(false, null, "CREDENTIAL_ERROR: ${e.message}")
+                    } catch (t: Throwable) {
+                        Log.e("TradingzoneAuth", "Google sign-in exception: ${t.message}", t)
+                        sendGoogleSignInResult(false, null, "AUTH_EXCEPTION: ${t.message}")
                     }
-                } catch (e: GetCredentialCancellationException) {
-                    Log.i("TradingzoneAuth", "Google sign-in was cancelled by user.")
-                    sendGoogleSignInResult(false, null, "USER_CANCELLED")
-                } catch (e: NoCredentialException) {
-                    Log.w("TradingzoneAuth", "No Google credentials available on device: ${e.message}")
-                    sendGoogleSignInResult(false, null, "NO_CREDENTIALS: No Google accounts found on this device.")
-                } catch (e: GetCredentialException) {
-                    Log.e("TradingzoneAuth", "Credential Manager error: ${e.message}", e)
-                    sendGoogleSignInResult(false, null, "CREDENTIAL_ERROR: ${e.message}")
-                } catch (e: Exception) {
-                    Log.e("TradingzoneAuth", "Google sign-in exception: ${e.message}", e)
-                    sendGoogleSignInResult(false, null, "AUTH_EXCEPTION: ${e.message}")
                 }
             }
         }
@@ -256,39 +297,47 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun updateScreenState(screen: String, tradingWorkspaceOpen: Boolean, openPositions: Boolean, pendingOrders: Boolean) {
             if (!verifyCallerIsTrusted()) return
-            if (::adMobManager.isInitialized) {
-                adMobManager.updateScreenState(screen, tradingWorkspaceOpen, openPositions, pendingOrders)
+            runOnUiThread {
+                if (::adMobManager.isInitialized) {
+                    adMobManager.updateScreenState(screen, tradingWorkspaceOpen, openPositions, pendingOrders)
+                }
             }
         }
 
         @JavascriptInterface
         fun updateUserTier(tier: String, userId: String) {
             if (!verifyCallerIsTrusted()) return
-            if (::adMobManager.isInitialized) {
-                adMobManager.updateUserTier(tier, userId)
+            runOnUiThread {
+                if (::adMobManager.isInitialized) {
+                    adMobManager.updateUserTier(tier, userId)
+                }
             }
         }
 
         @JavascriptInterface
         fun recordEligibleAction(actionName: String) {
             if (!verifyCallerIsTrusted()) return
-            if (::adMobManager.isInitialized) {
-                adMobManager.recordEligibleAction(actionName)
+            runOnUiThread {
+                if (::adMobManager.isInitialized) {
+                    adMobManager.recordEligibleAction(actionName)
+                }
             }
         }
 
         @JavascriptInterface
         fun showPrivacyOptions() {
             if (!verifyCallerIsTrusted()) return
-            if (::adMobManager.isInitialized) {
-                adMobManager.showPrivacyOptionsForm { success, errorMsg ->
-                    if (::webView.isInitialized) {
-                        webView.post {
-                            val safeErr = JSONObject.quote(errorMsg ?: "")
-                            webView.evaluateJavascript(
-                                "if (window.onAdPrivacyOptionsResult) window.onAdPrivacyOptionsResult($success, $safeErr);",
-                                null
-                            )
+            runOnUiThread {
+                if (::adMobManager.isInitialized) {
+                    adMobManager.showPrivacyOptionsForm { success, errorMsg ->
+                        if (::webView.isInitialized) {
+                            webView.post {
+                                val safeErr = JSONObject.quote(errorMsg ?: "")
+                                webView.evaluateJavascript(
+                                    "if (window.onAdPrivacyOptionsResult) window.onAdPrivacyOptionsResult($success, $safeErr);",
+                                    null
+                                )
+                            }
                         }
                     }
                 }
@@ -338,7 +387,39 @@ class MainActivity : AppCompatActivity() {
 
             addJavascriptInterface(TradingzoneNativeBridge(this@MainActivity), "TradingzoneNative")
 
-            webViewClient = object : WebViewClient() {}
+            webViewClient = object : WebViewClient() {
+                override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                    super.onPageStarted(view, url, favicon)
+                    if (url != null && isTrustedOrigin(url)) {
+                        currentTrustedUrl = url
+                    } else {
+                        currentTrustedUrl = ""
+                    }
+                }
+
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    super.onPageFinished(view, url)
+                    if (url != null && isTrustedOrigin(url)) {
+                        currentTrustedUrl = url
+                    } else {
+                        currentTrustedUrl = ""
+                    }
+                }
+
+                override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                    val targetUrl = request?.url?.toString() ?: return true
+                    if (isTrustedOrigin(targetUrl)) {
+                        return false
+                    }
+                    try {
+                        val intent = Intent(Intent.ACTION_VIEW, request.url)
+                        startActivity(intent)
+                    } catch (e: Exception) {
+                        Log.e("TradingzoneWebView", "Failed to launch external browser for $targetUrl: ${e.message}")
+                    }
+                    return true
+                }
+            }
             webChromeClient = WebChromeClient()
 
             setLayerType(WebView.LAYER_TYPE_HARDWARE, null)
