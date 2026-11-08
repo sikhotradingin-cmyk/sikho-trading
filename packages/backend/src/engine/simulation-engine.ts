@@ -24,6 +24,7 @@ export interface ExecutionResult {
 export class SimulationEngine {
   private pendingOrders: SimulatedOrder[] = [];
   private lockedOrderMargins: Map<string, Paise> = new Map();
+  private latestTickTimestamps: Map<string, number> = new Map();
 
   constructor(private repo: PostgresRepository) {}
 
@@ -337,6 +338,16 @@ export class SimulationEngine {
   public async onMarketTick(quote: QuoteSnapshot): Promise<ExecutionResult[]> {
     const results: ExecutionResult[] = [];
     const remainingPending: SimulatedOrder[] = [];
+
+    // Monotonic quote sequencing: discard duplicate or out-of-order ticks to prevent stale triggers
+    const quoteTime = quote.providerTimestamp || (quote as any).timestamp || 0;
+    const lastTimestamp = this.latestTickTimestamps.get(quote.globalId) || 0;
+    if (quoteTime && lastTimestamp && quoteTime < lastTimestamp) {
+      return results;
+    }
+    if (quoteTime) {
+      this.latestTickTimestamps.set(quote.globalId, quoteTime);
+    }
 
     for (const order of this.pendingOrders) {
       if (order.globalInstrumentId !== quote.globalId) {

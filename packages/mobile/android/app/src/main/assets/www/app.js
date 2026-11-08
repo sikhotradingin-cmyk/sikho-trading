@@ -310,6 +310,40 @@
     }
   }
 
+  function isProUser() {
+    return (state.user?.tier === 'PRO') || (state.subscription?.tier === 'PRO');
+  }
+
+  function isGlobalIdRestrictedForFree(globalId) {
+    if (!globalId) return false;
+    const gid = String(globalId).toUpperCase();
+    if (gid === 'NSE:NIFTY:INDEX' || gid === 'NSE:BANKNIFTY:INDEX') return false;
+    if (gid.startsWith('NSE:NIFTY') || gid.startsWith('NSE:BANKNIFTY')) return false;
+    return true;
+  }
+
+  function isInstrumentRestrictedForFree(inst) {
+    if (!inst) return false;
+    if (isProUser()) return false;
+    const gid = inst.globalId || inst.globalInstrumentId || '';
+    if (gid) {
+      return isGlobalIdRestrictedForFree(gid);
+    }
+    const sym = (inst.symbol || inst.tradingsymbol || '').toUpperCase();
+    if (sym.includes('NIFTY 50') || sym === 'NIFTY' || sym.includes('BANK NIFTY') || sym.includes('NIFTY BANK') || sym === 'BANKNIFTY') {
+      return false;
+    }
+    return true;
+  }
+
+  function showSubscriptionUpgradePrompt(symbol) {
+    showBrandedAlert(
+      'Premium Pro Required',
+      `${symbol || 'This instrument'} is exclusive to Sikho Trading Premium. Upgrade now to unlock BSE SENSEX, Equities, and MCX Commodities.`
+    );
+    openSubscriptionPlansModal();
+  }
+
   function recordEligibleAction(actionName) {
     if (window.TradingzoneNative && typeof window.TradingzoneNative.recordEligibleAction === 'function') {
       window.TradingzoneNative.recordEligibleAction(actionName);
@@ -998,6 +1032,21 @@
     const top3 = state.indices.slice(0, 3);
     const cardsHtml = top3
       .map((inst) => {
+        const isRestricted = !isProUser() && isInstrumentRestrictedForFree(inst);
+        if (isRestricted) {
+          return `
+            <div class="index-card-mini" onclick="window.TZApp.showSubscriptionUpgradePrompt('${inst.symbol}')" style="border:1px solid rgba(245,158,11,0.35);">
+              <div class="idx-card-top">
+                <span class="idx-name">${inst.symbol}</span>
+                <span class="expiry-e-badge" style="background:#f59e0b;color:#000;font-weight:700;">PRO</span>
+              </div>
+              <div class="idx-card-bottom">
+                <span class="idx-ltp" style="font-size:12px;color:#f59e0b;font-weight:700;">🔒 LOCKED</span>
+                <span class="idx-chg" style="color:#0ea5e9;font-size:11px;">Upgrade ➔</span>
+              </div>
+            </div>
+          `;
+        }
         const q = inst.latestQuote;
         const { diff, pct, sign } = calcChange(q);
         const cls = diff >= 0 ? 'val-pos-dark' : 'val-neg';
@@ -1074,12 +1123,40 @@
 
     container.innerHTML = list
       .map((inst) => {
+        const isRestricted = !isProUser() && isInstrumentRestrictedForFree(inst);
+        const und = inst.underlying || inst.symbol.split(' ')[0];
+        const tickValStr = inst.tickValue ? `₹${inst.tickValue}/tick` : '';
+
+        if (isRestricted) {
+          return `
+            <div class="instrument-row-white" onclick="window.TZApp.showSubscriptionUpgradePrompt('${inst.symbol}')" style="opacity:0.9;">
+              <div class="inst-left">
+                <div class="inst-badge-icon" style="background:#141B25;color:#f59e0b;">🔒</div>
+                <div class="inst-meta">
+                  <div class="inst-symbol-row">
+                    <span class="inst-symbol">${inst.symbol}</span>
+                    <span class="tag-exch">MCX</span>
+                    <span class="expiry-e-badge" style="background:#f59e0b;color:#000;font-weight:700;">PRO</span>
+                  </div>
+                  <div class="inst-name-sub">
+                    ${inst.quotationUnit || ''} ${tickValStr ? `• <span class="tag-tick-val">${tickValStr}</span>` : ''}
+                  </div>
+                </div>
+              </div>
+              <div class="inst-right">
+                <div class="inst-price-col" style="text-align:right;">
+                  <span class="inst-ltp-val" style="color:#f59e0b;font-weight:700;font-size:12px;">🔒 PRO ONLY</span>
+                  <span class="inst-chg-val" style="color:#0ea5e9;font-size:11px;">Upgrade to view</span>
+                </div>
+              </div>
+            </div>
+          `;
+        }
+
         const q = inst.latestQuote;
         const { diff, pct, sign } = calcChange(q);
         const cls = diff >= 0 ? 'val-pos' : 'val-neg';
-        const und = inst.underlying || inst.symbol.split(' ')[0];
         const hasOptions = inst.hasDerivatives || ['CRUDEOIL', 'GOLD', 'SILVER', 'NATURALGAS', 'COPPER'].includes(und);
-        const tickValStr = inst.tickValue ? `₹${inst.tickValue}/tick` : '';
 
         return `
           <div class="instrument-row-white" onclick="window.TZApp.openChartByGlobalId('${inst.globalId}')">
@@ -1172,6 +1249,31 @@
   }
 
   function renderInstrumentRowHTML(inst, showChainBtn = false) {
+    const isRestricted = !isProUser() && isInstrumentRestrictedForFree(inst);
+    if (isRestricted) {
+      return `
+        <div class="instrument-row-white" onclick="window.TZApp.showSubscriptionUpgradePrompt('${inst.symbol}')" style="opacity:0.9;">
+          <div class="inst-left">
+            <div class="inst-badge-icon" style="background:#141B25;color:#f59e0b;">🔒</div>
+            <div class="inst-meta">
+              <div class="inst-symbol-row">
+                <span class="inst-symbol">${inst.symbol}</span>
+                <span class="tag-exch">${inst.exchange || 'NSE'}</span>
+                <span class="expiry-e-badge" style="background:#f59e0b;color:#000;font-weight:700;">PRO</span>
+              </div>
+              <div class="inst-name-sub">${inst.name || 'Pro Tier Equity'}</div>
+            </div>
+          </div>
+          <div class="inst-right">
+            <div class="inst-price-col" style="text-align:right;">
+              <span class="inst-ltp-val" style="color:#f59e0b;font-weight:700;font-size:12px;">🔒 PRO ONLY</span>
+              <span class="inst-chg-val" style="color:#0ea5e9;font-size:11px;">Upgrade to view</span>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
     const q = inst.latestQuote;
     const { diff, pct, sign } = calcChange(q);
     const cls = diff >= 0 ? 'val-pos' : 'val-neg';
@@ -1449,6 +1551,14 @@
   // 6. FULL-SCREEN CHART WORKSPACE, WINDOWED HISTORY & TOUCH DRAWINGS
   // =========================================================================
   async function openChartByGlobalId(globalId) {
+    if (!globalId) return;
+    const hasOpenPos = (state.positionsData?.positions || []).some(
+      (p) => p.globalInstrumentId === globalId && Math.abs(p.quantity || 0) > 0
+    );
+    if (!isProUser() && isGlobalIdRestrictedForFree(globalId) && !hasOpenPos) {
+      showSubscriptionUpgradePrompt(globalId.split(':')[1] || globalId);
+      return;
+    }
     closeAllIndicesModal();
     closeOptionChainModal();
     state.chartOpen = true;
@@ -2642,6 +2752,11 @@
       wsConn.onopen = () => {
         wsReconnectAttempts = 0;
         if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
+        if (state.token) {
+          try {
+            wsConn.send(JSON.stringify({ action: 'AUTH', token: state.token }));
+          } catch { }
+        }
       };
 
       wsConn.onmessage = (ev) => {
@@ -2669,7 +2784,17 @@
   }
 
   function handleIncomingQuoteTick(quote) {
-    if (!quote) return;
+    if (!quote || !quote.globalId) return;
+    state.lastTickTimestamps = state.lastTickTimestamps || {};
+    const quoteTime = Number(quote.timestamp) || 0;
+    const lastTime = state.lastTickTimestamps[quote.globalId] || 0;
+    if (quoteTime && lastTime && quoteTime < lastTime) {
+      // Discard duplicate or out-of-order tick
+      return;
+    }
+    if (quoteTime) {
+      state.lastTickTimestamps[quote.globalId] = quoteTime;
+    }
     const latencyMs = quote.timestamp ? Math.max(0, Date.now() - Number(quote.timestamp)) : null;
     const latencyPill = document.getElementById('header-latency-pill');
     if (latencyPill && latencyMs !== null) {
@@ -2989,6 +3114,7 @@
     selectPlanCard,
     initiateSubscriptionPurchase,
     restorePurchases,
+    showSubscriptionUpgradePrompt,
     showBrandedAlert,
     showConfirmSheet,
     closeConfirmSheet,

@@ -781,6 +781,21 @@ export async function buildServer(
     return 'FREE';
   };
 
+  const parseFallbackInstrument = (globalId: string): { globalId: string; symbol: string; exchange: string; instrumentType: string } => {
+    const parts = (globalId || '').split(':');
+    const exch = parts[0] || 'NSE';
+    const sym = parts[1] || globalId;
+    let it = 'EQUITY_STOCK';
+    if (globalId.includes('999') || globalId.endsWith('000') || sym.includes('INDEX') || sym.includes('SENSEX') || sym.includes('NIFTY')) {
+      it = 'INDEX_SPOT';
+    } else if (exch === 'NFO' || exch === 'BFO') {
+      it = sym.includes('CE') || sym.includes('PE') ? 'OPTIDX' : 'FUTIDX';
+    } else if (exch === 'MCX') {
+      it = sym.includes('CE') || sym.includes('PE') ? 'OPTCOM' : 'FUTCOM';
+    }
+    return { globalId, exchange: exch, symbol: sym, instrumentType: it };
+  };
+
   // 3B. Commodities Discovery Endpoint (Grouped into Metals, Energy, Agriculture)
   app.get('/api/v1/commodities', async () => {
     let allCom: InstrumentMetadata[] = [];
@@ -888,10 +903,12 @@ export async function buildServer(
 
     const tier = await resolveUserTierFromReq(req);
     if (tier === 'FREE') {
-      const inst = activeProvider.getInstrumentById
-        ? await activeProvider.getInstrumentById(query.globalId)
-        : (await activeProvider.getInstruments()).find((i) => i.globalId === query.globalId);
-      if (inst && !isFreeTierAllowedInstrument(inst)) {
+      const inst =
+        (activeProvider.getInstrumentById
+          ? await activeProvider.getInstrumentById(query.globalId)
+          : (await activeProvider.getInstruments()).find((i) => i.globalId === query.globalId)) ||
+        parseFallbackInstrument(query.globalId);
+      if (!isFreeTierAllowedInstrument(inst)) {
         return reply.status(403).send({
           error: 'UPGRADE_REQUIRED: Historical charts for equities, commodities, and other indices are exclusive to Premium subscribers.',
           code: 'UPGRADE_REQUIRED',
@@ -965,10 +982,12 @@ export async function buildServer(
 
     const tier = await resolveUserTierFromReq(req);
     if (tier === 'FREE') {
-      const inst = activeProvider.getInstrumentById
-        ? await activeProvider.getInstrumentById(query.globalId)
-        : (await activeProvider.getInstruments()).find((i) => i.globalId === query.globalId);
-      if (inst && !isFreeTierAllowedInstrument(inst)) {
+      const inst =
+        (activeProvider.getInstrumentById
+          ? await activeProvider.getInstrumentById(query.globalId)
+          : (await activeProvider.getInstruments()).find((i) => i.globalId === query.globalId)) ||
+        parseFallbackInstrument(query.globalId);
+      if (!isFreeTierAllowedInstrument(inst)) {
         return reply.status(403).send({
           error: 'UPGRADE_REQUIRED: Live quotes for equities, commodities, and other indices are exclusive to Premium subscribers.',
           code: 'UPGRADE_REQUIRED',
@@ -1041,7 +1060,17 @@ export async function buildServer(
       tier
     );
     if (!resetResult.success) {
-      return reply.status(400).send({ error: resetResult.error });
+      const isPositionErr = resetResult.error?.includes('positions');
+      const isTierErr = resetResult.error?.includes('Premium') || resetResult.error?.includes('preset');
+      const code = isPositionErr
+        ? 'ERR_OPEN_POSITIONS_EXIST'
+        : isTierErr
+        ? 'ERR_PRO_TIER_REQUIRED'
+        : 'ERR_RESET_FAILED';
+      return reply.status(isTierErr ? 403 : 400).send({
+        error: resetResult.error,
+        code,
+      });
     }
 
     accountEngine.resetAccount(accountId, positions, quotes);
@@ -1098,9 +1127,19 @@ export async function buildServer(
       });
     }
 
-    // 2. Server-Enforced Tier Gate: Free users can ONLY trade NIFTY and BANKNIFTY derivatives
+    // Check existing position to determine if this order is a risk-reducing exit
+    const existingPositions = await repo.getPositions(accountId);
+    const existingPos = existingPositions.find((p) => p.globalInstrumentId === instrument.globalId);
+    const existingPosQty = existingPos?.quantity ?? 0;
+    const isRiskReducingExit =
+      (existingPosQty > 0 && body.side === 'SELL' && body.quantity <= existingPosQty) ||
+      (existingPosQty < 0 && body.side === 'BUY' && body.quantity <= Math.abs(existingPosQty));
+
+    // 2. Server-Enforced Tier Gate: Free users can ONLY trade NIFTY and BANKNIFTY derivatives.
+    // If a user's Premium subscription expired, they are permitted to view and square off / reduce existing
+    // restricted positions, but are strictly prohibited from opening new exposure or adding to existing positions.
     const userTier = await billingService.getAccountTier(userId);
-    if (userTier === 'FREE' && !isFreeTierAllowedInstrument(instrument)) {
+    if (userTier === 'FREE' && !isFreeTierAllowedInstrument(instrument) && !isRiskReducingExit) {
       return reply.status(403).send({
         error: `ERR_PRO_TIER_REQUIRED: Free tier users can only trade NIFTY and BANKNIFTY futures and options. Upgrade to Premium to trade ${instrument.symbol}.`,
         code: 'ERR_PRO_TIER_REQUIRED',
@@ -1111,14 +1150,6 @@ export async function buildServer(
     if (!quote) {
       return reply.status(400).send({ error: 'No live quote available for instrument.' });
     }
-
-    // Check existing position to determine if this order is a risk-reducing exit
-    const existingPositions = await repo.getPositions(accountId);
-    const existingPos = existingPositions.find((p) => p.globalInstrumentId === instrument.globalId);
-    const existingPosQty = existingPos?.quantity ?? 0;
-    const isRiskReducingExit =
-      (existingPosQty > 0 && body.side === 'SELL' && body.quantity <= existingPosQty) ||
-      (existingPosQty < 0 && body.side === 'BUY' && body.quantity <= Math.abs(existingPosQty));
 
     const existingDeliveryHoldingQty =
       existingPos && existingPos.productType === 'DELIVERY' && existingPos.quantity > 0
@@ -1477,10 +1508,14 @@ export async function buildServer(
     return { plans: billingService.getPlans() };
   });
 
-  app.post('/api/v1/billing/verify-purchase', { preHandler: [(app as any).authenticate] }, async (req: any) => {
+  app.post('/api/v1/billing/verify-purchase', { preHandler: [(app as any).authenticate] }, async (req: any, reply) => {
     const body = req.body as { productId?: string; planId?: string; purchaseToken: string };
     const productId = body.productId || body.planId || 'plan_month_100';
     const res = await billingService.verifyPurchaseToken(req.user.userId, productId, body.purchaseToken);
+    if (!res.success) {
+      const statusCode = res.code === 'CONFIGURATION_REQUIRED' ? 503 : 400;
+      return reply.status(statusCode).send(res);
+    }
     return res;
   });
 
@@ -1535,6 +1570,17 @@ export async function buildServer(
             if (decoded && decoded.userId) {
               clientState.userId = decoded.userId;
               clientState.tier = await billingService.getAccountTier(decoded.userId);
+              // Auto-subscribe client to their open positions so live P&L streams even when chart is closed
+              const accountId = decoded.accountId || (await repo.provisionInitialAccount(decoded.userId))?.id;
+              if (accountId) {
+                const userPositions = await repo.getPositions(accountId);
+                for (const pos of userPositions) {
+                  if (pos.quantity !== 0) {
+                    clientState.subscriptions.add(pos.globalInstrumentId);
+                    ensureEngineSubscription(pos.globalInstrumentId);
+                  }
+                }
+              }
               ws.send(JSON.stringify({ type: 'AUTH_SUCCESS', tier: clientState.tier }));
             }
           } catch {
@@ -1542,8 +1588,8 @@ export async function buildServer(
           }
         } else if (msg.action === 'SUBSCRIBE' && Array.isArray(msg.symbols)) {
           for (const s of msg.symbols) {
-            const inst = instruments.find((i) => i.globalId === s || i.symbol === s);
-            if (clientState.tier === 'FREE' && inst && !isFreeTierAllowedInstrument(inst)) {
+            const inst = instruments.find((i) => i.globalId === s || i.symbol === s) || parseFallbackInstrument(s);
+            if (clientState.tier === 'FREE' && !isFreeTierAllowedInstrument(inst)) {
               ws.send(JSON.stringify({ type: 'RESTRICTED_ACCESS', symbol: s, error: 'UPGRADE_REQUIRED' }));
               continue;
             }

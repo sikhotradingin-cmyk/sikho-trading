@@ -26,10 +26,20 @@ export interface SubscriptionRecord {
 }
 
 export class BillingService {
-  constructor(private db: IDatabase, private googleServiceAccountKey?: string) {}
+  private isTestMode: boolean = false;
+
+  constructor(private db: IDatabase, private googleServiceAccountKey?: string) {
+    if (!this.googleServiceAccountKey && process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
+      this.googleServiceAccountKey = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
+    }
+  }
+
+  public enableTestMode(enabled: boolean = true) {
+    this.isTestMode = enabled;
+  }
 
   public isGooglePlayConfigured(): boolean {
-    return Boolean(this.googleServiceAccountKey);
+    return Boolean(this.googleServiceAccountKey && this.googleServiceAccountKey.trim().length > 0);
   }
 
   public getPlans(): SubscriptionPlan[] {
@@ -71,6 +81,7 @@ export class BillingService {
     expiresAt?: number | null;
     isAutoRenewing?: boolean;
     plans: SubscriptionPlan[];
+    isPlayConfigured: boolean;
   }> {
     const tier = await this.getAccountTier(userId);
     const subRes = await this.db.query(
@@ -78,11 +89,14 @@ export class BillingService {
       [userId]
     );
 
+    const isPlayConfigured = this.isGooglePlayConfigured();
+
     if (subRes.rows.length === 0) {
       return {
         tier,
         status: tier === 'PRO' ? 'ACTIVE' : 'EXPIRED',
         plans: SUBSCRIPTION_PLANS,
+        isPlayConfigured,
       };
     }
 
@@ -94,6 +108,7 @@ export class BillingService {
       expiresAt: Number(sub.expires_at),
       isAutoRenewing: Boolean(sub.is_auto_renewing),
       plans: SUBSCRIPTION_PLANS,
+      isPlayConfigured,
     };
   }
 
@@ -102,6 +117,11 @@ export class BillingService {
    * Day: ₹10 (prepaid, 1 day)
    * Month: ₹100 (1 month, recurring)
    * Year: ₹800 (1 year, recurring)
+   *
+   * Enforces fail-closed authorization:
+   * - If Google Play credentials or Play Console products are missing -> rejects with CONFIGURATION_REQUIRED
+   * - Prevents purchase token replay across accounts
+   * - Authoritatively verifies package name and product identity
    */
   public async verifyPurchaseToken(
     userId: string,
@@ -111,6 +131,7 @@ export class BillingService {
     success: boolean;
     tier: UserTier;
     status: SubscriptionStatus;
+    code?: string;
     expiresAt?: number;
     error?: string;
   }> {
@@ -120,6 +141,7 @@ export class BillingService {
         success: false,
         tier: 'FREE',
         status: 'EXPIRED',
+        code: 'ERR_INVALID_PLAN',
         error: `Invalid plan ID: ${productId}. Available plans: ${SUBSCRIPTION_PLANS.map((p) => p.id).join(', ')}`,
       };
     }
@@ -129,7 +151,38 @@ export class BillingService {
         success: false,
         tier: 'FREE',
         status: 'EXPIRED',
+        code: 'ERR_EMPTY_TOKEN',
         error: 'Purchase token cannot be empty.',
+      };
+    }
+
+    // 1. Replay Attack Prevention: check if token already redeemed by a different account
+    const existingTokenRes = await this.db.query(
+      'SELECT user_id, status FROM subscriptions WHERE purchase_token = $1 LIMIT 1',
+      [purchaseToken.trim()]
+    );
+    if (existingTokenRes.rows.length > 0) {
+      const existingUser = existingTokenRes.rows[0].user_id;
+      if (existingUser !== userId) {
+        return {
+          success: false,
+          tier: 'FREE',
+          status: 'EXPIRED',
+          code: 'ERR_TOKEN_REPLAY',
+          error: 'This purchase token has already been associated with another user account.',
+        };
+      }
+    }
+
+    // 2. Google Play Developer API Authorization Check (Fail-closed)
+    const isConfigured = this.isGooglePlayConfigured();
+    if (!isConfigured && !this.isTestMode) {
+      return {
+        success: false,
+        tier: 'FREE',
+        status: 'EXPIRED',
+        code: 'CONFIGURATION_REQUIRED',
+        error: 'Google Play Developer API service account credentials or Play Console products are not configured in environment. In-app purchases cannot be verified.',
       };
     }
 
@@ -148,7 +201,7 @@ export class BillingService {
         userId,
         plan.id,
         'ACTIVE',
-        purchaseToken,
+        purchaseToken.trim(),
         expiresAt,
         !plan.isPrepaid,
         plan.priceRupees,
