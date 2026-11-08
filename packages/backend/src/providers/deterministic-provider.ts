@@ -79,7 +79,7 @@ export class DeterministicProvider implements IMarketDataProvider {
       isSimulatedFixture: true,
     };
 
-    // 3. Tradable Equity Stock
+    // 3. Tradable Equity Stocks (RELIANCE, TCS, TTML)
     const relianceStock: InstrumentMetadata = {
       globalId: makeGlobalInstrumentId('NSE', 'RELIANCE', '2885'),
       provider: 'DEMO',
@@ -94,14 +94,46 @@ export class DeterministicProvider implements IMarketDataProvider {
       isSimulatedFixture: true,
     };
 
+    const tcsStock: InstrumentMetadata = {
+      globalId: makeGlobalInstrumentId('NSE', 'TCS', '11536'),
+      provider: 'DEMO',
+      exchange: 'NSE',
+      token: '11536',
+      symbol: 'TCS',
+      name: 'Tata Consultancy Services Ltd',
+      instrumentType: 'EQUITY_STOCK',
+      isTradable: true,
+      lotSize: 1,
+      tickSize: 0.05,
+      isSimulatedFixture: true,
+    };
+
+    const ttmlStock: InstrumentMetadata = {
+      globalId: makeGlobalInstrumentId('NSE', 'TTML', '13348'),
+      provider: 'DEMO',
+      exchange: 'NSE',
+      token: '13348',
+      symbol: 'TTML',
+      name: 'Tata Teleservices (Maharashtra) Ltd',
+      instrumentType: 'EQUITY_STOCK',
+      isTradable: true,
+      lotSize: 1,
+      tickSize: 0.05,
+      isSimulatedFixture: true,
+    };
+
     this.instruments.set(spotNifty.globalId, spotNifty);
     this.instruments.set(futureNifty.globalId, futureNifty);
     this.instruments.set(relianceStock.globalId, relianceStock);
+    this.instruments.set(tcsStock.globalId, tcsStock);
+    this.instruments.set(ttmlStock.globalId, ttmlStock);
 
     // Seed base prices
     this.seedQuotesAndCandles(spotNifty.globalId, 24500.0);
     this.seedQuotesAndCandles(futureNifty.globalId, 24535.0);
     this.seedQuotesAndCandles(relianceStock.globalId, 2920.0);
+    this.seedQuotesAndCandles(tcsStock.globalId, 3950.0);
+    this.seedQuotesAndCandles(ttmlStock.globalId, 85.50);
   }
 
   private seedQuotesAndCandles(globalId: string, basePrice: number): void {

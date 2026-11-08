@@ -929,7 +929,10 @@ export class UpstoxAdapter implements IMarketDataProvider {
       if (inst.instrumentType === 'INDEX_SPOT' && inst.hasDerivatives) score += 60;
       else if (inst.instrumentType === 'FUTIDX') score += 50;
       else if (inst.instrumentType === 'FUTCOM') score += 48;
-      else if (inst.instrumentType === 'EQUITY_STOCK') score += 40;
+      else if (inst.instrumentType === 'EQUITY_STOCK') {
+        const prominentSet = new Set(['RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK', 'SBIN', 'BHARTIARTL', 'ITC', 'KOTAKBANK', 'LT', 'TATAMOTORS', 'HINDUNILVR', 'BAJFINANCE', 'MARUTI', 'SUNPHARMA', 'TITAN', 'WIPRO', 'TTML']);
+        score += prominentSet.has(inst.symbol.toUpperCase()) ? 58 : 40;
+      }
       else if (inst.instrumentType === 'FUTSTK') score += 30;
       else if (inst.instrumentType === 'OPTIDX') score += 20;
       else if (inst.instrumentType === 'OPTCOM') score += 18;

@@ -390,6 +390,70 @@ html, body {
   cursor: pointer;
 }
 
+/* Professional Instrument Identity & Avatars */
+.inst-avatar-box {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  flex-shrink: 0;
+  overflow: visible;
+}
+
+.inst-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: 9px;
+  padding: 2px;
+  display: block;
+}
+
+.idx-mini-avatar {
+  border-radius: 6px;
+  box-shadow: none;
+  background: transparent;
+  border: none;
+}
+
+.idx-mini-avatar .inst-avatar-img {
+  border-radius: 6px;
+  padding: 0;
+}
+
+.avatar-deriv-badge {
+  position: absolute;
+  bottom: -3px;
+  right: -5px;
+  font-size: 8px;
+  font-weight: 800;
+  padding: 1px 4px;
+  border-radius: 4px;
+  line-height: 1.1;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+  letter-spacing: 0.3px;
+  z-index: 2;
+}
+
+.badge-fut {
+  background: #7C3AED;
+  color: #FFFFFF;
+}
+
+.badge-ce {
+  background: #16A34A;
+  color: #FFFFFF;
+}
+
+.badge-pe {
+  background: #DC2626;
+  color: #FFFFFF;
+}
+
 /* Index Benchmark Strip in Light Header Area */
 .index-strip-bar {
   background-color: #F8FAFC;
@@ -407,33 +471,35 @@ html, body {
 }
 
 .index-card-mini {
-  min-width: 148px;
+  min-width: 152px;
   flex: 1;
   background: #FFFFFF;
   border: 1px solid #E2E8F0;
   border-radius: 12px;
-  padding: 9px 12px;
+  padding: 10px 12px;
   cursor: pointer;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .index-card-mini:active {
   border-color: #84CC16;
+  box-shadow: 0 2px 6px rgba(132, 204, 22, 0.15);
 }
 
 .idx-card-top {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 4px;
-  margin-bottom: 4px;
+  gap: 6px;
+  margin-bottom: 6px;
 }
 
 .idx-name {
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 700;
   color: #0F172A;
   white-space: nowrap;
@@ -442,28 +508,31 @@ html, body {
 .expiry-e-badge {
   font-size: 9px;
   font-weight: 800;
-  padding: 1px 5px;
+  padding: 1.5px 6px;
   border-radius: 4px;
   background: #ECFDF5;
   color: #059669;
+  letter-spacing: 0.3px;
 }
 
 .idx-card-bottom {
   display: flex;
   align-items: baseline;
+  justify-content: space-between;
   gap: 6px;
 }
 
 .idx-ltp {
-  font-size: 13.5px;
-  font-weight: 700;
+  font-size: 14px;
+  font-weight: 800;
   color: #0F172A;
   font-variant-numeric: tabular-nums;
+  letter-spacing: -0.2px;
 }
 
 .idx-chg {
   font-size: 11.5px;
-  font-weight: 600;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 
@@ -620,16 +689,18 @@ html, body {
 
 .inst-meta {
   min-width: 0;
+  flex: 1;
 }
 
 .inst-symbol-row {
   display: flex;
   align-items: center;
   gap: 6px;
+  margin-bottom: 2px;
 }
 
 .inst-symbol {
-  font-size: 14.5px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--text-on-white-primary);
   white-space: nowrap;
@@ -640,19 +711,19 @@ html, body {
 .tag-exch {
   font-size: 10px;
   font-weight: 700;
-  padding: 1px 5px;
+  padding: 1.5px 5px;
   border-radius: 4px;
   background: var(--surface-light-secondary);
   color: var(--text-on-white-secondary);
+  letter-spacing: 0.2px;
 }
 
 .inst-name-sub {
-  font-size: 12px;
-  color: var(--text-on-white-secondary);
+  font-size: 11.5px;
+  color: #64748B;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-top: 2px;
 }
 
 .inst-right {
@@ -670,10 +741,18 @@ html, body {
 }
 
 .inst-ltp-val {
-  font-size: 14.5px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--text-on-white-primary);
   font-variant-numeric: tabular-nums;
+  letter-spacing: -0.2px;
+}
+
+.inst-chg-val {
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  margin-top: 1px;
 }
 
 .inst-chg-val {

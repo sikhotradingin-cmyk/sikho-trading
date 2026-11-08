@@ -51,8 +51,8 @@ class AdMobManager(
         private const val PREFS_NAME = "tradingzone_admob_stats"
         private const val KEY_24H_IMPRESSIONS = "interstitial_impressions_24h"
 
-        private const val ACTIONS_REQUIRED_FOR_INTERSTITIAL = 5
-        private const val TWO_MINUTES_MS = 2 * 60 * 1000L
+        private const val ACTIONS_REQUIRED_FOR_INTERSTITIAL = 4
+        private const val SIXTY_SECONDS_MS = 60 * 1000L
         private const val TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000L
         private const val MAX_INTERSTITIALS_PER_SESSION = 6
         private const val MAX_INTERSTITIALS_PER_24H = 12
@@ -74,9 +74,14 @@ class AdMobManager(
     private var lastInterstitialTime = 0L
     private var sessionInterstitialCount = 0
     private var eligibleActionCounter = 0
+    private var lastEligibilityCheckReason = "INITIALIZING"
+
+    // Retry and Backoff State
+    private var retryAttempt = 0
+    private val retryHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     // User & Screen State
-    var currentUserTier: String = "FREE"
+    var currentUserTier: String = "UNKNOWN"
         private set
     var currentUserId: String = ""
         private set
@@ -207,7 +212,7 @@ class AdMobManager(
      * Evaluates whether the adaptive banner should be displayed.
      */
     private fun updateBannerVisibility() {
-        if (currentUserTier == "PRO") {
+        if (currentUserTier != "FREE") {
             hideBanner()
             return
         }
@@ -258,7 +263,7 @@ class AdMobManager(
      * Loads an anchored adaptive banner matching screen width
      */
     private fun loadAnchoredAdaptiveBanner() {
-        if (currentUserTier == "PRO") return
+        if (currentUserTier != "FREE") return
         if (!consentInformation.canRequestAds()) return
 
         val displayMetrics = activity.resources.displayMetrics
@@ -305,7 +310,14 @@ class AdMobManager(
      * Record an eligible browsing / review action from the web frontend
      */
     fun recordEligibleAction(actionName: String) {
-        if (currentUserTier == "PRO") return
+        if (currentUserTier == "PRO") {
+            lastEligibilityCheckReason = "REASON_PRO_TIER"
+            return
+        }
+        if (currentUserTier != "FREE") {
+            lastEligibilityCheckReason = "REASON_TIER_UNKNOWN"
+            return
+        }
 
         eligibleActionCounter++
         Log.i(TAG, "Recorded eligible action: $actionName (Total count: $eligibleActionCounter/$ACTIONS_REQUIRED_FOR_INTERSTITIAL)")
@@ -314,6 +326,8 @@ class AdMobManager(
 
         if (eligibleActionCounter >= ACTIONS_REQUIRED_FOR_INTERSTITIAL) {
             checkAndTriggerInterstitial(actionName)
+        } else {
+            lastEligibilityCheckReason = "REASON_INSUFFICIENT_ACTIONS ($eligibleActionCounter/$ACTIONS_REQUIRED_FOR_INTERSTITIAL)"
         }
     }
 
@@ -322,7 +336,7 @@ class AdMobManager(
      * No waiting screen on failure, no catch-up ads.
      */
     private fun preloadInterstitialIfEligible() {
-        if (currentUserTier == "PRO") return
+        if (currentUserTier != "FREE") return
         if (!consentInformation.canRequestAds() || !isMobileAdsInitialized.get()) return
         if (interstitialAd != null || isInterstitialLoading) return
 
@@ -341,6 +355,7 @@ class AdMobManager(
                 override fun onAdLoaded(ad: InterstitialAd) {
                     isInterstitialLoading = false
                     interstitialAd = ad
+                    retryAttempt = 0
                     Log.i(TAG, "Interstitial ad preloaded successfully.")
 
                     ad.fullScreenContentCallback = object : FullScreenContentCallback() {
@@ -368,6 +383,15 @@ class AdMobManager(
                     isInterstitialLoading = false
                     interstitialAd = null
                     Log.w(TAG, "Interstitial failed to preload: ${loadAdError.code} - ${loadAdError.message}")
+                    if (currentUserTier == "FREE" && retryAttempt < 3) {
+                        val delays = listOf(15000L, 30000L, 60000L)
+                        val delay = delays.getOrElse(retryAttempt) { 60000L }
+                        retryAttempt++
+                        Log.i(TAG, "Scheduling interstitial preload retry #$retryAttempt in ${delay / 1000}s")
+                        retryHandler.postDelayed({
+                            preloadInterstitialIfEligible()
+                        }, delay)
+                    }
                 }
             }
         )
@@ -380,52 +404,67 @@ class AdMobManager(
         val now = System.currentTimeMillis()
 
         // 1. Pro users get ZERO ads
-        if (currentUserTier == "PRO") return
+        if (currentUserTier == "PRO") {
+            lastEligibilityCheckReason = "REASON_PRO_TIER"
+            return
+        }
+        if (currentUserTier != "FREE") {
+            lastEligibilityCheckReason = "REASON_TIER_UNKNOWN"
+            return
+        }
 
         // 2. Strict trading safety checks: Never during chart interaction, auth,
         // or while open positions / pending orders exist
         if (isTradingWorkspaceOpen) {
+            lastEligibilityCheckReason = "REASON_TRADING_WORKSPACE_OPEN"
             Log.d(TAG, "Interstitial blocked: trading workspace is open.")
             return
         }
         if (currentScreen == "screen-auth" || currentScreen == "screen-pin") {
+            lastEligibilityCheckReason = "REASON_AUTH_OR_PIN_SCREEN"
             Log.d(TAG, "Interstitial blocked: on auth/PIN screen.")
             return
         }
         if (hasOpenPositions) {
+            lastEligibilityCheckReason = "REASON_OPEN_POSITIONS"
             Log.d(TAG, "Interstitial blocked: active open positions exist.")
             return
         }
         if (hasPendingOrders) {
+            lastEligibilityCheckReason = "REASON_PENDING_ORDERS"
             Log.d(TAG, "Interstitial blocked: active pending orders exist.")
             return
         }
 
-        // 3. Time elapsed >= 2 min since session start
+        // 3. Time elapsed >= 60s since session start
         val timeSinceSessionStart = now - sessionStartTime
-        if (timeSinceSessionStart < TWO_MINUTES_MS) {
-            val remSec = (TWO_MINUTES_MS - timeSinceSessionStart) / 1000
+        if (timeSinceSessionStart < SIXTY_SECONDS_MS) {
+            val remSec = (SIXTY_SECONDS_MS - timeSinceSessionStart) / 1000
+            lastEligibilityCheckReason = "REASON_SESSION_COOLDOWN ($remSec s remaining)"
             Log.d(TAG, "Interstitial blocked: session start cooldown active ($remSec s remaining).")
             return
         }
 
-        // 4. Time elapsed >= 2 min since last interstitial
+        // 4. Time elapsed >= 60s since last interstitial
         val timeSinceLastAd = now - lastInterstitialTime
-        if (lastInterstitialTime > 0 && timeSinceLastAd < TWO_MINUTES_MS) {
-            val remSec = (TWO_MINUTES_MS - timeSinceLastAd) / 1000
+        if (lastInterstitialTime > 0 && timeSinceLastAd < SIXTY_SECONDS_MS) {
+            val remSec = (SIXTY_SECONDS_MS - timeSinceLastAd) / 1000
+            lastEligibilityCheckReason = "REASON_INTERVAL_COOLDOWN ($remSec s remaining)"
             Log.d(TAG, "Interstitial blocked: interval cooldown active ($remSec s remaining).")
             return
         }
 
-        // 5. Max 3 per session
+        // 5. Max 6 per session
         if (sessionInterstitialCount >= MAX_INTERSTITIALS_PER_SESSION) {
+            lastEligibilityCheckReason = "REASON_SESSION_CAP_REACHED ($MAX_INTERSTITIALS_PER_SESSION)"
             Log.d(TAG, "Interstitial blocked: session cap of $MAX_INTERSTITIALS_PER_SESSION reached.")
             return
         }
 
-        // 6. Max 6 per rolling 24 hours
+        // 6. Max 12 per rolling 24 hours
         val recent24hCount = getRecent24hImpressionsCount()
         if (recent24hCount >= MAX_INTERSTITIALS_PER_24H) {
+            lastEligibilityCheckReason = "REASON_24H_CAP_REACHED ($MAX_INTERSTITIALS_PER_24H)"
             Log.d(TAG, "Interstitial blocked: rolling 24h cap of $MAX_INTERSTITIALS_PER_24H reached ($recent24hCount shown).")
             return
         }
@@ -433,6 +472,7 @@ class AdMobManager(
         // 7. Verify preloaded ad is ready
         val adToShow = interstitialAd
         if (adToShow == null) {
+            lastEligibilityCheckReason = "REASON_AD_NOT_LOADED"
             Log.d(TAG, "Interstitial not ready yet. Preload in progress.")
             preloadInterstitialIfEligible()
             return
@@ -440,6 +480,7 @@ class AdMobManager(
 
         // All constraints passed! Reset action counter and display interstitial at genuine break
         eligibleActionCounter = 0
+        lastEligibilityCheckReason = "REASON_ELIGIBLE"
         activity.runOnUiThread {
             Log.i(TAG, "Showing Interstitial Ad triggered by: $triggerReason")
             adToShow.show(activity)
@@ -506,6 +547,9 @@ class AdMobManager(
             put("hasPendingOrders", hasPendingOrders)
             put("currentScreen", currentScreen)
             put("bannerVisible", bannerContainer.visibility == View.VISIBLE)
+            put("interstitialLoaded", interstitialAd != null)
+            put("isInterstitialLoading", isInterstitialLoading)
+            put("lastEligibilityCheckReason", lastEligibilityCheckReason)
         }
     }
 
@@ -519,6 +563,7 @@ class AdMobManager(
     }
 
     fun onDestroy() {
+        retryHandler.removeCallbacksAndMessages(null)
         destroyBanner()
         interstitialAd = null
     }

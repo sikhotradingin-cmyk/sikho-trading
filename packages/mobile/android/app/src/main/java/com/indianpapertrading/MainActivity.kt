@@ -265,69 +265,81 @@ class MainActivity : AppCompatActivity() {
          */
         @JavascriptInterface
         fun startNativeGoogleSignIn(webServerClientId: String) {
-            Log.i("TradingzoneAuth", "startNativeGoogleSignIn called with clientId: $webServerClientId")
-            if (!verifyCallerIsTrusted()) {
-                Log.w("TradingzoneAuth", "Rejected startNativeGoogleSignIn from untrusted origin: $currentTrustedUrl")
-                return
-            }
-            if (webServerClientId.isBlank()) {
-                sendGoogleSignInResult(false, null, "Server Web Client ID is required for Google Sign-In.")
-                return
-            }
-
-            runOnUiThread {
-                if (isFinishing || isDestroyed) {
-                    Log.w("TradingzoneAuth", "Activity is finishing or destroyed; aborting Google Sign-In.")
-                    return@runOnUiThread
+            try {
+                Log.i("TradingzoneAuth", "startNativeGoogleSignIn called with clientId: $webServerClientId")
+                if (!verifyCallerIsTrusted()) {
+                    Log.w("TradingzoneAuth", "Rejected startNativeGoogleSignIn from untrusted origin: $currentTrustedUrl")
+                    sendGoogleSignInResult(false, null, "UNTRUSTED_ORIGIN: Origin is not trusted.")
+                    return
+                }
+                if (webServerClientId.isBlank()) {
+                    sendGoogleSignInResult(false, null, "CONFIGURATION_ERROR: Server Web Client ID is required for Google Sign-In.")
+                    return
                 }
 
-                lifecycleScope.launch(Dispatchers.Main) {
+                runOnUiThread {
                     try {
-                        val googleIdOption = GetGoogleIdOption.Builder()
-                            .setFilterByAuthorizedAccounts(false)
-                            .setServerClientId(webServerClientId.trim())
-                            .setAutoSelectEnabled(false)
-                            .build()
-
-                        val request = GetCredentialRequest.Builder()
-                            .addCredentialOption(googleIdOption)
-                            .build()
-
-                        val result: GetCredentialResponse = credentialManager.getCredential(
-                            request = request,
-                            context = this@MainActivity
-                        )
-
-                        val credential = result.credential
-                        if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
-                            val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
-                            val idToken = googleIdTokenCredential.idToken
-                            val displayName = googleIdTokenCredential.displayName ?: ""
-                            val email = googleIdTokenCredential.id
-
-                            val payload = JSONObject().apply {
-                                put("idToken", idToken)
-                                put("email", email)
-                                put("name", displayName)
-                            }
-                            sendGoogleSignInResult(true, payload.toString(), null)
-                        } else {
-                            sendGoogleSignInResult(false, null, "Unexpected credential type received.")
+                        if (isFinishing || isDestroyed) {
+                            Log.w("TradingzoneAuth", "Activity is finishing or destroyed; aborting Google Sign-In.")
+                            sendGoogleSignInResult(false, null, "ACTIVITY_NOT_ACTIVE: Activity is finishing or destroyed.")
+                            return@runOnUiThread
                         }
-                    } catch (e: GetCredentialCancellationException) {
-                        Log.i("TradingzoneAuth", "Google sign-in was cancelled by user.")
-                        sendGoogleSignInResult(false, null, "USER_CANCELLED")
-                    } catch (e: NoCredentialException) {
-                        Log.w("TradingzoneAuth", "No Google credentials available on device: ${e.message}")
-                        sendGoogleSignInResult(false, null, "NO_CREDENTIALS: No Google accounts found on this device.")
-                    } catch (e: GetCredentialException) {
-                        Log.e("TradingzoneAuth", "Credential Manager error: ${e.message}", e)
-                        sendGoogleSignInResult(false, null, "CREDENTIAL_ERROR: ${e.message}")
+
+                        lifecycleScope.launch(Dispatchers.Main) {
+                            try {
+                                val googleIdOption = GetGoogleIdOption.Builder()
+                                    .setFilterByAuthorizedAccounts(false)
+                                    .setServerClientId(webServerClientId.trim())
+                                    .setAutoSelectEnabled(false)
+                                    .build()
+
+                                val request = GetCredentialRequest.Builder()
+                                    .addCredentialOption(googleIdOption)
+                                    .build()
+
+                                val result: GetCredentialResponse = credentialManager.getCredential(
+                                    request = request,
+                                    context = this@MainActivity
+                                )
+
+                                val credential = result.credential
+                                if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
+                                    val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
+                                    val idToken = googleIdTokenCredential.idToken
+                                    val displayName = googleIdTokenCredential.displayName ?: ""
+                                    val email = googleIdTokenCredential.id
+
+                                    val payload = JSONObject().apply {
+                                        put("idToken", idToken)
+                                        put("email", email)
+                                        put("name", displayName)
+                                    }
+                                    sendGoogleSignInResult(true, payload.toString(), null)
+                                } else {
+                                    sendGoogleSignInResult(false, null, "Unexpected credential type received.")
+                                }
+                            } catch (e: GetCredentialCancellationException) {
+                                Log.i("TradingzoneAuth", "Google sign-in was cancelled by user.")
+                                sendGoogleSignInResult(false, null, "USER_CANCELLED")
+                            } catch (e: NoCredentialException) {
+                                Log.w("TradingzoneAuth", "No Google credentials available on device: ${e.message}")
+                                sendGoogleSignInResult(false, null, "NO_CREDENTIALS: No Google accounts found on this device.")
+                            } catch (e: GetCredentialException) {
+                                Log.e("TradingzoneAuth", "Credential Manager error: ${e.message}", e)
+                                sendGoogleSignInResult(false, null, "CREDENTIAL_ERROR: ${e.message}")
+                            } catch (t: Throwable) {
+                                Log.e("TradingzoneAuth", "Google sign-in exception: ${t.message}", t)
+                                sendGoogleSignInResult(false, null, "AUTH_EXCEPTION: ${t.message}")
+                            }
+                        }
                     } catch (t: Throwable) {
-                        Log.e("TradingzoneAuth", "Google sign-in exception: ${t.message}", t)
-                        sendGoogleSignInResult(false, null, "AUTH_EXCEPTION: ${t.message}")
+                        Log.e("TradingzoneAuth", "Error scheduling Google sign-in coroutine: ${t.message}", t)
+                        sendGoogleSignInResult(false, null, "LAUNCH_EXCEPTION: ${t.message}")
                     }
                 }
+            } catch (t: Throwable) {
+                Log.e("TradingzoneAuth", "Top-level startNativeGoogleSignIn exception: ${t.message}", t)
+                sendGoogleSignInResult(false, null, "NATIVE_EXCEPTION: ${t.message}")
             }
         }
 

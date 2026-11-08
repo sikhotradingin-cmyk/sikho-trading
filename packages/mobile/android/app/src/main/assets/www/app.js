@@ -549,8 +549,16 @@
   // Official Web Client ID configured in Google Cloud Project "Sikho Trading"
   const GOOGLE_WEB_CLIENT_ID = '18709659572-6d1j4db60j60vo0a0ek5kumvv06vu4fi.apps.googleusercontent.com';
 
+  let googleSignInTimeoutId = null;
+
   // Callback registered globally for native Android Credential Manager result
   window.onTradingzoneGoogleSignInResult = async function (success, dataJsonStr, errorMsg) {
+    if (googleSignInTimeoutId) {
+      clearTimeout(googleSignInTimeoutId);
+      googleSignInTimeoutId = null;
+    }
+    state.isGoogleSignInPending = false;
+
     const googleBtn = document.getElementById('btn-google-signin');
     const googleBtnText = document.getElementById('btn-google-signin-text');
 
@@ -563,6 +571,10 @@
       resetGoogleBtn();
       if (errorMsg === 'USER_CANCELLED') {
         showAuthError('Google sign-in was cancelled.');
+      } else if (errorMsg && errorMsg.includes('NO_CREDENTIALS')) {
+        showAuthError('No Google accounts found on this device. Please add a Google account in Android Settings or sign in with email/password.');
+      } else if (errorMsg && (errorMsg.includes('CREDENTIAL_ERROR') || errorMsg.includes('16:'))) {
+        showAuthError('Google Sign-In configuration mismatch (SHA-1/Package). Ensure package com.indianpapertrading and signing fingerprint are registered in Google Cloud Console, or sign in with email/password.');
       } else {
         showAuthError(errorMsg || 'Google sign-in failed.');
       }
@@ -570,7 +582,17 @@
     }
 
     try {
-      const parsed = typeof dataJsonStr === 'string' ? JSON.parse(dataJsonStr) : dataJsonStr;
+      let parsed = null;
+      if (typeof dataJsonStr === 'string' && dataJsonStr.trim().length > 0) {
+        try {
+          parsed = JSON.parse(dataJsonStr);
+        } catch (parseErr) {
+          console.error('Failed to parse Google credential JSON:', parseErr);
+        }
+      } else if (typeof dataJsonStr === 'object' && dataJsonStr !== null) {
+        parsed = dataJsonStr;
+      }
+
       if (!parsed || !parsed.idToken) {
         resetGoogleBtn();
         return showAuthError('Invalid Google credential response: missing ID token.');
@@ -596,14 +618,29 @@
   };
 
   async function handleGoogleSignIn() {
+    if (state.isGoogleSignInPending) return;
+
     const googleBtn = document.getElementById('btn-google-signin');
     const googleBtnText = document.getElementById('btn-google-signin-text');
 
     try {
       // 1. If running inside Android Native wrapper with Credential Manager bridge
       if (window.TradingzoneNative && typeof window.TradingzoneNative.startNativeGoogleSignIn === 'function') {
+        state.isGoogleSignInPending = true;
         if (googleBtn) googleBtn.disabled = true;
         if (googleBtnText) googleBtnText.textContent = 'Opening Google Sign-In...';
+
+        // 45-second timeout safety guard
+        if (googleSignInTimeoutId) clearTimeout(googleSignInTimeoutId);
+        googleSignInTimeoutId = setTimeout(() => {
+          if (state.isGoogleSignInPending) {
+            state.isGoogleSignInPending = false;
+            if (googleBtn) googleBtn.disabled = false;
+            if (googleBtnText) googleBtnText.textContent = 'Continue with Google';
+            showAuthError('Google sign-in timed out. Please try again or use email login.');
+          }
+        }, 45000);
+
         // Immediately invoke native Credential Manager prompt with zero blocking pre-flight
         window.TradingzoneNative.startNativeGoogleSignIn(GOOGLE_WEB_CLIENT_ID);
         return;
@@ -612,6 +649,7 @@
       // 2. In browser fallback/testing environment: show clear instruction
       showAuthError('Native Google Sign-In requires an Android device. In browser mode, sign in with email and password.');
     } catch (err) {
+      state.isGoogleSignInPending = false;
       showAuthError(err.message || 'Failed to start Google sign-in.');
       if (googleBtn) googleBtn.disabled = false;
       if (googleBtnText) googleBtnText.textContent = 'Continue with Google';
@@ -1014,7 +1052,34 @@
         apiFetch('/api/v1/commodities/specs'),
       ]);
       state.indices = idxRes.indices || [];
+      const INDEX_ORDER = ['NIFTY 50', 'BANKNIFTY', 'SENSEX', 'NIFTY IT', 'NIFTY PHARMA', 'NIFTY METAL', 'MIDCPNIFTY'];
+      state.indices.sort((a, b) => {
+        const nameA = (a.name || a.tradingSymbol || a.symbol || '').toUpperCase();
+        const nameB = (b.name || b.tradingSymbol || b.symbol || '').toUpperCase();
+        const idxA = INDEX_ORDER.findIndex(k => nameA.includes(k));
+        const idxB = INDEX_ORDER.findIndex(k => nameB.includes(k));
+        if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+        if (idxA !== -1) return -1;
+        if (idxB !== -1) return 1;
+        return nameA.localeCompare(nameB);
+      });
+
       state.exploreStocks = eqRes.instruments || [];
+      const PROMINENT_ORDER = [
+        'RELIANCE', 'TCS', 'TTML', 'HDFCBANK', 'INFY', 'ICICIBANK',
+        'SBIN', 'BHARTIARTL', 'ITC', 'KOTAKBANK', 'TATAMOTORS', 'WIPRO',
+        'MARUTI', 'SUNPHARMA', 'BAJFINANCE', 'HINDUNILVR'
+      ];
+      state.exploreStocks.sort((a, b) => {
+        const symA = (a.tradingSymbol || a.symbol || '').toUpperCase().split('-')[0].trim();
+        const symB = (b.tradingSymbol || b.symbol || '').toUpperCase().split('-')[0].trim();
+        const idxA = PROMINENT_ORDER.indexOf(symA);
+        const idxB = PROMINENT_ORDER.indexOf(symB);
+        if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+        if (idxA !== -1) return -1;
+        if (idxB !== -1) return 1;
+        return (a.tradingSymbol || a.symbol || '').localeCompare(b.tradingSymbol || b.symbol || '');
+      });
       state.exploreFnoIndices = futIdxRes.instruments || [];
       state.exploreFnoStocks = futStkRes.instruments || [];
       state.commodities = commRes || { metals: [], energy: [], agriculture: [] };
@@ -1029,20 +1094,28 @@
 
   function renderBenchmarkIndexStrip() {
     const strip = document.getElementById('benchmark-index-strip');
+    if (!strip) return;
     const top3 = state.indices.slice(0, 3);
     const cardsHtml = top3
       .map((inst) => {
         const isRestricted = !isProUser() && isInstrumentRestrictedForFree(inst);
+        const avatarHtml = window.InstrumentIdentity
+          ? window.InstrumentIdentity.renderInstrumentAvatar(inst, 22, 'idx-mini-avatar')
+          : '';
+
         if (isRestricted) {
           return `
             <div class="index-card-mini" onclick="window.TZApp.showSubscriptionUpgradePrompt('${inst.symbol}')" style="border:1px solid rgba(245,158,11,0.35);">
               <div class="idx-card-top">
-                <span class="idx-name">${inst.symbol}</span>
+                <div style="display:flex;align-items:center;gap:6px;">
+                  ${avatarHtml}
+                  <span class="idx-name">${inst.symbol}</span>
+                </div>
                 <span class="expiry-e-badge" style="background:#f59e0b;color:#000;font-weight:700;">PRO</span>
               </div>
               <div class="idx-card-bottom">
-                <span class="idx-ltp" style="font-size:12px;color:#f59e0b;font-weight:700;">🔒 LOCKED</span>
-                <span class="idx-chg" style="color:#0ea5e9;font-size:11px;">Upgrade ➔</span>
+                <span class="idx-ltp" style="font-size:12.5px;color:#f59e0b;font-weight:700;">🔒 LOCKED</span>
+                <span class="idx-chg" style="color:#0ea5e9;font-size:11px;font-weight:700;">Upgrade ➔</span>
               </div>
             </div>
           `;
@@ -1050,11 +1123,16 @@
         const q = inst.latestQuote;
         const { diff, pct, sign } = calcChange(q);
         const cls = diff >= 0 ? 'val-pos-dark' : 'val-neg';
-        const eBadge = inst.hasDerivatives ? '<span class="expiry-e-badge">F&amp;O</span>' : '';
+        // Only show expiry badge if it is an actual derivative contract (never spot index)
+        const isDerivative = inst.instrumentType === 'FUTIDX' || inst.instrumentType === 'OPTIDX';
+        const eBadge = isDerivative && inst.expiry ? `<span class="expiry-e-badge">${inst.expiry}</span>` : '';
         return `
           <div class="index-card-mini" onclick="window.TZApp.openChartByGlobalId('${inst.globalId}')">
             <div class="idx-card-top">
-              <span class="idx-name">${inst.symbol}</span>
+              <div style="display:flex;align-items:center;gap:6px;">
+                ${avatarHtml}
+                <span class="idx-name">${inst.symbol}</span>
+              </div>
               ${eBadge}
             </div>
             <div class="idx-card-bottom">
@@ -1127,11 +1205,15 @@
         const und = inst.underlying || inst.symbol.split(' ')[0];
         const tickValStr = inst.tickValue ? `₹${inst.tickValue}/tick` : '';
 
+        const avatarHtml = window.InstrumentIdentity
+          ? window.InstrumentIdentity.renderInstrumentAvatar(inst, 38)
+          : `<div class="inst-badge-icon" style="background:#141B25;color:var(--accent-lime);">${und.slice(0, 3)}</div>`;
+
         if (isRestricted) {
           return `
-            <div class="instrument-row-white" onclick="window.TZApp.showSubscriptionUpgradePrompt('${inst.symbol}')" style="opacity:0.9;">
+            <div class="instrument-row-white" onclick="window.TZApp.showSubscriptionUpgradePrompt('${inst.symbol}')" style="opacity:0.92;">
               <div class="inst-left">
-                <div class="inst-badge-icon" style="background:#141B25;color:#f59e0b;">🔒</div>
+                ${avatarHtml}
                 <div class="inst-meta">
                   <div class="inst-symbol-row">
                     <span class="inst-symbol">${inst.symbol}</span>
@@ -1145,8 +1227,8 @@
               </div>
               <div class="inst-right">
                 <div class="inst-price-col" style="text-align:right;">
-                  <span class="inst-ltp-val" style="color:#f59e0b;font-weight:700;font-size:12px;">🔒 PRO ONLY</span>
-                  <span class="inst-chg-val" style="color:#0ea5e9;font-size:11px;">Upgrade to view</span>
+                  <span class="inst-ltp-val" style="color:#f59e0b;font-weight:700;font-size:12.5px;">🔒 PRO ONLY</span>
+                  <span class="inst-chg-val" style="color:#0ea5e9;font-size:11px;font-weight:600;">Upgrade to view</span>
                 </div>
               </div>
             </div>
@@ -1157,11 +1239,13 @@
         const { diff, pct, sign } = calcChange(q);
         const cls = diff >= 0 ? 'val-pos' : 'val-neg';
         const hasOptions = inst.hasDerivatives || ['CRUDEOIL', 'GOLD', 'SILVER', 'NATURALGAS', 'COPPER'].includes(und);
+        const priceText = q && q.ltp !== undefined && q.ltp !== null ? fmtINR(q.ltp) : '—';
+        const chgText = q && q.ltp !== undefined && q.ltp !== null ? `${sign}${pct.toFixed(2)}%` : '';
 
         return `
           <div class="instrument-row-white" onclick="window.TZApp.openChartByGlobalId('${inst.globalId}')">
             <div class="inst-left">
-              <div class="inst-badge-icon" style="background:#141B25;color:var(--accent-lime);">${und.slice(0, 3)}</div>
+              ${avatarHtml}
               <div class="inst-meta">
                 <div class="inst-symbol-row">
                   <span class="inst-symbol">${inst.symbol}</span>
@@ -1175,9 +1259,9 @@
             </div>
             <div class="inst-right">
               <div class="inst-price-col">
-                <span class="inst-ltp-val" data-ltp-id="${inst.globalId}">${q ? fmtINR(q.ltp) : 'View Chart'}</span>
+                <span class="inst-ltp-val" data-ltp-id="${inst.globalId}">${priceText}</span>
                 <span class="inst-chg-val ${cls}" data-chg-id="${inst.globalId}">
-                  ${q ? `${sign}${diff.toFixed(2)} (${sign}${pct.toFixed(2)}%)` : 'MCX FUT'}
+                  ${chgText}
                 </span>
               </div>
               ${hasOptions ? `
@@ -1250,24 +1334,28 @@
 
   function renderInstrumentRowHTML(inst, showChainBtn = false) {
     const isRestricted = !isProUser() && isInstrumentRestrictedForFree(inst);
+    const avatarHtml = window.InstrumentIdentity
+      ? window.InstrumentIdentity.renderInstrumentAvatar(inst, 38)
+      : `<div class="inst-badge-icon">${(inst.symbol || 'EQ').slice(0, 3)}</div>`;
+
     if (isRestricted) {
       return `
-        <div class="instrument-row-white" onclick="window.TZApp.showSubscriptionUpgradePrompt('${inst.symbol}')" style="opacity:0.9;">
+        <div class="instrument-row-white" onclick="window.TZApp.showSubscriptionUpgradePrompt('${inst.symbol}')" style="opacity:0.92;">
           <div class="inst-left">
-            <div class="inst-badge-icon" style="background:#141B25;color:#f59e0b;">🔒</div>
+            ${avatarHtml}
             <div class="inst-meta">
               <div class="inst-symbol-row">
                 <span class="inst-symbol">${inst.symbol}</span>
                 <span class="tag-exch">${inst.exchange || 'NSE'}</span>
                 <span class="expiry-e-badge" style="background:#f59e0b;color:#000;font-weight:700;">PRO</span>
               </div>
-              <div class="inst-name-sub">${inst.name || 'Pro Tier Equity'}</div>
+              <div class="inst-name-sub">${inst.name || 'Pro Tier Instrument'}</div>
             </div>
           </div>
           <div class="inst-right">
             <div class="inst-price-col" style="text-align:right;">
-              <span class="inst-ltp-val" style="color:#f59e0b;font-weight:700;font-size:12px;">🔒 PRO ONLY</span>
-              <span class="inst-chg-val" style="color:#0ea5e9;font-size:11px;">Upgrade to view</span>
+              <span class="inst-ltp-val" style="color:#f59e0b;font-weight:700;font-size:12.5px;">🔒 PRO ONLY</span>
+              <span class="inst-chg-val" style="color:#0ea5e9;font-size:11px;font-weight:600;">Upgrade to view</span>
             </div>
           </div>
         </div>
@@ -1277,27 +1365,38 @@
     const q = inst.latestQuote;
     const { diff, pct, sign } = calcChange(q);
     const cls = diff >= 0 ? 'val-pos' : 'val-neg';
-    const shortBadge = (inst.symbol || 'EQ').slice(0, 3).toUpperCase();
     const chainUnderlying = inst.underlying || inst.symbol;
+
+    const isDerivative = inst.instrumentType === 'FUTIDX' || inst.instrumentType === 'FUTSTK' ||
+                         inst.instrumentType === 'OPTIDX' || inst.instrumentType === 'OPTSTK' ||
+                         inst.instrumentType === 'FUTCOM' || inst.instrumentType === 'OPTCOM';
+
+    let metaSub = inst.name || inst.symbol;
+    if (isDerivative && inst.expiry) {
+      metaSub = `${inst.expiry}${inst.strikePrice ? ' • ' + inst.strikePrice : ''}${inst.optionType ? ' ' + inst.optionType : ''}`;
+    }
+
+    const priceText = q && q.ltp !== undefined && q.ltp !== null ? fmtINR(q.ltp) : '—';
+    const chgText = q && q.ltp !== undefined && q.ltp !== null ? `${sign}${pct.toFixed(2)}%` : '';
 
     return `
       <div class="instrument-row-white" onclick="window.TZApp.openChartByGlobalId('${inst.globalId}')">
         <div class="inst-left">
-          <div class="inst-badge-icon">${shortBadge}</div>
+          ${avatarHtml}
           <div class="inst-meta">
             <div class="inst-symbol-row">
               <span class="inst-symbol">${inst.symbol}</span>
               <span class="tag-exch">${inst.exchange}</span>
               ${inst.lotSize > 1 ? `<span class="tag-exch">Lot ${inst.lotSize}</span>` : ''}
             </div>
-            <div class="inst-name-sub">${inst.name}</div>
+            <div class="inst-name-sub">${metaSub}</div>
           </div>
         </div>
         <div class="inst-right">
           <div class="inst-price-col">
-            <span class="inst-ltp-val" data-ltp-id="${inst.globalId}">${q ? fmtINR(q.ltp) : 'View Chart'}</span>
+            <span class="inst-ltp-val" data-ltp-id="${inst.globalId}">${priceText}</span>
             <span class="inst-chg-val ${cls}" data-chg-id="${inst.globalId}">
-              ${q ? `${sign}${diff.toFixed(2)} (${sign}${pct.toFixed(2)}%)` : inst.instrumentType}
+              ${chgText}
             </span>
           </div>
           ${showChainBtn
@@ -1477,24 +1576,29 @@
       const container = document.getElementById('search-results-container');
       container.innerHTML = list
         .map(
-          (inst) => `
-          <div class="instrument-row-white" onclick="window.TZApp.closeSearchModal(); window.TZApp.openChartByGlobalId('${inst.globalId}')">
-            <div class="inst-left">
-              <div class="inst-badge-icon">${inst.exchange}</div>
-              <div class="inst-meta">
-                <div class="inst-symbol-row">
-                  <span class="inst-symbol">${inst.symbol}</span>
-                  <span class="tag-exch">${inst.instrumentType}</span>
-                  ${inst.lotSize > 1 ? `<span class="tag-exch">Lot ${inst.lotSize}</span>` : ''}
+          (inst) => {
+            const avatarHtml = window.InstrumentIdentity
+              ? window.InstrumentIdentity.renderInstrumentAvatar(inst, 38)
+              : `<div class="inst-badge-icon">${inst.exchange}</div>`;
+            return `
+              <div class="instrument-row-white" onclick="window.TZApp.closeSearchModal(); window.TZApp.openChartByGlobalId('${inst.globalId}')">
+                <div class="inst-left">
+                  ${avatarHtml}
+                  <div class="inst-meta">
+                    <div class="inst-symbol-row">
+                      <span class="inst-symbol">${inst.symbol}</span>
+                      <span class="tag-exch">${inst.exchange || 'NSE'}</span>
+                      ${inst.lotSize > 1 ? `<span class="tag-exch">Lot ${inst.lotSize}</span>` : ''}
+                    </div>
+                    <div class="inst-name-sub">${inst.name}</div>
+                  </div>
                 </div>
-                <div class="inst-name-sub">${inst.name}</div>
+                <div class="inst-right">
+                  <button class="chain-icon-btn" title="Add to Watchlist" onclick="event.stopPropagation(); window.TZApp.addSymbolToWatchlist('${inst.globalId}')">+</button>
+                </div>
               </div>
-            </div>
-            <div class="inst-right">
-              <button class="chain-icon-btn" title="Add to Watchlist" onclick="event.stopPropagation(); window.TZApp.addSymbolToWatchlist('${inst.globalId}')">+</button>
-            </div>
-          </div>
-        `
+            `;
+          }
         )
         .join('');
     } catch { }
@@ -2356,10 +2460,14 @@
         const isOpen = p.quantity !== 0;
         const pnl = isOpen ? Number(p.unrealizedPnlINR || 0) : Number(p.realizedPnlINR || 0);
         const cls = pnl >= 0 ? 'val-pos' : 'val-neg';
+        const avatarHtml = window.InstrumentIdentity
+          ? window.InstrumentIdentity.renderInstrumentAvatar(p, 38)
+          : `<div class="inst-badge-icon">${p.productType === 'DELIVERY' ? 'CNC' : 'POS'}</div>`;
+
         return `
           <div class="instrument-row-white" onclick="window.TZApp.openChartByGlobalId('${p.globalInstrumentId}')">
             <div class="inst-left">
-              <div class="inst-badge-icon">${p.productType === 'DELIVERY' ? 'CNC' : 'POS'}</div>
+              ${avatarHtml}
               <div class="inst-meta">
                 <div class="inst-symbol-row">
                   <span class="inst-symbol">${p.symbol}</span>
@@ -2433,13 +2541,20 @@
             : o.triggerPrice
               ? `SL Trigger: ${fmtINR(o.triggerPrice)}`
               : 'Market';
+        const avatarHtml = window.InstrumentIdentity
+          ? window.InstrumentIdentity.renderInstrumentAvatar(o, 38)
+          : `<div class="inst-badge-icon" style="color:${o.side === 'BUY' ? 'var(--positive-on-white)' : 'var(--negative-red)'};">${o.side}</div>`;
+        const sideTag = o.side === 'BUY'
+          ? '<span class="tag-exch" style="background:#ECFDF5;color:#059669;font-weight:800;">BUY</span>'
+          : '<span class="tag-exch" style="background:#FEF2F2;color:#DC2626;font-weight:800;">SELL</span>';
         return `
           <div class="instrument-row-white">
             <div class="inst-left">
-              <div class="inst-badge-icon" style="color:${o.side === 'BUY' ? 'var(--positive-on-white)' : 'var(--negative-red)'};">${o.side}</div>
+              ${avatarHtml}
               <div class="inst-meta">
                 <div class="inst-symbol-row">
                   <span class="inst-symbol">${o.symbol || o.globalInstrumentId}</span>
+                  ${sideTag}
                   <span class="tag-exch">${o.productType || 'INTRADAY'}</span>
                   <span class="tag-exch">${o.orderType}</span>
                 </div>
