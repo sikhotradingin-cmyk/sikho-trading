@@ -146,31 +146,23 @@
          SCREEN 3: MAIN 5-TAB APPLICATION SHELL
          ================================================================== -->
     <div id="screen-main" class="screen-view">
-      <!-- Top Dark Header -->
+      <!-- Simplified Light Header: Monogram Icon + Flexible Long Search + Profile Avatar -->
       <header class="top-dark-header">
         <div class="header-row-main">
-          <div class="brand-Lockup">
-            <div class="brand-logo-mark" style="width:32px;height:32px;border-radius:9px;margin:0;">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-                <path d="M4 17L10 11L14 15L20 7" stroke="#C7F542" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <div class="header-app-icon-wrap" onclick="window.TZApp.switchMainTab('explore')" style="cursor:pointer;" title="Sikho Trading">
+            <img src="app-icon.png" alt="Sikho Trading" class="header-app-icon" />
+          </div>
+
+          <div class="header-search-wrap">
+            <button class="search-pill-trigger long-search-bar" onclick="window.TZApp.openSearchModal()">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
               </svg>
-            </div>
-            <div>
-              <div style="display:flex;align-items:center;gap:6px;">
-                <span class="brand-title-sm">Sikho Trading</span>
-                <span class="paper-badge-header">PAPER</span>
-              </div>
-              <div id="header-provider-label" style="font-size:10.5px;color:var(--text-on-black-secondary);">Upstox V3 • Virtual Funds</div>
-            </div>
+              <span>Search stocks, F&amp;O, commodities...</span>
+            </button>
           </div>
 
           <div class="header-actions-right">
-            <button class="search-pill-trigger" onclick="window.TZApp.openSearchModal()">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-                <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
-              </svg>
-              <span>Search stocks, F&amp;O...</span>
-            </button>
             <button id="header-avatar-btn" class="avatar-circle-btn" onclick="window.TZApp.switchMainTab('profile')">T</button>
           </div>
         </div>
@@ -612,11 +604,57 @@
             <div style="font-size:11.5px;color:var(--text-on-black-secondary);">NSE &amp; BSE Benchmark Indices</div>
           </div>
         </div>
+        <button class="btn-lime-primary" style="width:auto;min-height:34px;padding:0 12px;font-size:12px;font-weight:700;" onclick="window.TZApp.openCustomizeIndicesModal()">
+          Customize Top 3
+        </button>
       </div>
       <div style="padding:10px 16px;background:var(--bg-white);border-bottom:1px solid var(--surface-light-border);">
         <input id="all-indices-search" class="form-input" type="text" placeholder="Search NIFTY 50, SENSEX, BANKEX, IT, Pharma..." oninput="window.TZApp.renderAllIndicesList()" />
       </div>
       <div id="all-indices-list-container" class="white-content-scroll"></div>
+    </div>
+
+    <!-- ==================================================================
+         MODAL 1B: CUSTOMIZE TOP 3 BENCHMARK INDICES
+         ================================================================== -->
+    <div id="modal-customize-indices" class="chart-overlay-screen" style="background:var(--bg-white);color:var(--text-on-white-primary);display:none;flex-direction:column;">
+      <div class="top-dark-header" style="display:flex;align-items:center;justify-content:space-between;">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <button class="chart-back-btn" onclick="window.TZApp.closeCustomizeIndicesModal()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+              <path d="M19 12H5M12 19l-7-7 7-7"/>
+            </svg>
+          </button>
+          <div>
+            <div style="font-size:16px;font-weight:700;color:var(--text-on-black-primary);">Customize Indices</div>
+            <div style="font-size:11.5px;color:var(--text-on-black-secondary);">Choose exactly 3 indices for top strip</div>
+          </div>
+        </div>
+        <button class="btn-lime-primary" style="width:auto;min-height:34px;padding:0 14px;font-size:12.5px;font-weight:700;" onclick="window.TZApp.saveIndexPreferences()">
+          Save
+        </button>
+      </div>
+
+      <div class="white-content-scroll" style="padding:16px;">
+        <div style="font-size:12px;font-weight:700;color:#64748B;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">
+          Active Benchmark Slots (Slot 1, 2, 3)
+        </div>
+        <div id="customize-slots-container" style="display:flex;flex-direction:column;gap:8px;margin-bottom:18px;">
+          <!-- Dynamically populated selected 3 slots with reordering -->
+        </div>
+
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <div style="font-size:12px;font-weight:700;color:#64748B;text-transform:uppercase;letter-spacing:0.5px;">
+            Available Indices
+          </div>
+          <button class="link-btn" style="font-size:11.5px;color:#0284C7;font-weight:600;" onclick="window.TZApp.resetIndicesToDefault()">
+            Reset to Default
+          </button>
+        </div>
+        <div id="customize-all-indices-list" style="display:flex;flex-direction:column;gap:6px;">
+          <!-- Dynamically populated list of all available indices with check/select -->
+        </div>
+      </div>
     </div>
 
     <!-- ==================================================================
@@ -1039,6 +1077,15 @@
         <div style="margin-top:14px;font-size:12px;font-weight:700;color:#0F172A;text-transform:uppercase;letter-spacing:0.5px;">Choose Capital Preset</div>
         <div id="capital-preset-grid" class="preset-grid">
           <!-- Preset buttons dynamically injected -->
+        </div>
+
+        <div style="margin-top:14px;">
+          <label class="form-label" for="input-custom-reset-capital" style="font-size:12px;font-weight:700;color:#0F172A;">Or Enter Custom Amount (₹)</label>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input id="input-custom-reset-capital" class="form-input" type="number" placeholder="e.g. 500000" style="flex:1;" oninput="window.TZApp.onCustomCapitalInput(this.value)" />
+            <button type="button" class="btn-lime-primary" style="width:auto;min-height:46px;padding:0 14px;font-size:13px;font-weight:700;" onclick="window.TZApp.applyCustomCapital()">Set</button>
+          </div>
+          <div id="custom-capital-tier-hint" style="font-size:11.5px;color:#64748B;margin-top:4px;">Free tier: ₹1,00,000 to ₹20,00,000 • Pro tier: up to ₹10 Crore</div>
         </div>
 
         <div style="margin:14px 0;padding:12px;border-radius:12px;background:#F8FAFC;border:1px solid #E2E8F0;font-size:12px;color:#64748B;line-height:1.45;">

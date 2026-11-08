@@ -1021,6 +1021,89 @@ export async function buildServer(
     return { success: true, instrumentId: body.instrumentId, count: (body.drawings || []).length };
   });
 
+  // 5C. User Selected Benchmark Indices Preferences (Exactly 3 unique benchmark indices)
+  const DEFAULT_INDEX_GLOBAL_IDS = [
+    'NSE:NIFTY 50:99926000',
+    'NSE:BANKNIFTY:99926009',
+    'BSE:SENSEX:99919000',
+  ];
+
+  app.get('/api/v1/user/preferences/indices', async (req: any) => {
+    let selectedIndices = [...DEFAULT_INDEX_GLOBAL_IDS];
+    try {
+      const authHeader = req.headers?.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        const decoded = (app as any).jwt?.verify(authHeader.slice(7));
+        if (decoded && decoded.userId) {
+          const saved = await repo.getUserIndexPreferences(decoded.userId);
+          if (saved && saved.length === 3) {
+            selectedIndices = saved;
+          }
+        }
+      }
+    } catch {}
+
+    const allIndices = activeProvider.getIndices
+      ? await activeProvider.getIndices()
+      : (await activeProvider.getInstruments()).filter((i) => i.instrumentType === 'INDEX_SPOT');
+
+    const enrichedIndices = await Promise.all(
+      selectedIndices.map(async (gid) => {
+        const match = allIndices.find((i) => i.globalId === gid);
+        const quote = await activeProvider.getQuote(gid);
+        return match
+          ? { ...match, latestQuote: quote }
+          : { globalId: gid, symbol: gid.split(':')[1] || gid, name: gid.split(':')[1] || gid, instrumentType: 'INDEX_SPOT', latestQuote: quote };
+      })
+    );
+
+    return {
+      selectedIndices,
+      indices: enrichedIndices,
+    };
+  });
+
+  app.put('/api/v1/user/preferences/indices', { preHandler: [(app as any).authenticate] }, async (req: any, reply) => {
+    const body = req.body as { selectedIndices?: string[] };
+    if (!body || !Array.isArray(body.selectedIndices) || body.selectedIndices.length !== 3) {
+      return reply.status(400).send({
+        error: 'Exactly three unique benchmark index global IDs must be selected.',
+        code: 'ERR_INVALID_INDICES_COUNT',
+      });
+    }
+
+    const uniqueSet = new Set(body.selectedIndices);
+    if (uniqueSet.size !== 3) {
+      return reply.status(400).send({
+        error: 'All three selected indices must be distinct and unique.',
+        code: 'ERR_DUPLICATE_INDICES',
+      });
+    }
+
+    const allIndices = activeProvider.getIndices
+      ? await activeProvider.getIndices()
+      : (await activeProvider.getInstruments()).filter((i) => i.instrumentType === 'INDEX_SPOT');
+
+    const validGlobalIds = new Set(allIndices.map((i) => i.globalId));
+    DEFAULT_INDEX_GLOBAL_IDS.forEach((id) => validGlobalIds.add(id));
+
+    for (const gid of body.selectedIndices) {
+      if (!validGlobalIds.has(gid)) {
+        return reply.status(400).send({
+          error: `Invalid benchmark index ID: ${gid}`,
+          code: 'ERR_UNKNOWN_INDEX',
+        });
+      }
+    }
+
+    await repo.setUserIndexPreferences(req.user.userId, body.selectedIndices);
+
+    return {
+      success: true,
+      selectedIndices: body.selectedIndices,
+    };
+  });
+
   // 6. Virtual Account
   app.get('/api/v1/account', { preHandler: [(app as any).authenticate] }, async (req: any) => {
     const account = await repo.getAccount(req.user.accountId);
@@ -1061,7 +1144,7 @@ export async function buildServer(
     );
     if (!resetResult.success) {
       const isPositionErr = resetResult.error?.includes('positions');
-      const isTierErr = resetResult.error?.includes('Premium') || resetResult.error?.includes('preset');
+      const isTierErr = resetResult.error?.includes('Premium') || resetResult.error?.includes('20,00,000') || resetResult.error?.includes('preset');
       const code = isPositionErr
         ? 'ERR_OPEN_POSITIONS_EXIST'
         : isTierErr

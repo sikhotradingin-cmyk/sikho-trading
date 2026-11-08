@@ -908,7 +908,8 @@
       state.feedHealth = h;
       const src = h.activeProvider?.source || 'UPSTOX';
       const mktOpen = h.marketSession?.isMarketOpen ? 'Market OPEN' : 'Market CLOSED';
-      document.getElementById('header-provider-label').textContent = `${src} V3 • ${mktOpen} • Virtual Funds`;
+      const provEl = document.getElementById('header-provider-label');
+      if (provEl) provEl.textContent = `${src} V3 • ${mktOpen} • Virtual Funds`;
       document.getElementById('prof-provider-title').textContent = `Primary Provider: ${src} (${h.activeProvider?.status || 'ACTIVE'})`;
       document.getElementById('prof-provider-sub').textContent =
         h.activeProvider?.message || h.marketSession?.note || '';
@@ -1052,17 +1053,28 @@
         apiFetch('/api/v1/commodities/specs'),
       ]);
       state.indices = idxRes.indices || [];
-      const INDEX_ORDER = ['NIFTY 50', 'BANKNIFTY', 'SENSEX', 'NIFTY IT', 'NIFTY PHARMA', 'NIFTY METAL', 'MIDCPNIFTY'];
+      state.quotesMap = state.quotesMap || new Map();
+      (state.indices || []).forEach((inst) => {
+        if (inst.latestQuote && inst.latestQuote.ltp > 0) {
+          state.quotesMap.set(inst.globalId, inst.latestQuote);
+        }
+      });
+
+      // Canonical index sorting: NIFTY 50 -> BANKNIFTY -> SENSEX -> FINNIFTY -> MIDCPNIFTY -> NIFTY IT...
+      const INDEX_ORDER = ['NIFTY 50', 'BANKNIFTY', 'SENSEX', 'FINNIFTY', 'MIDCPNIFTY', 'NIFTY IT', 'NIFTY PHARMA', 'NIFTY METAL', 'BANKEX'];
       state.indices.sort((a, b) => {
-        const nameA = (a.name || a.tradingSymbol || a.symbol || '').toUpperCase();
-        const nameB = (b.name || b.tradingSymbol || b.symbol || '').toUpperCase();
-        const idxA = INDEX_ORDER.findIndex(k => nameA.includes(k));
-        const idxB = INDEX_ORDER.findIndex(k => nameB.includes(k));
+        const keyA = getIndexCanonicalKey(a);
+        const keyB = getIndexCanonicalKey(b);
+        const idxA = INDEX_ORDER.indexOf(keyA);
+        const idxB = INDEX_ORDER.indexOf(keyB);
         if (idxA !== -1 && idxB !== -1) return idxA - idxB;
         if (idxA !== -1) return -1;
         if (idxB !== -1) return 1;
-        return nameA.localeCompare(nameB);
+        return keyA.localeCompare(keyB);
       });
+
+      // Load user preferences for benchmark strip
+      await loadUserIndexPreferences();
 
       state.exploreStocks = eqRes.instruments || [];
       const PROMINENT_ORDER = [
@@ -1092,10 +1104,81 @@
     } catch { }
   }
 
+  function getIndexCanonicalKey(inst) {
+    const sym = (inst.symbol || '').toUpperCase().replace(/\s+/g, '');
+    const name = (inst.name || '').toUpperCase().replace(/\s+/g, '');
+    const ts = (inst.tradingSymbol || '').toUpperCase().replace(/\s+/g, '');
+    if (sym === 'NIFTY50' || sym === 'NIFTY' || name.includes('NIFTY50') || ts === 'NIFTY') return 'NIFTY 50';
+    if (sym === 'BANKNIFTY' || name.includes('BANKNIFTY') || name.includes('NIFTYBANK') || ts === 'BANKNIFTY') return 'BANKNIFTY';
+    if (sym === 'SENSEX' || name.includes('SENSEX') || ts === 'SENSEX') return 'SENSEX';
+    if (sym === 'FINNIFTY' || name.includes('FINNIFTY') || ts === 'FINNIFTY') return 'FINNIFTY';
+    if (sym === 'MIDCPNIFTY' || name.includes('MIDCPNIFTY') || ts === 'MIDCPNIFTY') return 'MIDCPNIFTY';
+    if (sym === 'BANKEX' || name.includes('BANKEX') || ts === 'BANKEX') return 'BANKEX';
+    if (sym.includes('IT') || name.includes('NIFTYIT') || ts.includes('NIFTYIT')) return 'NIFTY IT';
+    if (sym.includes('PHARMA') || name.includes('PHARMA')) return 'NIFTY PHARMA';
+    if (sym.includes('METAL') || name.includes('METAL')) return 'NIFTY METAL';
+    return sym || name;
+  }
+
+  async function loadUserIndexPreferences() {
+    const defaultIndices = ['NSE:NIFTY 50:99926000', 'NSE:BANKNIFTY:99926009', 'BSE:SENSEX:99919000'];
+    const storageKey = 'tradingzone_indices_pref_' + (state.user?.id || 'guest');
+    try {
+      const cached = localStorage.getItem(storageKey);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length === 3) {
+          state.selectedIndices = parsed;
+        }
+      }
+    } catch { }
+
+    if (state.token) {
+      try {
+        const res = await apiFetch('/api/v1/user/preferences/indices');
+        if (res && Array.isArray(res.selectedIndices) && res.selectedIndices.length === 3) {
+          state.selectedIndices = res.selectedIndices;
+          try {
+            localStorage.setItem(storageKey, JSON.stringify(state.selectedIndices));
+          } catch { }
+        }
+      } catch { }
+    }
+
+    if (!state.selectedIndices || state.selectedIndices.length !== 3) {
+      state.selectedIndices = defaultIndices;
+    }
+  }
+
+  function getActiveTop3Indices() {
+    const pref = state.selectedIndices || ['NSE:NIFTY 50:99926000', 'NSE:BANKNIFTY:99926009', 'BSE:SENSEX:99919000'];
+    const list = [];
+    for (const gid of pref) {
+      let inst = state.indices.find(i => i.globalId === gid);
+      if (!inst) {
+        inst = state.indices.find(i => {
+          const k = getIndexCanonicalKey(i);
+          return gid.toUpperCase().includes(k) || (i.symbol && gid.toUpperCase().includes(i.symbol.toUpperCase()));
+        });
+      }
+      if (inst) {
+        list.push(inst);
+      }
+    }
+    // If fewer than 3 found, fill from state.indices
+    for (const i of state.indices) {
+      if (list.length >= 3) break;
+      if (!list.some(existing => existing.globalId === i.globalId)) {
+        list.push(i);
+      }
+    }
+    return list.slice(0, 3);
+  }
+
   function renderBenchmarkIndexStrip() {
     const strip = document.getElementById('benchmark-index-strip');
     if (!strip) return;
-    const top3 = state.indices.slice(0, 3);
+    const top3 = getActiveTop3Indices();
     const cardsHtml = top3
       .map((inst) => {
         const isRestricted = !isProUser() && isInstrumentRestrictedForFree(inst);
@@ -1120,12 +1203,13 @@
             </div>
           `;
         }
-        const q = inst.latestQuote;
+        const q = (inst.globalId && state.quotesMap?.get(inst.globalId)) || inst.latestQuote;
         const { diff, pct, sign } = calcChange(q);
         const cls = diff >= 0 ? 'val-pos-dark' : 'val-neg';
-        // Only show expiry badge if it is an actual derivative contract (never spot index)
         const isDerivative = inst.instrumentType === 'FUTIDX' || inst.instrumentType === 'OPTIDX';
         const eBadge = isDerivative && inst.expiry ? `<span class="expiry-e-badge">${inst.expiry}</span>` : '';
+        const ltpDisplay = q && q.ltp !== undefined && q.ltp !== null && q.ltp > 0 ? fmtNum(q.ltp) : '—';
+        const chgDisplay = q && q.ltp !== undefined && q.ltp !== null && q.ltp > 0 ? `${sign}${pct.toFixed(2)}%` : '';
         return `
           <div class="index-card-mini" onclick="window.TZApp.openChartByGlobalId('${inst.globalId}')">
             <div class="idx-card-top">
@@ -1136,8 +1220,8 @@
               ${eBadge}
             </div>
             <div class="idx-card-bottom">
-              <span class="idx-ltp" data-ltp-id="${inst.globalId}">${q ? fmtNum(q.ltp) : '—'}</span>
-              <span class="idx-chg ${cls}" data-chg-id="${inst.globalId}">${q ? `${sign}${pct.toFixed(2)}%` : ''}</span>
+              <span class="idx-ltp" data-ltp-id="${inst.globalId}">${ltpDisplay}</span>
+              <span class="idx-chg ${cls}" data-chg-id="${inst.globalId}">${chgDisplay}</span>
             </div>
           </div>
         `;
@@ -1147,11 +1231,158 @@
     strip.innerHTML =
       cardsHtml +
       `
+      <div class="customize-indices-pill-card" onclick="window.TZApp.openCustomizeIndicesModal()" title="Customize Top 3 Indices">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+        </svg>
+        <span>Customize</span>
+      </div>
       <div class="all-indices-pill-card" onclick="window.TZApp.openAllIndicesModal()">
         <span>All Indices</span>
         <span style="font-size:10px;color:var(--text-on-black-secondary);">${state.indices.length}+ indices ➔</span>
       </div>
     `;
+  }
+
+  let tempSelectedIndices = [];
+
+  function openCustomizeIndicesModal() {
+    tempSelectedIndices = [...(state.selectedIndices || ['NSE:NIFTY 50:99926000', 'NSE:BANKNIFTY:99926009', 'BSE:SENSEX:99919000'])];
+    renderCustomizeIndicesModal();
+    const m = document.getElementById('modal-customize-indices');
+    if (m) {
+      m.style.display = 'flex';
+      m.classList.add('active');
+    }
+  }
+
+  function closeCustomizeIndicesModal() {
+    const m = document.getElementById('modal-customize-indices');
+    if (m) {
+      m.classList.remove('active');
+      m.style.display = 'none';
+    }
+  }
+
+  function renderCustomizeIndicesModal() {
+    const slotsCont = document.getElementById('customize-slots-container');
+    const allListCont = document.getElementById('customize-all-indices-list');
+    if (!slotsCont || !allListCont) return;
+
+    slotsCont.innerHTML = tempSelectedIndices.map((gid, idx) => {
+      let inst = state.indices.find(i => i.globalId === gid);
+      if (!inst) {
+        inst = state.indices.find(i => gid.includes(getIndexCanonicalKey(i)));
+      }
+      const sym = inst ? inst.symbol : gid.split(':')[1] || gid;
+      const exch = inst ? inst.exchange : (gid.startsWith('BSE') ? 'BSE' : 'NSE');
+      const avatarHtml = inst && window.InstrumentIdentity ? window.InstrumentIdentity.renderInstrumentAvatar(inst, 24, 'idx-mini-avatar') : '';
+      return `
+        <div class="customize-slot-card">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span class="customize-slot-badge">#${idx + 1}</span>
+            ${avatarHtml}
+            <div>
+              <div style="font-weight:700;font-size:13.5px;color:#0F172A;">${sym}</div>
+              <div style="font-size:11px;color:#64748B;">${exch} Benchmark</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <button class="slot-arrow-btn" ${idx === 0 ? 'disabled' : ''} onclick="window.TZApp.moveIndexSlot(${idx}, -1)" title="Move Up">▲</button>
+            <button class="slot-arrow-btn" ${idx === tempSelectedIndices.length - 1 ? 'disabled' : ''} onclick="window.TZApp.moveIndexSlot(${idx}, 1)" title="Move Down">▼</button>
+            <button class="slot-remove-btn" onclick="window.TZApp.removeIndexSlot(${idx})" title="Remove">✕</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    allListCont.innerHTML = state.indices.map((inst) => {
+      const isSelected = tempSelectedIndices.includes(inst.globalId);
+      const slotNum = isSelected ? tempSelectedIndices.indexOf(inst.globalId) + 1 : 0;
+      const avatarHtml = window.InstrumentIdentity ? window.InstrumentIdentity.renderInstrumentAvatar(inst, 26, 'idx-mini-avatar') : '';
+      const isRestricted = !isProUser() && isInstrumentRestrictedForFree(inst);
+      return `
+        <div class="customize-index-item ${isSelected ? 'selected' : ''}" onclick="window.TZApp.toggleIndexSelection('${inst.globalId}')">
+          <div style="display:flex;align-items:center;gap:10px;">
+            ${avatarHtml}
+            <div>
+              <div style="font-weight:700;font-size:13.5px;color:#0F172A;display:flex;align-items:center;gap:6px;">
+                <span>${inst.symbol}</span>
+                <span class="tag-exch">${inst.exchange}</span>
+                ${isRestricted ? '<span class="tag-pro-lock">PRO</span>' : ''}
+              </div>
+              <div style="font-size:11px;color:#64748B;">${inst.name}</div>
+            </div>
+          </div>
+          <div>
+            ${isSelected 
+              ? `<span style="font-size:11.5px;font-weight:700;color:#16A34A;background:#DCFCE7;padding:3px 8px;border-radius:6px;">Slot #${slotNum} ✓</span>`
+              : `<span style="font-size:11.5px;font-weight:600;color:#64748B;background:#F1F5F9;padding:3px 8px;border-radius:6px;">+ Add</span>`
+            }
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function moveIndexSlot(index, direction) {
+    const target = index + direction;
+    if (target < 0 || target >= tempSelectedIndices.length) return;
+    const item = tempSelectedIndices[index];
+    tempSelectedIndices.splice(index, 1);
+    tempSelectedIndices.splice(target, 0, item);
+    renderCustomizeIndicesModal();
+  }
+
+  function removeIndexSlot(index) {
+    tempSelectedIndices.splice(index, 1);
+    renderCustomizeIndicesModal();
+  }
+
+  function toggleIndexSelection(globalId) {
+    const idx = tempSelectedIndices.indexOf(globalId);
+    if (idx !== -1) {
+      tempSelectedIndices.splice(idx, 1);
+    } else {
+      if (tempSelectedIndices.length >= 3) {
+        showBrandedAlert('Top 3 Strip Full', 'Exactly 3 indices can be selected for the top benchmark strip. Please deselect or replace one of your active 3 slots first.');
+        return;
+      }
+      tempSelectedIndices.push(globalId);
+    }
+    renderCustomizeIndicesModal();
+  }
+
+  function resetIndicesToDefault() {
+    tempSelectedIndices = ['NSE:NIFTY 50:99926000', 'NSE:BANKNIFTY:99926009', 'BSE:SENSEX:99919000'];
+    renderCustomizeIndicesModal();
+  }
+
+  async function saveIndexPreferences() {
+    if (tempSelectedIndices.length !== 3) {
+      showBrandedAlert('Select Exactly 3', 'Please select exactly 3 indices for your benchmark strip.');
+      return;
+    }
+    state.selectedIndices = [...tempSelectedIndices];
+    const storageKey = 'tradingzone_indices_pref_' + (state.user?.id || 'guest');
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(state.selectedIndices));
+    } catch { }
+
+    renderBenchmarkIndexStrip();
+    closeCustomizeIndicesModal();
+
+    if (state.token) {
+      try {
+        await apiFetch('/api/v1/user/preferences/indices', {
+          method: 'PUT',
+          body: JSON.stringify({ selectedIndices: state.selectedIndices }),
+        });
+      } catch (err) {
+        console.warn('Preferences saved locally; sync to backend pending:', err);
+      }
+    }
   }
 
   function setExploreCategory(cat) {
@@ -1727,11 +1958,14 @@
     if (!inst.isTradable || inst.instrumentType === 'INDEX_SPOT') {
       const und = inst.underlying || (inst.symbol.includes('BANK') ? 'BANKNIFTY' : inst.symbol.includes('SENSEX') ? 'SENSEX' : 'NIFTY');
       bar.innerHTML = `
-        <button class="btn-trade-sell" style="background:var(--surface-dark-raised);border:1px solid var(--surface-dark-border);" onclick="window.TZApp.openOptionChainModal('${und}')">
-          View ${und} Option Chain
+        <button class="btn-trade-sell" style="background:#1E293B;border:1px solid #334155;color:#F8FAFC;font-size:12px;font-weight:700;flex:1.2;" onclick="window.TZApp.openOptionChainModal('${und}')">
+          Option Chain
         </button>
-        <button class="btn-trade-buy" onclick="window.TZApp.jumpToNearestIndexFuture('${und}')">
-          Trade ${und} Futures ➔
+        <button class="btn-trade-sell" style="flex:1;" onclick="window.TZApp.tradeIndexFutureDirect('${und}', 'SELL')">
+          SELL FUT
+        </button>
+        <button class="btn-trade-buy" style="flex:1;" onclick="window.TZApp.tradeIndexFutureDirect('${und}', 'BUY')">
+          BUY FUT
         </button>
       `;
     } else {
@@ -1745,6 +1979,24 @@
           <span>BUY</span>
         </button>
       `;
+    }
+  }
+
+  async function tradeIndexFutureDirect(underlying, side) {
+    try {
+      const res = await apiFetch(`/api/v1/instruments?segment=FUTIDX&underlying=${encodeURIComponent(underlying)}&limit=5`);
+      const fut = res.instruments?.[0];
+      if (!fut) {
+        showBrandedAlert('Futures Unavailable', `No active futures contracts currently available for ${underlying}.`);
+        return;
+      }
+      if (!isProUser() && isInstrumentRestrictedForFree(fut)) {
+        showSubscriptionUpgradePrompt(fut.symbol);
+        return;
+      }
+      openOrderTicket(side, fut);
+    } catch (err) {
+      showBrandedAlert('Error', err.message);
     }
   }
 
@@ -2206,9 +2458,10 @@
     openOrderTicket(side);
   }
 
-  function openOrderTicket(side = 'BUY') {
-    const inst = state.activeInstrument;
+  function openOrderTicket(side = 'BUY', explicitInst = null) {
+    const inst = explicitInst || state.activeInstrument;
     if (!inst) return;
+    state.activeInstrument = inst;
     state.orderTicket.instrument = inst;
     state.orderTicket.side = side;
     state.orderTicket.productType = inst.instrumentType === 'EQUITY_STOCK' ? 'INTRADAY' : 'MARGIN';
@@ -2216,7 +2469,12 @@
     state.orderTicket.quantity = inst.lotSize || 1;
 
     document.getElementById('ticket-symbol').textContent = inst.symbol;
-    document.getElementById('ticket-exchange-badge').textContent = `${inst.exchange} • ${inst.instrumentType}`;
+    const badgeLabel = inst.instrumentType === 'FUTIDX'
+      ? `${inst.exchange} • INDEX FUTURE`
+      : inst.instrumentType === 'FUTSTK'
+      ? `${inst.exchange} • STOCK FUTURE`
+      : `${inst.exchange} • ${inst.instrumentType}`;
+    document.getElementById('ticket-exchange-badge').textContent = `${badgeLabel} • Lot: ${inst.lotSize || 1}`;
     document.getElementById('ticket-qty-label').textContent = `Quantity (Lot Size: ${inst.lotSize || 1})`;
     document.getElementById('ticket-input-qty').value = String(inst.lotSize || 1);
     document.getElementById('ticket-input-sl').value = '';
@@ -2619,11 +2877,23 @@
     }
 
     const isPro = (state.user?.tier === 'PRO') || (state.subscription?.tier === 'PRO');
-    const presets = isPro
-      ? [100000, 1000000, 2000000, 3000000, 4000000, 5000000, 6000000, 7000000, 8000000, 9000000, 10000000]
-      : [100000];
+    // Free: ₹1L, ₹2L, ₹5L, ₹10L, ₹20L
+    // Pro: ₹1L, ₹10L, ₹25L, ₹50L, ₹1Cr, ₹2Cr, ₹5Cr, ₹10Cr
+    const freePresets = [100000, 200000, 500000, 1000000, 2000000];
+    const proPresets = [100000, 1000000, 2500000, 5000000, 10000000, 20000000, 50000000, 100000000];
+    const presets = isPro ? proPresets : freePresets;
 
     selectedResetPresetINR = 100000;
+
+    const hintEl = document.getElementById('custom-capital-tier-hint');
+    if (hintEl) {
+      hintEl.textContent = isPro
+        ? 'PRO TIER: Any custom amount up to ₹10 Crore'
+        : 'FREE TIER: ₹1,00,000 to ₹20,00,000 • Upgrade to Pro for up to ₹10 Crore';
+    }
+
+    const inputCustom = document.getElementById('input-custom-reset-capital');
+    if (inputCustom) inputCustom.value = '';
 
     const grid = document.getElementById('capital-preset-grid');
     if (grid) {
@@ -2651,12 +2921,49 @@
 
   function selectCapitalPreset(amount, btn) {
     selectedResetPresetINR = amount;
+    const inputCustom = document.getElementById('input-custom-reset-capital');
+    if (inputCustom) inputCustom.value = '';
     document.querySelectorAll('#capital-preset-grid .preset-chip').forEach((c) => c.classList.remove('active'));
     if (btn) btn.classList.add('active');
     const confirmBtn = document.getElementById('btn-confirm-capital-reset');
     if (confirmBtn) {
       confirmBtn.textContent = `Confirm Reset to ${fmtINR(amount)}`;
     }
+  }
+
+  function onCustomCapitalInput(val) {
+    const num = Math.round(Number(val) || 0);
+    if (num > 0) {
+      document.querySelectorAll('#capital-preset-grid .preset-chip').forEach((c) => c.classList.remove('active'));
+      const confirmBtn = document.getElementById('btn-confirm-capital-reset');
+      if (confirmBtn) confirmBtn.textContent = `Confirm Reset to ${fmtINR(num)}`;
+    }
+  }
+
+  function applyCustomCapital() {
+    const input = document.getElementById('input-custom-reset-capital');
+    const val = Math.round(Number(input?.value) || 0);
+    const isPro = (state.user?.tier === 'PRO') || (state.subscription?.tier === 'PRO');
+
+    if (!val || val < 100000) {
+      showBrandedAlert('Invalid Capital', 'Minimum starting practice capital is ₹1,00,000.');
+      return;
+    }
+
+    if (!isPro && val > 2000000) {
+      showBrandedAlert('Pro Tier Required', 'Free tier users can select up to ₹20,00,000 (₹20 Lakhs). Upgrade to Pro to trade with practice capital up to ₹10 Crore.');
+      return;
+    }
+
+    if (isPro && val > 100000000) {
+      showBrandedAlert('Maximum Limit', 'Maximum allowed practice capital is ₹10 Crore (₹10,00,00,000).');
+      return;
+    }
+
+    selectedResetPresetINR = val;
+    document.querySelectorAll('#capital-preset-grid .preset-chip').forEach((c) => c.classList.remove('active'));
+    const confirmBtn = document.getElementById('btn-confirm-capital-reset');
+    if (confirmBtn) confirmBtn.textContent = `Confirm Reset to ${fmtINR(val)}`;
   }
 
   async function executeCapitalReset() {
@@ -2872,6 +3179,12 @@
             wsConn.send(JSON.stringify({ action: 'AUTH', token: state.token }));
           } catch { }
         }
+        try {
+          const subs = (state.selectedIndices && state.selectedIndices.length)
+            ? state.selectedIndices
+            : ['NSE:NIFTY 50:99926000', 'NSE:BANKNIFTY:99926009', 'BSE:SENSEX:99919000'];
+          wsConn.send(JSON.stringify({ type: 'SUBSCRIBE', symbols: subs }));
+        } catch { }
       };
 
       wsConn.onmessage = (ev) => {
@@ -2917,9 +3230,34 @@
       latencyPill.style.display = 'inline-block';
     }
 
+    // Robust quote cache: prevent null/partial ticks from clearing valid prices
+    state.quotesMap = state.quotesMap || new Map();
+    if (quote.ltp !== undefined && quote.ltp !== null && quote.ltp > 0) {
+      const existing = state.quotesMap.get(quote.globalId) || {};
+      const merged = { ...existing, ...quote };
+      state.quotesMap.set(quote.globalId, merged);
+      if (state.indices) {
+        const found = state.indices.find(i => i.globalId === quote.globalId);
+        if (found) found.latestQuote = merged;
+      }
+    }
+    const currentQ = state.quotesMap.get(quote.globalId) || quote;
+
     // Update DOM price elements matching data-ltp-id
     document.querySelectorAll(`[data-ltp-id="${quote.globalId}"]`).forEach((el) => {
-      el.textContent = fmtNum(quote.ltp);
+      if (currentQ.ltp !== undefined && currentQ.ltp !== null && currentQ.ltp > 0) {
+        el.textContent = fmtNum(currentQ.ltp);
+      }
+    });
+
+    // Update DOM change % elements matching data-chg-id
+    const { diff, pct, sign } = calcChange(currentQ);
+    const cls = diff >= 0 ? 'val-pos-dark' : 'val-neg';
+    document.querySelectorAll(`[data-chg-id="${quote.globalId}"]`).forEach((el) => {
+      if (currentQ.ltp !== undefined && currentQ.ltp !== null && currentQ.ltp > 0) {
+        el.textContent = `${sign}${pct.toFixed(2)}%`;
+        el.className = `idx-chg ${cls}`;
+      }
     });
 
     // Authoritative Live P&L streaming: update open positions live even when chart is closed
@@ -3188,6 +3526,15 @@
     openAllIndicesModal,
     closeAllIndicesModal,
     renderAllIndicesList,
+    openCustomizeIndicesModal,
+    closeCustomizeIndicesModal,
+    renderCustomizeIndicesModal,
+    moveIndexSlot,
+    removeIndexSlot,
+    toggleIndexSelection,
+    resetIndicesToDefault,
+    saveIndexPreferences,
+    tradeIndexFutureDirect,
     openOptionChainModal,
     closeOptionChainModal,
     loadOptionChain,
@@ -3224,6 +3571,8 @@
     resetVirtualWallet,
     openCapitalResetModal,
     selectCapitalPreset,
+    onCustomCapitalInput,
+    applyCustomCapital,
     executeCapitalReset,
     openSubscriptionPlansModal,
     selectPlanCard,

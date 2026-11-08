@@ -89,38 +89,52 @@ export async function runDatabaseMigrations(db: IDatabase): Promise<string[]> {
     return [];
   }
 
-  // Ensure migration tracking table exists
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS schema_migrations (
-      version VARCHAR(128) PRIMARY KEY,
-      applied_at BIGINT NOT NULL
-    );
-  `);
-
-  const appliedRes = await db.query('SELECT version FROM schema_migrations');
-  const appliedSet = new Set(appliedRes.rows.map((r: any) => r.version));
-
-  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();
-  const newlyApplied: string[] = [];
-
-  for (const file of files) {
-    if (appliedSet.has(file)) continue;
-
-    const sql = fs.readFileSync(path.join(dir, file), 'utf8');
-    await db.transaction(async (client) => {
-      // Split by statement if needed or execute entire script
-      await client.query(sql);
-      await client.query(
-        'INSERT INTO schema_migrations (version, applied_at) VALUES ($1, $2)',
-        [file, Date.now()]
-      );
-    });
-
-    newlyApplied.push(file);
-    console.log(`[Database Migration] Applied: ${file}`);
+  if (!db.isEmulated()) {
+    try {
+      await db.query('SELECT pg_advisory_lock(714285)');
+    } catch {}
   }
 
-  return newlyApplied;
+  try {
+    // Ensure migration tracking table exists
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        version VARCHAR(128) PRIMARY KEY,
+        applied_at BIGINT NOT NULL
+      );
+    `);
+
+    const appliedRes = await db.query('SELECT version FROM schema_migrations');
+    const appliedSet = new Set(appliedRes.rows.map((r: any) => r.version));
+
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();
+    const newlyApplied: string[] = [];
+
+    for (const file of files) {
+      if (appliedSet.has(file)) continue;
+
+      const sql = fs.readFileSync(path.join(dir, file), 'utf8');
+      await db.transaction(async (client) => {
+        // Split by statement if needed or execute entire script
+        await client.query(sql);
+        await client.query(
+          'INSERT INTO schema_migrations (version, applied_at) VALUES ($1, $2)',
+          [file, Date.now()]
+        );
+      });
+
+      newlyApplied.push(file);
+      console.log(`[Database Migration] Applied: ${file}`);
+    }
+
+    return newlyApplied;
+  } finally {
+    if (!db.isEmulated()) {
+      try {
+        await db.query('SELECT pg_advisory_unlock(714285)');
+      } catch {}
+    }
+  }
 }
 
 export class EmulatedPostgresDatabase implements IDatabase {

@@ -122,7 +122,67 @@ export class DeterministicProvider implements IMarketDataProvider {
       isSimulatedFixture: true,
     };
 
+    const spotBankNifty: InstrumentMetadata = {
+      globalId: 'NSE:BANKNIFTY:99926009',
+      provider: 'DEMO',
+      exchange: 'NSE',
+      token: '99926009',
+      symbol: 'BANKNIFTY',
+      name: 'NIFTY Bank Spot Index',
+      instrumentType: 'INDEX_SPOT',
+      isTradable: false,
+      lotSize: 1,
+      tickSize: 0.05,
+      isSimulatedFixture: true,
+    };
+
+    const spotSensex: InstrumentMetadata = {
+      globalId: 'BSE:SENSEX:99919000',
+      provider: 'DEMO',
+      exchange: 'BSE',
+      token: '99919000',
+      symbol: 'SENSEX',
+      name: 'BSE SENSEX',
+      instrumentType: 'INDEX_SPOT',
+      isTradable: false,
+      lotSize: 1,
+      tickSize: 0.05,
+      isSimulatedFixture: true,
+    };
+
+    const spotNiftyIt: InstrumentMetadata = {
+      globalId: 'NSE:NIFTY IT:26008',
+      provider: 'DEMO',
+      exchange: 'NSE',
+      token: '26008',
+      symbol: 'NIFTY IT',
+      name: 'Nifty IT Index',
+      instrumentType: 'INDEX_SPOT',
+      isTradable: false,
+      lotSize: 1,
+      tickSize: 0.05,
+      isSimulatedFixture: true,
+    };
+
+    const spotNifty50Canonical: InstrumentMetadata = {
+      globalId: 'NSE:NIFTY 50:99926000',
+      provider: 'DEMO',
+      exchange: 'NSE',
+      token: '99926000',
+      symbol: 'NIFTY 50',
+      name: 'NIFTY 50 Spot Index',
+      instrumentType: 'INDEX_SPOT',
+      isTradable: false,
+      lotSize: 1,
+      tickSize: 0.05,
+      isSimulatedFixture: true,
+    };
+
     this.instruments.set(spotNifty.globalId, spotNifty);
+    this.instruments.set(spotNifty50Canonical.globalId, spotNifty50Canonical);
+    this.instruments.set(spotBankNifty.globalId, spotBankNifty);
+    this.instruments.set(spotSensex.globalId, spotSensex);
+    this.instruments.set(spotNiftyIt.globalId, spotNiftyIt);
     this.instruments.set(futureNifty.globalId, futureNifty);
     this.instruments.set(relianceStock.globalId, relianceStock);
     this.instruments.set(tcsStock.globalId, tcsStock);
@@ -130,6 +190,10 @@ export class DeterministicProvider implements IMarketDataProvider {
 
     // Seed base prices
     this.seedQuotesAndCandles(spotNifty.globalId, 24500.0);
+    this.seedQuotesAndCandles(spotNifty50Canonical.globalId, 25030.35);
+    this.seedQuotesAndCandles(spotBankNifty.globalId, 52140.0);
+    this.seedQuotesAndCandles(spotSensex.globalId, 81380.0);
+    this.seedQuotesAndCandles(spotNiftyIt.globalId, 41250.0);
     this.seedQuotesAndCandles(futureNifty.globalId, 24535.0);
     this.seedQuotesAndCandles(relianceStock.globalId, 2920.0);
     this.seedQuotesAndCandles(tcsStock.globalId, 3950.0);

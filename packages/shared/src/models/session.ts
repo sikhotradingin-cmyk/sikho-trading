@@ -1,4 +1,5 @@
 import { Paise } from './money.js';
+import { UserTier } from './account.js';
 
 export interface PracticeSession {
   id: string;
@@ -36,21 +37,53 @@ export interface SubscriptionPlan {
   renewalDescription: string;
 }
 
-export const FREE_CAPITAL_PRESETS_INR: number[] = [100000];
-
-export const PREMIUM_CAPITAL_PRESETS_INR: number[] = [
-  100000,
-  1000000,
-  2000000,
-  3000000,
-  4000000,
-  5000000,
-  6000000,
-  7000000,
-  8000000,
-  9000000,
-  10000000,
+export const FREE_MIN_CAPITAL_INR = 100000;
+export const FREE_MAX_CAPITAL_INR = 2000000; // ₹20 Lakhs agreed in client call
+export const FREE_CAPITAL_PRESETS_INR: number[] = [
+  100000,   // ₹1 Lakh
+  200000,   // ₹2 Lakhs
+  500000,   // ₹5 Lakhs
+  1000000,  // ₹10 Lakhs
+  2000000,  // ₹20 Lakhs
 ];
+
+export const PREMIUM_MIN_CAPITAL_INR = 100000;
+export const PREMIUM_MAX_CAPITAL_INR = 100000000; // ₹10 Crore agreed in client call
+export const PREMIUM_CAPITAL_PRESETS_INR: number[] = [
+  100000,     // ₹1 Lakh
+  1000000,    // ₹10 Lakhs
+  2500000,    // ₹25 Lakhs
+  5000000,    // ₹50 Lakhs
+  10000000,   // ₹1 Crore
+  20000000,   // ₹2 Crores
+  50000000,   // ₹5 Crores
+  100000000,  // ₹10 Crores
+];
+
+export function validateResetCapitalAmount(amountINR: number, tier: UserTier = 'FREE'): { valid: boolean; error?: string } {
+  if (!Number.isFinite(amountINR) || amountINR <= 0) {
+    return { valid: false, error: 'Capital amount must be a positive number.' };
+  }
+  if (amountINR < FREE_MIN_CAPITAL_INR) {
+    return { valid: false, error: 'Minimum starting capital is ₹1,00,000.' };
+  }
+  if (tier === 'FREE') {
+    if (amountINR > FREE_MAX_CAPITAL_INR) {
+      return {
+        valid: false,
+        error: 'Free tier capital reset is limited up to ₹20,00,000 (20 Lakhs). Upgrade to Premium for capital up to ₹10 Crore.',
+      };
+    }
+  } else {
+    if (amountINR > PREMIUM_MAX_CAPITAL_INR) {
+      return {
+        valid: false,
+        error: 'Maximum permitted virtual capital is ₹10,00,00,000 (10 Crore).',
+      };
+    }
+  }
+  return { valid: true };
+}
 
 export const SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
   {

@@ -8,8 +8,7 @@ import {
   VirtualAccount,
   PracticeSession,
   LifetimePerformance,
-  FREE_CAPITAL_PRESETS_INR,
-  PREMIUM_CAPITAL_PRESETS_INR,
+  validateResetCapitalAmount,
   UserTier,
 } from '@trading/shared';
 import { pbkdf2Sync, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
@@ -577,11 +576,11 @@ export class PostgresRepository {
       };
     }
 
-    const allowed = tier === 'PRO' ? PREMIUM_CAPITAL_PRESETS_INR : FREE_CAPITAL_PRESETS_INR;
-    if (!allowed.includes(requestedCapitalRupees)) {
+    const validation = validateResetCapitalAmount(requestedCapitalRupees, tier);
+    if (!validation.valid) {
       return {
         success: false,
-        error: `Invalid capital preset ₹${requestedCapitalRupees.toLocaleString('en-IN')}. Free tier is limited to ₹100,000. Upgrade to Premium for presets up to ₹1,00,00,000.`,
+        error: validation.error,
       };
     }
 
@@ -968,5 +967,32 @@ export class PostgresRepository {
       note: row.note,
       timestamp: Number(row.created_at),
     };
+  }
+
+  public async getUserIndexPreferences(userId: string): Promise<string[] | null> {
+    const cleanUserId = userId.trim();
+    const res = await this.db.query(
+      'SELECT selected_indices_json FROM user_index_preferences WHERE user_id = $1',
+      [cleanUserId]
+    );
+    if (res.rows.length === 0) return null;
+    try {
+      const parsed = JSON.parse(res.rows[0].selected_indices_json);
+      return Array.isArray(parsed) && parsed.length === 3 ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  public async setUserIndexPreferences(userId: string, selectedIndices: string[]): Promise<void> {
+    const cleanUserId = userId.trim();
+    const now = Date.now();
+    const jsonStr = JSON.stringify(selectedIndices);
+    await this.db.query(
+      `INSERT INTO user_index_preferences (user_id, selected_indices_json, updated_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (user_id) DO UPDATE SET selected_indices_json = $2, updated_at = $3`,
+      [cleanUserId, jsonStr, now]
+    );
   }
 }

@@ -107,4 +107,73 @@ describe('End-to-End Server Integration & API Flow', () => {
     const ledgerBody = JSON.parse(ledgerRes.body);
     assert.ok(ledgerBody.ledger.length >= 2);
   });
+
+  test('GET & PUT /api/v1/user/preferences/indices handles user benchmark index choices', async () => {
+    // 1. Unauthenticated or default GET returns top 3 defaults
+    const defRes = await app.inject({
+      method: 'GET',
+      url: '/api/v1/user/preferences/indices',
+    });
+    assert.equal(defRes.statusCode, 200);
+    const defBody = JSON.parse(defRes.body);
+    assert.deepEqual(defBody.selectedIndices, [
+      'NSE:NIFTY 50:99926000',
+      'NSE:BANKNIFTY:99926009',
+      'BSE:SENSEX:99919000',
+    ]);
+    assert.equal(defBody.indices.length, 3);
+
+    // 2. Reject PUT with fewer than 3 indices
+    const invalidCountRes = await app.inject({
+      method: 'PUT',
+      url: '/api/v1/user/preferences/indices',
+      headers: { authorization: `Bearer ${authToken}` },
+      payload: { selectedIndices: ['NSE:NIFTY 50:99926000', 'NSE:BANKNIFTY:99926009'] },
+    });
+    assert.equal(invalidCountRes.statusCode, 400);
+
+    // 3. Reject PUT with duplicates
+    const duplicateRes = await app.inject({
+      method: 'PUT',
+      url: '/api/v1/user/preferences/indices',
+      headers: { authorization: `Bearer ${authToken}` },
+      payload: {
+        selectedIndices: [
+          'NSE:NIFTY 50:99926000',
+          'NSE:NIFTY 50:99926000',
+          'NSE:BANKNIFTY:99926009',
+        ],
+      },
+    });
+    assert.equal(duplicateRes.statusCode, 400);
+
+    // 4. Save 3 valid indices (e.g. NIFTY 50, BANKNIFTY, NIFTY IT)
+    const validPutRes = await app.inject({
+      method: 'PUT',
+      url: '/api/v1/user/preferences/indices',
+      headers: { authorization: `Bearer ${authToken}` },
+      payload: {
+        selectedIndices: [
+          'NSE:BANKNIFTY:99926009',
+          'NSE:NIFTY 50:99926000',
+          'NSE:NIFTY IT:26008',
+        ],
+      },
+    });
+    assert.equal(validPutRes.statusCode, 200);
+
+    // 5. Subsequent GET returns the user's custom saved indices
+    const userPrefRes = await app.inject({
+      method: 'GET',
+      url: '/api/v1/user/preferences/indices',
+      headers: { authorization: `Bearer ${authToken}` },
+    });
+    assert.equal(userPrefRes.statusCode, 200);
+    const userPrefBody = JSON.parse(userPrefRes.body);
+    assert.deepEqual(userPrefBody.selectedIndices, [
+      'NSE:BANKNIFTY:99926009',
+      'NSE:NIFTY 50:99926000',
+      'NSE:NIFTY IT:26008',
+    ]);
+  });
 });

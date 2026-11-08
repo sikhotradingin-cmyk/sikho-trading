@@ -319,7 +319,7 @@ html, body {
 .top-dark-header {
   background-color: #FFFFFF;
   color: #0F172A;
-  padding: 12px 16px 10px;
+  padding: 10px 16px;
   border-bottom: 1px solid #E2E8F0;
   flex-shrink: 0;
 }
@@ -328,51 +328,59 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
+  width: 100%;
 }
 
-.brand-Lockup {
+.header-app-icon-wrap {
   display: flex;
   align-items: center;
-  gap: 9px;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
-.brand-title-sm {
-  font-size: 17px;
-  font-weight: 700;
-  color: #0F172A;
-  letter-spacing: -0.3px;
+.header-app-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  object-fit: cover;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  display: block;
 }
 
-.paper-badge-header {
-  font-size: 10px;
-  font-weight: 700;
-  padding: 2px 7px;
-  border-radius: 6px;
-  background: #F1F5F9;
-  color: #0F172A;
-  border: 1px solid #CBD5E1;
-  letter-spacing: 0.3px;
-}
-
-.header-actions-right {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+.header-search-wrap {
+  flex: 1;
+  min-width: 0;
 }
 
 .search-pill-trigger {
   display: flex;
   align-items: center;
-  gap: 7px;
-  height: 36px;
-  padding: 0 12px;
+  gap: 8px;
+  height: 38px;
+  padding: 0 14px;
   border-radius: 999px;
   background: #F1F5F9;
   border: 1px solid #E2E8F0;
   color: #64748B;
-  font-size: 12.5px;
+  font-size: 13px;
   cursor: pointer;
+  width: 100%;
+  transition: all 0.15s ease;
+}
+
+.search-pill-trigger.long-search-bar {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+.search-pill-trigger:active {
+  background: #E2E8F0;
+  border-color: #CBD5E1;
+}
+
+.brand-Lockup {
+  display: none;
 }
 
 .avatar-circle-btn {
@@ -552,6 +560,107 @@ html, body {
   font-size: 11.5px;
   font-weight: 700;
   white-space: nowrap;
+}
+
+.customize-indices-pill-card {
+  min-width: 86px;
+  background: #FFFFFF;
+  border: 1px solid #CBD5E1;
+  border-radius: 12px;
+  padding: 9px 12px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: #334155;
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  transition: all 0.15s ease;
+}
+
+.customize-indices-pill-card:active {
+  background: #F1F5F9;
+  border-color: #94A3B8;
+  color: #0F172A;
+}
+
+/* Slot reorder cards */
+.customize-slot-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: #F8FAFC;
+  border: 1.5px solid #E2E8F0;
+  border-radius: 12px;
+  transition: all 0.15s ease;
+}
+
+.customize-slot-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: #0F172A;
+  color: #FFFFFF;
+  font-size: 11px;
+  font-weight: 700;
+  margin-right: 10px;
+}
+
+.slot-arrow-btn {
+  background: #FFFFFF;
+  border: 1px solid #CBD5E1;
+  border-radius: 6px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #334155;
+}
+
+.slot-arrow-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.slot-remove-btn {
+  background: #FEE2E2;
+  border: 1px solid #FCA5A5;
+  border-radius: 6px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #DC2626;
+  font-weight: 700;
+}
+
+.customize-index-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.customize-index-item.selected {
+  background: #F0FDF4;
+  border-color: #86EFAC;
 }
 
 /* White Content Surface (40% White Balance) */
