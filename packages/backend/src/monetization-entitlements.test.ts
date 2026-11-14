@@ -332,4 +332,152 @@ describe('Monetization, Billing Authorization, Entitlements & Direct Bypass Prot
     assert.equal(resetData.account.cashBalanceINR, 100000);
     assert.ok(resetData.lifetime.lifetimeTradesCount >= 1 || resetData.lifetime.totalSessionsCount >= 1);
   });
+
+  it('7. Real email registration, login, and recovery strictly start and remain FREE (never auto-upgrading to PRO)', async () => {
+    const email = `new.free.user.${Date.now()}@sikhotrading.com`;
+    const regRes = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/register',
+      payload: { email, password: 'Password#123', name: 'New Free Trader' },
+    });
+    assert.equal(regRes.statusCode, 200);
+    const regData = JSON.parse(regRes.body);
+    assert.equal(regData.user.tier, 'FREE');
+    assert.equal(regData.account.tier, 'FREE');
+    assert.equal(regData.entitlement.tier, 'FREE');
+    assert.equal(regData.entitlement.entitlementSource, 'NONE');
+
+    // Subsequent login must also remain FREE
+    const loginRes = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { email, password: 'Password#123' },
+    });
+    assert.equal(loginRes.statusCode, 200);
+    const loginData = JSON.parse(loginRes.body);
+    assert.equal(loginData.user.tier, 'FREE');
+    assert.equal(loginData.account.tier, 'FREE');
+
+    // Billing status endpoint returns FREE
+    const statusRes = await app.inject({
+      method: 'GET',
+      url: '/api/v1/billing/status',
+      headers: { authorization: `Bearer ${loginData.token}` },
+    });
+    assert.equal(statusRes.statusCode, 200);
+    const statusData = JSON.parse(statusRes.body);
+    assert.equal(statusData.tier, 'FREE');
+    assert.equal(statusData.entitlementSource, 'NONE');
+
+    // Restricted quote is blocked with 403 UPGRADE_REQUIRED
+    const quoteRes = await app.inject({
+      method: 'GET',
+      url: '/api/v1/market-data/quote?globalId=NSE:RELIANCE:2885',
+      headers: { authorization: `Bearer ${loginData.token}` },
+    });
+    assert.equal(quoteRes.statusCode, 403);
+
+    // Even if virtual_accounts.tier is tampered to PRO without a backing purchase or grant, resolveEntitlement heals it to FREE
+    await db.query("UPDATE virtual_accounts SET tier = 'PRO' WHERE user_id = $1", [regData.user.userId]);
+    const healedStatusRes = await app.inject({
+      method: 'GET',
+      url: '/api/v1/billing/status',
+      headers: { authorization: `Bearer ${loginData.token}` },
+    });
+    assert.equal(JSON.parse(healedStatusRes.body).tier, 'FREE');
+  });
+
+  it('8. Owner-admin complimentary grants bind to immutable userId + verified email, reject unregistered emails, and revoke cleanly', async () => {
+    // 8A. Reject pre-granting to an unregistered email
+    const unregGrant = await billingService.grantComplimentaryPro({
+      email: `nonexistent.${Date.now()}@sikhotrading.com`,
+      reason: 'Should fail for unregistered email',
+      grantedBy: 'OWNER_ADMIN',
+    });
+    assert.equal(unregGrant.success, false);
+    assert.equal(unregGrant.code, 'ERR_USER_NOT_FOUND');
+
+    // 8B. Register a real user (starts FREE)
+    const email = `comp.tester.${Date.now()}@sikhotrading.com`;
+    const regRes = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/register',
+      payload: { email, password: 'Password#123', name: 'Complimentary Tester' },
+    });
+    const { token, user } = JSON.parse(regRes.body);
+    assert.equal(user.tier, 'FREE');
+
+    // 8C. Reject grant if userId does not match email
+    const mismatchGrant = await billingService.grantComplimentaryPro({
+      userId: user.userId,
+      email: 'wrong.email@sikhotrading.com',
+      reason: 'Should fail on identity mismatch',
+      grantedBy: 'OWNER_ADMIN',
+    });
+    assert.equal(mismatchGrant.success, false);
+    assert.equal(mismatchGrant.code, 'ERR_USER_IDENTITY_MISMATCH');
+
+    // 8D. Grant complimentary Pro bound to verified account
+    const validGrant = await billingService.grantComplimentaryPro({
+      userId: user.userId,
+      email,
+      reason: 'Owner-selected friend test access',
+      grantedBy: 'OWNER_ADMIN',
+    });
+    assert.equal(validGrant.success, true);
+    assert.equal(validGrant.entitlement?.tier, 'PRO');
+    assert.equal(validGrant.entitlement?.entitlementSource, 'COMPLIMENTARY_GRANT');
+    assert.equal(validGrant.entitlement?.statusLabel, 'Premium — complimentary test access');
+
+    // Billing status shows complimentary label, not fabricated purchase receipt
+    const statusRes = await app.inject({
+      method: 'GET',
+      url: '/api/v1/billing/status',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const statusBody = JSON.parse(statusRes.body);
+    assert.equal(statusBody.tier, 'PRO');
+    assert.equal(statusBody.isComplimentary, true);
+    assert.equal(statusBody.entitlementSource, 'COMPLIMENTARY_GRANT');
+    assert.equal(statusBody.statusLabel, 'Premium — complimentary test access');
+
+    // Restricted quote is now accessible (200) and ads are suppressed
+    const quoteRes = await app.inject({
+      method: 'GET',
+      url: '/api/v1/market-data/quote?globalId=NSE:RELIANCE:2885',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(quoteRes.statusCode, 200);
+
+    const adOppRes = await app.inject({
+      method: 'POST',
+      url: '/api/v1/ads/app-open/opportunity',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(JSON.parse(adOppRes.body).isEligible, false);
+    assert.equal(JSON.parse(adOppRes.body).reason, 'PRO_SUBSCRIPTION_ACTIVE');
+
+    // 8E. Revoke complimentary grant -> immediately returns to FREE
+    const revokeRes = await billingService.revokeComplimentaryPro({
+      userId: user.userId,
+      reason: 'Completed test period',
+      revokedBy: 'OWNER_ADMIN',
+    });
+    assert.equal(revokeRes.success, true);
+    assert.equal(revokeRes.entitlement?.tier, 'FREE');
+
+    const statusAfterRevoke = await app.inject({
+      method: 'GET',
+      url: '/api/v1/billing/status',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(JSON.parse(statusAfterRevoke.body).tier, 'FREE');
+
+    const quoteAfterRevoke = await app.inject({
+      method: 'GET',
+      url: '/api/v1/market-data/quote?globalId=NSE:RELIANCE:2885',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(quoteAfterRevoke.statusCode, 403);
+  });
 });

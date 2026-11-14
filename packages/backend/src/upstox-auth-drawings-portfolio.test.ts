@@ -6,13 +6,16 @@ import { decodeUpstoxFeedResponseProto, UpstoxAdapter } from './providers/upstox
 
 describe('Tradingzone v2.0: Upstox V3 Adapter, Real Auth (No PIN Lock), User Isolation, Drawings & Segment Accounting', () => {
   let app: FastifyInstance;
+  let billingService: any;
   let userAToken: string;
   let userBToken: string;
+  let userAEmailStored: string;
   const testRunId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
   before(async () => {
     const s = await buildServer(undefined, 'DEMO');
     app = s.app;
+    billingService = s.billingService;
     await app.ready();
   });
 
@@ -123,10 +126,13 @@ describe('Tradingzone v2.0: Upstox V3 Adapter, Real Auth (No PIN Lock), User Iso
     const regABody = JSON.parse(regARes.body);
     assert.ok(regABody.token);
     assert.equal(regABody.user.email, userAEmail);
+    assert.equal(regABody.user.tier, 'FREE');
+    assert.equal(regABody.account.tier, 'FREE');
     assert.equal(regABody.user.hasPin, false);
     assert.equal(regABody.user.biometricEnabled, false);
     assert.equal(regABody.account.cashBalanceINR, 100000);
     userAToken = regABody.token;
+    userAEmailStored = userAEmail;
 
     // 2. Register User B
     const regBRes = await app.inject({
@@ -139,7 +145,10 @@ describe('Tradingzone v2.0: Upstox V3 Adapter, Real Auth (No PIN Lock), User Iso
       },
     });
     assert.equal(regBRes.statusCode, 200);
-    userBToken = JSON.parse(regBRes.body).token;
+    const regBBody = JSON.parse(regBRes.body);
+    assert.equal(regBBody.user.tier, 'FREE');
+    assert.equal(regBBody.account.tier, 'FREE');
+    userBToken = regBBody.token;
 
     // 3. Reject wrong password on login
     const badLogin = await app.inject({
@@ -211,6 +220,31 @@ describe('Tradingzone v2.0: Upstox V3 Adapter, Real Auth (No PIN Lock), User Iso
   });
 
   test('Equity Delivery Holdings (100% cash) vs Intraday Positions (20% margin) & Pending Order Cancellation', async () => {
+    // 0. Free user (User B) attempting to buy restricted equity RELIANCE is rejected with 403 ERR_PRO_TIER_REQUIRED
+    const freeBuyBlocked = await app.inject({
+      method: 'POST',
+      url: '/api/v1/orders/place',
+      headers: { authorization: `Bearer ${userBToken}` },
+      payload: {
+        globalInstrumentId: 'NSE:RELIANCE:2885',
+        side: 'BUY',
+        orderType: 'MARKET',
+        productType: 'DELIVERY',
+        quantity: 1,
+        idempotencyKey: `free-blocked-${testRunId}`,
+      },
+    });
+    assert.equal(freeBuyBlocked.statusCode, 403);
+    assert.equal(JSON.parse(freeBuyBlocked.body).code, 'ERR_PRO_TIER_REQUIRED');
+
+    // Grant User A complimentary Pro to test equity delivery holdings & margin accounting
+    const grantRes = await billingService.grantComplimentaryPro({
+      email: userAEmailStored,
+      reason: 'Automated test suite equity delivery verification',
+      grantedBy: 'UNIT_TEST',
+    });
+    assert.equal(grantRes.success, true);
+
     // 1. User A buys 5 shares of RELIANCE as DELIVERY (Holdings)
     const buyDeliv = await app.inject({
       method: 'POST',

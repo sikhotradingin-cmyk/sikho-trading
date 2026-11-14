@@ -36,6 +36,8 @@
     token: null,
     user: null,
     account: null,
+    subscription: null,
+    entitlementResolved: false,
     mainTab: 'explore',
     exploreCategory: 'STOCKS', // 'STOCKS' | 'FNO'
     stocksSectorFilter: 'ALL',
@@ -305,14 +307,22 @@
 
   function notifyNativeUserTier() {
     if (window.TradingzoneNative && typeof window.TradingzoneNative.updateUserTier === 'function') {
-      const tier = state.user?.tier || 'FREE';
-      const userId = state.user?.id || '';
+      if (!state.token || !state.user || !state.entitlementResolved) {
+        window.TradingzoneNative.updateUserTier('UNKNOWN', '');
+        return;
+      }
+      const tier = isProUser() ? 'PRO' : 'FREE';
+      const userId = state.user?.userId || state.user?.id || '';
       window.TradingzoneNative.updateUserTier(tier, userId);
     }
   }
 
   function isProUser() {
-    return (state.user?.tier === 'PRO') || (state.subscription?.tier === 'PRO');
+    return Boolean(
+      state.entitlementResolved &&
+      state.subscription?.tier === 'PRO' &&
+      state.user?.tier === 'PRO'
+    );
   }
 
   function isGlobalIdRestrictedForFree(globalId) {
@@ -538,7 +548,7 @@
         });
       }
 
-      completeAuthenticatedSession(res.token, res.user, res.account, true);
+      completeAuthenticatedSession(res.token, res.user, res.account, true, res.entitlement);
     } catch (err) {
       showAuthError(err.message || 'Authentication failed.');
     } finally {
@@ -607,7 +617,7 @@
 
       if (res && res.token) {
         document.getElementById('auth-error-msg').style.display = 'none';
-        completeAuthenticatedSession(res.token, res.user, res.account, true);
+        completeAuthenticatedSession(res.token, res.user, res.account, true, res.entitlement);
       } else {
         showAuthError('Authentication succeeded but failed to issue session.');
       }
@@ -774,10 +784,16 @@
     updateServerDisplay();
   }
 
-  function completeAuthenticatedSession(token, user, account) {
-    // Strip any legacy PIN/biometric flags from persisted user session so upgrades open directly
-    const cleanUser = Object.assign({}, user || {}, { hasPin: false, biometricEnabled: false });
-    const saved = saveSessionSecure({ token, user: cleanUser, account });
+  function completeAuthenticatedSession(token, user, account, isFreshLogin, entitlement) {
+    // Strip any legacy PIN/biometric flags and never trust cached client-side PRO tier until server verifies entitlement
+    const resolvedTier = (isFreshLogin && entitlement && entitlement.tier === 'PRO') ? 'PRO' : 'FREE';
+    const cleanUser = Object.assign({}, user || {}, {
+      tier: resolvedTier,
+      hasPin: false,
+      biometricEnabled: false,
+    });
+    const cleanAccount = account ? Object.assign({}, account, { tier: resolvedTier }) : null;
+    const saved = saveSessionSecure({ token, user: cleanUser, account: cleanAccount });
     if (!saved) {
       showAuthError('Secure session storage failed on this device. Please sign in again.');
       clearSessionSecure();
@@ -786,7 +802,14 @@
     }
     state.token = token;
     state.user = cleanUser;
-    state.account = account;
+    state.account = cleanAccount;
+    if (isFreshLogin && entitlement && (entitlement.tier === 'PRO' || entitlement.tier === 'FREE')) {
+      state.subscription = entitlement;
+      state.entitlementResolved = true;
+    } else {
+      state.subscription = null;
+      state.entitlementResolved = false;
+    }
     enterMainWorkspace();
     return true;
   }
@@ -795,11 +818,19 @@
     state.token = null;
     state.user = null;
     state.account = null;
+    state.subscription = null;
+    state.entitlementResolved = false;
+    state.positionsData = { positions: [], holdings: [], activePositions: [], closedPositions: [] };
+    state.orders = [];
+    state.watchlists = [];
+    state.performance = null;
     clearSessionSecure();
     if (wsConn) {
       try { wsConn.close(); } catch { }
       wsConn = null;
     }
+    notifyNativeUserTier();
+    notifyNativeScreenState();
     toggleAuthMode('login');
     if (optionalNotice) showAuthError(optionalNotice);
     showTopScreen('screen-auth');
@@ -848,28 +879,59 @@
   async function refreshAccountAndPortfolio() {
     try {
       const [acc, posRes, ordRes, perfRes, subRes] = await Promise.all([
-        apiFetch('/api/v1/account'),
-        apiFetch('/api/v1/positions'),
-        apiFetch('/api/v1/orders'),
+        apiFetch('/api/v1/account').catch(() => null),
+        apiFetch('/api/v1/positions').catch(() => null),
+        apiFetch('/api/v1/orders').catch(() => null),
         apiFetch('/api/v1/account/performance').catch(() => null),
         apiFetch('/api/v1/billing/status').catch(() => null),
       ]);
-      state.account = acc;
-      state.positionsData = posRes;
-      state.orders = ordRes.orders || [];
+      if (acc && !acc.error) {
+        state.account = acc;
+      }
+      if (posRes) {
+        state.positionsData = posRes;
+      }
+      if (ordRes && Array.isArray(ordRes.orders)) {
+        state.orders = ordRes.orders;
+      }
       if (perfRes) {
         state.performance = perfRes;
       }
-      if (subRes) {
-        state.subscription = subRes;
+
+      const resolvedSub = subRes || acc?.entitlement || null;
+      if (resolvedSub && (resolvedSub.tier === 'PRO' || resolvedSub.tier === 'FREE')) {
+        state.subscription = resolvedSub;
+        state.entitlementResolved = true;
         if (state.user) {
-          state.user.tier = subRes.tier;
+          state.user.tier = resolvedSub.tier;
         }
+        if (state.account) {
+          state.account.tier = resolvedSub.tier;
+        }
+        if (state.token && state.user) {
+          saveSessionSecure({ token: state.token, user: state.user, account: state.account });
+        }
+      } else {
+        // Fail closed on temporary billing/entitlement outage: never grant PRO or request ads while unresolved
+        state.subscription = {
+          tier: 'FREE',
+          status: 'EXPIRED',
+          entitlementSource: 'NONE',
+          statusLabel: 'Membership status unavailable (Retrying...)',
+          isComplimentary: false,
+        };
+        state.entitlementResolved = false;
+        if (state.user) state.user.tier = 'FREE';
+        if (state.account) state.account.tier = 'FREE';
       }
+
       renderAccountBalancesUI();
       renderPortfolioTab();
       renderOrdersTab();
       renderProfileStatsUI();
+      renderExploreStocksList();
+      renderExploreFnoLists();
+      renderCommoditiesList();
       notifyNativeScreenState();
       notifyNativeUserTier();
     } catch { }
@@ -877,17 +939,40 @@
 
   function renderProfileStatsUI() {
     updateProfileHeaderUI();
-    const isPro = (state.user?.tier === 'PRO') || (state.subscription?.tier === 'PRO');
+    const isPro = isProUser();
+    const isComplimentary = Boolean(
+      isPro &&
+      (state.subscription?.isComplimentary || state.subscription?.entitlementSource === 'COMPLIMENTARY_GRANT')
+    );
     const badgeEl = document.getElementById('prof-tier-badge');
     if (badgeEl) {
-      badgeEl.textContent = isPro ? 'PREMIUM PRO' : 'FREE PLAN';
-      badgeEl.className = isPro ? 'tier-pill-pro' : 'tier-pill-free';
+      if (!state.entitlementResolved) {
+        badgeEl.textContent = 'VERIFYING...';
+        badgeEl.className = 'tier-pill-free';
+      } else if (isComplimentary) {
+        badgeEl.textContent = 'COMPLIMENTARY PRO';
+        badgeEl.className = 'tier-pill-pro';
+      } else if (isPro) {
+        badgeEl.textContent = 'PREMIUM PRO';
+        badgeEl.className = 'tier-pill-pro';
+      } else {
+        badgeEl.textContent = 'FREE PLAN';
+        badgeEl.className = 'tier-pill-free';
+      }
     }
     const subTitle = document.getElementById('prof-sub-title');
     const subDesc = document.getElementById('prof-sub-desc');
     const subBtn = document.getElementById('prof-btn-manage-sub');
     if (subTitle && subDesc && subBtn) {
-      if (isPro) {
+      if (!state.entitlementResolved) {
+        subTitle.textContent = state.subscription?.statusLabel || 'Verifying Membership...';
+        subDesc.textContent = 'Free-tier rules enforced while verifying membership • Existing positions remain accessible for exit.';
+        subBtn.textContent = 'Retry ➔';
+      } else if (isComplimentary) {
+        subTitle.textContent = state.subscription?.statusLabel || 'Premium — complimentary test access';
+        subDesc.textContent = 'Owner-Approved Test Access • All Equities, F&O & MCX Commodities • Zero Ads';
+        subBtn.textContent = 'Manage Plan ➔';
+      } else if (isPro) {
         subTitle.textContent = 'Sikho Trading Premium Active';
         subDesc.textContent = 'Unlimited Access • All Equities, F&O & MCX Commodities • Zero Ads';
         subBtn.textContent = 'Manage Plan ➔';
@@ -3015,11 +3100,22 @@
         method: 'POST',
         body: '{}',
       });
+      const restoredTier = res.status?.tier || res.tier || 'FREE';
+      const isProActive = Boolean(res.restored || restoredTier === 'PRO');
+      if (res.status) {
+        state.subscription = res.status;
+        state.entitlementResolved = true;
+      }
       if (state.user) {
-        state.user.tier = res.tier || 'FREE';
+        state.user.tier = restoredTier;
       }
       await refreshAccountAndPortfolio();
-      showBrandedAlert('Purchases Restored', res.isProActive ? 'Your Pro subscription is active!' : 'No active Pro subscription found.');
+      showBrandedAlert(
+        'Purchases Restored',
+        isProActive
+          ? (res.status?.statusLabel || 'Your Pro subscription is active!')
+          : 'No active Pro subscription found.'
+      );
     } catch (err) {
       showBrandedAlert('Restore Failed', err.message);
     }
@@ -3322,6 +3418,24 @@
           if (msg.type === 'AUTH_SUCCESS') {
             // Re-send desired subscriptions once authenticated so Pro-tier instruments are authorized
             sendWsSubscribe(collectDesiredSubscriptions());
+          } else if (msg.type === 'ENTITLEMENT_UPDATED') {
+            const newTier = msg.tier || msg.entitlement?.tier || 'FREE';
+            if (msg.entitlement) {
+              state.subscription = msg.entitlement;
+            } else {
+              state.subscription = Object.assign({}, state.subscription || {}, { tier: newTier });
+            }
+            state.entitlementResolved = true;
+            if (state.user) state.user.tier = newTier;
+            if (state.account) state.account.tier = newTier;
+            if (state.token && state.user) {
+              saveSessionSecure({ token: state.token, user: state.user, account: state.account });
+            }
+            renderProfileStatsUI();
+            renderExploreStocksList();
+            renderExploreFnoLists();
+            renderCommoditiesList();
+            notifyNativeUserTier();
           } else if (msg.type === 'QUOTE_TICK' && msg.data) {
             handleIncomingQuoteTick(msg.data);
           }

@@ -29,7 +29,7 @@ import { PostgresRepository } from './db/postgres-repository.js';
 import { BillingService } from './monetization/billing-service.js';
 import { AdsCoordinator } from './monetization/ads-coordinator.js';
 import { WebSocket } from 'ws';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { OAuth2Client } from 'google-auth-library';
@@ -51,6 +51,7 @@ export async function buildServer(
   simEngine: SimulationEngine;
   repo: PostgresRepository;
   db: IDatabase;
+  billingService: BillingService;
 }> {
   const app = Fastify({ logger: false });
 
@@ -132,14 +133,62 @@ export async function buildServer(
   });
 
   // Active WebSocket clients
-  const wsClients = new Set<{ ws: WebSocket; accountId?: string; subscriptions: Set<string> }>();
+  const wsClients = new Set<{
+    ws: WebSocket;
+    userId?: string;
+    accountId?: string;
+    tier: UserTier;
+    subscriptions: Set<string>;
+  }>();
   const engineSubscribedIds = new Set<string>();
+
+  const notifyActiveUserWebSocketsTierChanged = async (userId: string) => {
+    const entitlement = await billingService.resolveEntitlement(userId);
+    let openPositionSymbols = new Set<string>();
+    try {
+      const account = await repo.provisionInitialAccount(userId);
+      if (account) {
+        const userPositions = await repo.getPositions(account.id);
+        for (const pos of userPositions) {
+          if (pos.quantity !== 0) {
+            openPositionSymbols.add(pos.globalInstrumentId);
+          }
+        }
+      }
+    } catch { }
+
+    for (const client of wsClients) {
+      if (client.userId === userId) {
+        client.tier = entitlement.tier;
+        if (entitlement.tier === 'FREE') {
+          for (const sym of Array.from(client.subscriptions)) {
+            if (openPositionSymbols.has(sym)) continue;
+            const inst =
+              instruments.find((i) => i.globalId === sym || i.symbol === sym) ||
+              parseFallbackInstrument(sym);
+            if (!isFreeTierAllowedInstrument(inst)) {
+              client.subscriptions.delete(sym);
+            }
+          }
+        }
+        if (client.ws.readyState === WebSocket.OPEN) {
+          client.ws.send(
+            JSON.stringify({
+              type: 'ENTITLEMENT_UPDATED',
+              tier: entitlement.tier,
+              entitlement,
+            })
+          );
+        }
+      }
+    }
+  };
 
   const ensureEngineSubscription = (globalId: string) => {
     if (engineSubscribedIds.has(globalId)) return;
     engineSubscribedIds.add(globalId);
     activeProvider.subscribe(globalId, (quote: QuoteSnapshot) => {
-      simEngine.onMarketTick(quote).catch(() => {});
+      simEngine.onMarketTick(quote).catch(() => { });
       const msg = JSON.stringify({ type: 'QUOTE_TICK', data: quote });
       for (const client of wsClients) {
         if (client.subscriptions.has(globalId) || client.subscriptions.has(quote.globalId)) {
@@ -284,7 +333,9 @@ export async function buildServer(
 
     try {
       const user = await repo.registerUser({ email, name, password });
-      const account = await repo.provisionInitialAccount(user.id, `${user.name}'s Practice Account`, 'PRO');
+      const account = await repo.provisionInitialAccount(user.id, `${user.name}'s Practice Account`, 'FREE');
+      const entitlement = await billingService.resolveEntitlement(user.id);
+      account.tier = entitlement.tier;
       accountEngine.provisionInitialAccount(user.id, `${user.name}'s Practice Account`);
 
       const token = app.jwt.sign({
@@ -301,12 +352,14 @@ export async function buildServer(
           userId: user.id,
           name: user.name,
           email: user.email,
+          tier: entitlement.tier,
           hasPin: false,
           biometricEnabled: false,
           isDevAccount: false,
           providerMode: activeProvider.providerId,
         },
         account: formatAccountResponse(account),
+        entitlement,
       };
     } catch (err: any) {
       return reply.status(400).send({
@@ -359,7 +412,9 @@ export async function buildServer(
 
       resetRateLimit(rateKey);
 
-      const account = await repo.provisionInitialAccount(user.id, `${user.name}'s Practice Account`, 'PRO');
+      const account = await repo.provisionInitialAccount(user.id, `${user.name}'s Practice Account`, 'FREE');
+      const entitlement = await billingService.resolveEntitlement(user.id);
+      account.tier = entitlement.tier;
       accountEngine.provisionInitialAccount(user.id, `${user.name}'s Practice Account`);
 
       const token = app.jwt.sign({
@@ -376,12 +431,14 @@ export async function buildServer(
           userId: user.id,
           name: user.name,
           email: user.email,
+          tier: entitlement.tier,
           hasPin: false,
           biometricEnabled: false,
           isDevAccount: false,
           providerMode: activeProvider.providerId,
         },
         account: formatAccountResponse(account),
+        entitlement,
       };
     } catch (err: any) {
       return reply.status(401).send({
@@ -485,7 +542,9 @@ export async function buildServer(
         avatarUrl: payload.picture,
       });
 
-      const account = await repo.provisionInitialAccount(user.id, `${user.name}'s Practice Account`, 'PRO');
+      const account = await repo.provisionInitialAccount(user.id, `${user.name}'s Practice Account`, 'FREE');
+      const entitlement = await billingService.resolveEntitlement(user.id);
+      account.tier = entitlement.tier;
       accountEngine.provisionInitialAccount(user.id, `${user.name}'s Practice Account`);
 
       const token = app.jwt.sign({
@@ -503,12 +562,14 @@ export async function buildServer(
           name: user.name,
           email: user.email,
           avatarUrl: user.avatarUrl,
+          tier: entitlement.tier,
           hasPin: false,
           biometricEnabled: false,
           isDevAccount: false,
           providerMode: activeProvider.providerId,
         },
         account: formatAccountResponse(account),
+        entitlement,
       };
     } catch (err: any) {
       return reply.status(401).send({
@@ -542,7 +603,9 @@ export async function buildServer(
     try {
       const user = await repo.resetUserPassword(email, newPassword);
       resetRateLimit(rateKey);
-      const account = await repo.provisionInitialAccount(user.id, `${user.name}'s Practice Account`, 'PRO');
+      const account = await repo.provisionInitialAccount(user.id, `${user.name}'s Practice Account`, 'FREE');
+      const entitlement = await billingService.resolveEntitlement(user.id);
+      account.tier = entitlement.tier;
       const token = app.jwt.sign({
         userId: user.id,
         accountId: account.id,
@@ -558,12 +621,14 @@ export async function buildServer(
           userId: user.id,
           name: user.name,
           email: user.email,
+          tier: entitlement.tier,
           hasPin: false,
           biometricEnabled: false,
           isDevAccount: false,
           providerMode: activeProvider.providerId,
         },
         account: formatAccountResponse(account),
+        entitlement,
       };
     } catch (err: any) {
       return reply.status(404).send({
@@ -589,26 +654,31 @@ export async function buildServer(
     if (!account) {
       return reply.status(404).send({ error: 'Account not found', code: 'ERR_ACCOUNT_NOT_FOUND' });
     }
+    const entitlement = await billingService.resolveEntitlement(req.user.userId);
+    account.tier = entitlement.tier;
     return {
       user: user
         ? {
-            userId: user.id,
-            name: user.name,
-            email: user.email,
-            avatarUrl: user.avatarUrl,
-            hasPin: false,
-            biometricEnabled: false,
-            providerMode: activeProvider.providerId,
-          }
+          userId: user.id,
+          name: user.name,
+          email: user.email,
+          avatarUrl: user.avatarUrl,
+          tier: entitlement.tier,
+          hasPin: false,
+          biometricEnabled: false,
+          providerMode: activeProvider.providerId,
+        }
         : {
-            userId: req.user.userId,
-            name: req.user.name,
-            email: req.user.email,
-            hasPin: false,
-            biometricEnabled: false,
-            providerMode: activeProvider.providerId,
-          },
+          userId: req.user.userId,
+          name: req.user.name,
+          email: req.user.email,
+          tier: entitlement.tier,
+          hasPin: false,
+          biometricEnabled: false,
+          providerMode: activeProvider.providerId,
+        },
       account: formatAccountResponse(account),
+      entitlement,
     };
   });
 
@@ -997,7 +1067,7 @@ export async function buildServer(
           }
         }
       }
-    } catch {}
+    } catch { }
 
     const allIndices = activeProvider.getIndices
       ? await activeProvider.getIndices()
@@ -1064,7 +1134,12 @@ export async function buildServer(
   app.get('/api/v1/account', { preHandler: [(app as any).authenticate] }, async (req: any) => {
     const account = await repo.getAccount(req.user.accountId);
     if (!account) return { error: 'Account not found' };
-    return formatAccountResponse(account);
+    const entitlement = await billingService.resolveEntitlement(req.user.userId);
+    account.tier = entitlement.tier;
+    return {
+      ...formatAccountResponse(account),
+      entitlement,
+    };
   });
 
   // 7. Virtual Account Reset & Performance
@@ -1104,8 +1179,8 @@ export async function buildServer(
       const code = isPositionErr
         ? 'ERR_OPEN_POSITIONS_EXIST'
         : isTierErr
-        ? 'ERR_PRO_TIER_REQUIRED'
-        : 'ERR_RESET_FAILED';
+          ? 'ERR_PRO_TIER_REQUIRED'
+          : 'ERR_RESET_FAILED';
       return reply.status(isTierErr ? 403 : 400).send({
         error: resetResult.error,
         code,
@@ -1267,10 +1342,10 @@ export async function buildServer(
         },
         position: result.position
           ? {
-              ...result.position,
-              realizedPnlINR: Money.toRupees(result.position.realizedPnlPaise),
-              unrealizedPnlINR: Money.toRupees(result.position.unrealizedPnlPaise),
-            }
+            ...result.position,
+            realizedPnlINR: Money.toRupees(result.position.realizedPnlPaise),
+            unrealizedPnlINR: Money.toRupees(result.position.unrealizedPnlPaise),
+          }
           : undefined,
       };
     } catch (err: any) {
@@ -1555,7 +1630,86 @@ export async function buildServer(
       const statusCode = res.code === 'CONFIGURATION_REQUIRED' ? 503 : 400;
       return reply.status(statusCode).send(res);
     }
+    await notifyActiveUserWebSocketsTierChanged(req.user.userId);
     return res;
+  });
+
+  // 14B. Narrowly Scoped Owner-Admin Complimentary Grant Endpoints (Protected by ADMIN_GRANT_SECRET)
+  const verifyAdminSecret = (req: any, reply: any): boolean => {
+    const configuredSecret = (process.env.ADMIN_GRANT_SECRET || '').trim();
+    const headerSecret = String(req.headers['x-admin-secret'] || '').trim();
+    if (!configuredSecret || configuredSecret.length < 16) {
+      reply.status(403).send({
+        error: 'Admin entitlement endpoints are disabled because ADMIN_GRANT_SECRET is not configured.',
+        code: 'ERR_ADMIN_NOT_CONFIGURED',
+      });
+      return false;
+    }
+    const bufA = Buffer.from(configuredSecret, 'utf8');
+    const bufB = Buffer.from(headerSecret, 'utf8');
+    if (bufA.length !== bufB.length || !timingSafeEqual(bufA, bufB)) {
+      reply.status(403).send({
+        error: 'Forbidden: Invalid administrative credentials.',
+        code: 'ERR_ADMIN_UNAUTHORIZED',
+      });
+      return false;
+    }
+    return true;
+  };
+
+  app.post('/api/v1/admin/entitlements/grant', async (req: any, reply) => {
+    if (!verifyAdminSecret(req, reply)) return;
+    const body = (req.body as {
+      userId?: string;
+      email?: string;
+      reason?: string;
+      grantedBy?: string;
+      expiresAt?: number | null;
+    }) || {};
+    const res = await billingService.grantComplimentaryPro({
+      userId: body.userId,
+      email: body.email || '',
+      reason: body.reason || '',
+      grantedBy: body.grantedBy || 'OWNER_ADMIN',
+      expiresAt: body.expiresAt ?? null,
+    });
+    if (!res.success) {
+      const code = res.code === 'ERR_USER_NOT_FOUND' ? 404 : 400;
+      return reply.status(code).send(res);
+    }
+    if (res.grant?.userId) {
+      await notifyActiveUserWebSocketsTierChanged(res.grant.userId);
+    }
+    return res;
+  });
+
+  app.post('/api/v1/admin/entitlements/revoke', async (req: any, reply) => {
+    if (!verifyAdminSecret(req, reply)) return;
+    const body = (req.body as {
+      userId?: string;
+      email?: string;
+      reason?: string;
+      revokedBy?: string;
+    }) || {};
+    const res = await billingService.revokeComplimentaryPro({
+      userId: body.userId,
+      email: body.email,
+      reason: body.reason || 'Revoked by owner administrator',
+      revokedBy: body.revokedBy || 'OWNER_ADMIN',
+    });
+    if (!res.success) {
+      return reply.status(404).send(res);
+    }
+    if (res.userId) {
+      await notifyActiveUserWebSocketsTierChanged(res.userId);
+    }
+    return res;
+  });
+
+  app.get('/api/v1/admin/entitlements', async (req: any, reply) => {
+    if (!verifyAdminSecret(req, reply)) return;
+    const grants = await billingService.listComplimentaryGrants();
+    return { grants };
   });
 
   app.get('/api/v1/billing/status', { preHandler: [(app as any).authenticate] }, async (req: any) => {
@@ -1635,6 +1789,9 @@ export async function buildServer(
             }
           }
         } else if (actionType === 'SUBSCRIBE' && Array.isArray(msg.symbols)) {
+          if (clientState.userId) {
+            clientState.tier = await billingService.getAccountTier(clientState.userId);
+          }
           for (const s of msg.symbols) {
             if (!s || typeof s !== 'string') continue;
             const resolvedInst = activeProvider.getInstrumentById
@@ -1664,7 +1821,7 @@ export async function buildServer(
                   ws.send(JSON.stringify({ type: 'QUOTE_TICK', data: snap }));
                 }
               })
-              .catch(() => {});
+              .catch(() => { });
           }
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'SUBSCRIBED', symbols: Array.from(clientState.subscriptions) }));
@@ -1681,7 +1838,7 @@ export async function buildServer(
     };
 
     ws.on('message', (raw: any) => {
-      messageQueue = messageQueue.then(() => processClientMessage(raw)).catch(() => {});
+      messageQueue = messageQueue.then(() => processClientMessage(raw)).catch(() => { });
     });
 
     ws.on('close', () => {
@@ -1689,7 +1846,7 @@ export async function buildServer(
     });
   });
 
-  return { app, provider: activeProvider, accountEngine, simEngine, repo, db };
+  return { app, provider: activeProvider, accountEngine, simEngine, repo, db, billingService };
 }
 
 // Start standalone server if invoked directly

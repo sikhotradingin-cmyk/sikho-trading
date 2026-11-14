@@ -90,10 +90,15 @@ class AdMobManager(
     private var hasOpenPositions: Boolean = false
     private var hasPendingOrders: Boolean = false
 
-    // Ad Instances
+    // Ad Instances & Telemetry
     private var bannerAdView: AdView? = null
+    private var bannerLoaded: Boolean = false
+    private var bannerRequestCount: Int = 0
+    private var lastBannerLoadError: String? = null
     private var interstitialAd: InterstitialAd? = null
     private var isInterstitialLoading = false
+    private var interstitialRequestCount: Int = 0
+    private var lastInterstitialLoadError: String? = null
 
     init {
         initializeUmpConsent()
@@ -170,18 +175,33 @@ class AdMobManager(
 
     /**
      * Update user tier. Pro users get ZERO ads and ZERO ad requests.
+     * Unresolved ("UNKNOWN") users also do not request ads until entitlement is confirmed.
      */
     fun updateUserTier(tier: String, userId: String) {
-        currentUserTier = tier.uppercase().trim()
-        currentUserId = userId
+        val cleanTier = tier.uppercase().trim().ifEmpty { "UNKNOWN" }
+        val cleanUserId = userId.trim()
+        if (cleanUserId != currentUserId) {
+            eligibleActionCounter = 0
+            retryAttempt = 0
+            lastEligibilityCheckReason = "USER_SWITCHED"
+        }
+        currentUserTier = cleanTier
+        currentUserId = cleanUserId
         Log.i(TAG, "Updated user tier to $currentUserTier for user $currentUserId")
 
         activity.runOnUiThread {
             if (currentUserTier == "PRO") {
+                retryHandler.removeCallbacksAndMessages(null)
                 destroyBanner()
                 interstitialAd = null
+                isInterstitialLoading = false
                 bannerContainer.visibility = View.GONE
                 onBannerHeightChange(false, 0)
+                lastEligibilityCheckReason = "REASON_PRO_TIER"
+            } else if (currentUserTier != "FREE") {
+                retryHandler.removeCallbacksAndMessages(null)
+                hideBanner()
+                lastEligibilityCheckReason = "REASON_TIER_UNKNOWN"
             } else {
                 updateBannerVisibility()
                 preloadInterstitialIfEligible()
@@ -256,6 +276,7 @@ class AdMobManager(
             Log.w(TAG, "Error destroying banner: ${e.message}")
         }
         bannerAdView = null
+        bannerLoaded = false
         bannerContainer.removeAllViews()
     }
 
@@ -288,11 +309,15 @@ class AdMobManager(
 
         adView.adListener = object : AdListener() {
             override fun onAdLoaded() {
+                bannerLoaded = true
+                lastBannerLoadError = null
                 Log.i(TAG, "Anchored Adaptive Banner loaded successfully ($adSize)")
                 onBannerHeightChange(true, heightDp)
             }
 
             override fun onAdFailedToLoad(loadAdError: LoadAdError) {
+                bannerLoaded = false
+                lastBannerLoadError = "${loadAdError.code}: ${loadAdError.message}"
                 Log.w(TAG, "Banner failed to load: ${loadAdError.code} - ${loadAdError.message}")
                 onBannerHeightChange(false, 0)
             }
@@ -302,6 +327,7 @@ class AdMobManager(
         bannerContainer.addView(adView)
         bannerAdView = adView
 
+        bannerRequestCount++
         val adRequest = AdRequest.Builder().build()
         adView.loadAd(adRequest)
     }
@@ -345,6 +371,7 @@ class AdMobManager(
         if (getRecent24hImpressionsCount() >= MAX_INTERSTITIALS_PER_24H) return
 
         isInterstitialLoading = true
+        interstitialRequestCount++
         val adRequest = AdRequest.Builder().build()
 
         InterstitialAd.load(
@@ -355,6 +382,7 @@ class AdMobManager(
                 override fun onAdLoaded(ad: InterstitialAd) {
                     isInterstitialLoading = false
                     interstitialAd = ad
+                    lastInterstitialLoadError = null
                     retryAttempt = 0
                     Log.i(TAG, "Interstitial ad preloaded successfully.")
 
@@ -382,6 +410,7 @@ class AdMobManager(
                 override fun onAdFailedToLoad(loadAdError: LoadAdError) {
                     isInterstitialLoading = false
                     interstitialAd = null
+                    lastInterstitialLoadError = "${loadAdError.code}: ${loadAdError.message}"
                     Log.w(TAG, "Interstitial failed to preload: ${loadAdError.code} - ${loadAdError.message}")
                     if (currentUserTier == "FREE" && retryAttempt < 3) {
                         val delays = listOf(15000L, 30000L, 60000L)
@@ -534,6 +563,17 @@ class AdMobManager(
         val recent24hCount = getRecent24hImpressionsCount()
         return org.json.JSONObject().apply {
             put("tier", currentUserTier)
+            put("userId", currentUserId)
+            put("canRequestAds", consentInformation.canRequestAds())
+            put("isMobileAdsInitialized", isMobileAdsInitialized.get())
+            put("bannerRequestCount", bannerRequestCount)
+            put("bannerLoaded", bannerLoaded)
+            put("bannerVisible", bannerContainer.visibility == View.VISIBLE)
+            put("lastBannerLoadError", lastBannerLoadError ?: org.json.JSONObject.NULL)
+            put("interstitialRequestCount", interstitialRequestCount)
+            put("interstitialLoaded", interstitialAd != null)
+            put("isInterstitialLoading", isInterstitialLoading)
+            put("lastInterstitialLoadError", lastInterstitialLoadError ?: org.json.JSONObject.NULL)
             put("sessionInterstitialCount", sessionInterstitialCount)
             put("maxSessionInterstitials", MAX_INTERSTITIALS_PER_SESSION)
             put("recent24hCount", recent24hCount)
@@ -546,9 +586,6 @@ class AdMobManager(
             put("hasOpenPositions", hasOpenPositions)
             put("hasPendingOrders", hasPendingOrders)
             put("currentScreen", currentScreen)
-            put("bannerVisible", bannerContainer.visibility == View.VISIBLE)
-            put("interstitialLoaded", interstitialAd != null)
-            put("isInterstitialLoading", isInterstitialLoading)
             put("lastEligibilityCheckReason", lastEligibilityCheckReason)
         }
     }

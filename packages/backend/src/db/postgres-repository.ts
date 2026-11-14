@@ -295,12 +295,15 @@ export class PostgresRepository {
       [userId]
     );
     if (existing.rows.length > 0) {
-      if (initialTier === 'PRO' && existing.rows[0].tier !== 'PRO') {
-        await this.db.query('UPDATE virtual_accounts SET tier = $1 WHERE id = $2', [
-          'PRO',
-          existing.rows[0].id,
-        ]);
-        existing.rows[0].tier = 'PRO';
+      if (initialTier === 'PRO' && existing.rows[0].tier !== 'PRO' && process.env.NODE_ENV !== 'production') {
+        const realUserCheck = await this.db.query('SELECT id FROM users WHERE id = $1 LIMIT 1', [userId]);
+        if (realUserCheck.rows.length === 0) {
+          await this.db.query('UPDATE virtual_accounts SET tier = $1 WHERE id = $2', [
+            'PRO',
+            existing.rows[0].id,
+          ]);
+          existing.rows[0].tier = 'PRO';
+        }
       }
       return this.mapAccount(existing.rows[0]);
     }

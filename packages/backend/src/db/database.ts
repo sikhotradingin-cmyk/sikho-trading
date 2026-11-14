@@ -207,6 +207,9 @@ export class EmulatedPostgresDatabase implements IDatabase {
 }
 
 export function createDatabase(connectionString?: string): IDatabase {
+  if (Boolean(process.env.NODE_TEST_CONTEXT) && process.env.TEST_USE_REAL_PG !== 'true') {
+    return new EmulatedPostgresDatabase();
+  }
   if (connectionString && (connectionString.startsWith('postgres://') || connectionString.startsWith('postgresql://'))) {
     return new RealPostgresDatabase(connectionString);
   }
