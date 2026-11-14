@@ -16,11 +16,8 @@
     <div id="screen-auth" class="screen-view active">
       <div class="auth-screen">
         <div class="auth-brand-header">
-          <div class="brand-logo-mark">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
-              <path d="M4 17L10 11L14 15L20 7" stroke="#C7F542" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-              <path d="M15 7H20V12" stroke="#C7F542" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
+          <div class="brand-logo-mark" style="padding:0;overflow:hidden;border:none;background:transparent;">
+            <img src="app-icon.png" alt="Sikho Trading" style="width:56px;height:56px;border-radius:14px;display:block;object-fit:cover;" />
           </div>
           <div class="auth-brand-title">Sikho Trading</div>
           <div class="auth-paper-pill">
@@ -99,51 +96,7 @@
     </div>
 
     <!-- ==================================================================
-         SCREEN 2: 4-DIGIT PIN & BIOMETRIC UNLOCK (newui4.jpeg inspired)
-         ================================================================== -->
-    <div id="screen-pin" class="screen-view">
-      <div class="auth-screen" style="align-items:center;">
-        <div class="auth-brand-header">
-          <div id="pin-user-avatar" class="avatar-circle-btn" style="width:52px;height:52px;font-size:20px;margin-bottom:12px;">A</div>
-          <div id="pin-user-greeting" class="auth-brand-title" style="font-size:20px;">Enter your Sikho Trading PIN</div>
-          <div id="pin-user-email" style="font-size:12.5px;color:var(--text-on-black-secondary);margin-top:4px;"></div>
-          <div class="pin-boxes-row">
-            <div id="pin-box-0" class="pin-box"></div>
-            <div id="pin-box-1" class="pin-box"></div>
-            <div id="pin-box-2" class="pin-box"></div>
-            <div id="pin-box-3" class="pin-box"></div>
-          </div>
-          <div id="pin-error-text" style="color:var(--negative-red);font-size:12.5px;min-height:18px;"></div>
-        </div>
-
-        <div class="pin-keypad">
-          <button class="pin-key" onclick="window.TZApp.pressPinDigit('1')">1</button>
-          <button class="pin-key" onclick="window.TZApp.pressPinDigit('2')">2</button>
-          <button class="pin-key" onclick="window.TZApp.pressPinDigit('3')">3</button>
-          <button class="pin-key" onclick="window.TZApp.pressPinDigit('4')">4</button>
-          <button class="pin-key" onclick="window.TZApp.pressPinDigit('5')">5</button>
-          <button class="pin-key" onclick="window.TZApp.pressPinDigit('6')">6</button>
-          <button class="pin-key" onclick="window.TZApp.pressPinDigit('7')">7</button>
-          <button class="pin-key" onclick="window.TZApp.pressPinDigit('8')">8</button>
-          <button class="pin-key" onclick="window.TZApp.pressPinDigit('9')">9</button>
-          <button class="pin-key" style="font-size:12px;" onclick="window.TZApp.triggerBiometricUnlock()">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#C7F542" stroke-width="2">
-              <path d="M12 11c0 3.517-1.009 6.799-2.753 9.571m-3.44-2.04l.054-.09A13.916 13.916 0 008 11a4 4 0 118 0c0 1.017-.07 2.019-.203 3m-2.118 6.844A21.88 21.88 0 0015.171 17m3.839 1.132c.645-2.266.99-4.659.99-7.132A8 8 0 008 4.07M3 15.364c.64-1.319 1-2.8 1-4.364 0-1.457.39-2.823 1.07-4"/>
-            </svg>
-          </button>
-          <button class="pin-key" onclick="window.TZApp.pressPinDigit('0')">0</button>
-          <button class="pin-key" onclick="window.TZApp.pressPinBackspace()">⌫</button>
-        </div>
-
-        <div style="display:flex;gap:20px;margin-top:12px;">
-          <button class="link-btn" style="color:var(--accent-lime);" onclick="window.TZApp.forgotPinRecovery()">Forgot PIN?</button>
-          <button class="link-btn" style="color:var(--text-on-black-secondary);" onclick="window.TZApp.signOut()">Switch account</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- ==================================================================
-         SCREEN 3: MAIN 5-TAB APPLICATION SHELL
+         SCREEN 2: MAIN 5-TAB APPLICATION SHELL
          ================================================================== -->
     <div id="screen-main" class="screen-view">
       <!-- Simplified Light Header: Monogram Icon + Flexible Long Search + Profile Avatar -->
@@ -395,22 +348,7 @@
           </div>
         </div>
 
-        <!-- Settings & Security Rows -->
         <div class="section-header-white" style="margin-top:6px;">
-          <div class="section-title-dark">Security &amp; App Lock</div>
-        </div>
-        <div class="instrument-row-white" onclick="window.TZApp.promptSetupPin()">
-          <div class="inst-left">
-            <div class="inst-badge-icon">PIN</div>
-            <div class="inst-meta">
-              <div class="inst-symbol">4-Digit Security PIN &amp; Biometric</div>
-              <div id="prof-pin-status-sub" class="inst-name-sub">Protect your practice session on this phone</div>
-            </div>
-          </div>
-          <div style="font-weight:700;font-size:12.5px;color:#0F172A;">Configure ➔</div>
-        </div>
-
-        <div class="section-header-white">
           <div class="section-title-dark">Market Data &amp; Audit Ledger</div>
         </div>
         <div class="instrument-row-white" onclick="window.TZApp.loadAndShowLedger()">
@@ -508,9 +446,10 @@
               <span id="chart-sym-title" style="font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">NIFTY 50</span>
               <span id="chart-seg-badge" class="paper-badge-header">INDEX</span>
             </div>
-            <div style="display:flex;align-items:baseline;gap:8px;margin-top:1px;">
+            <div style="display:flex;align-items:center;gap:8px;margin-top:2px;flex-wrap:wrap;">
               <span id="chart-ltp-display" class="tabular-nums" style="font-size:14px;font-weight:700;">—</span>
               <span id="chart-chg-display" class="tabular-nums" style="font-size:11.5px;font-weight:600;">—</span>
+              <span id="chart-candle-countdown" class="candle-countdown-pill tabular-nums" title="Time remaining in active candle">⏱ —</span>
             </div>
           </div>
         </div>

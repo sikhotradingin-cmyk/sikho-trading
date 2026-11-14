@@ -4,7 +4,7 @@ import { buildServer } from './server.js';
 import { FastifyInstance } from 'fastify';
 import { decodeUpstoxFeedResponseProto, UpstoxAdapter } from './providers/upstox-adapter.js';
 
-describe('Tradingzone v2.0: Upstox V3 Adapter, Real Auth, PIN, User Isolation, Drawings & Segment Accounting', () => {
+describe('Tradingzone v2.0: Upstox V3 Adapter, Real Auth (No PIN Lock), User Isolation, Drawings & Segment Accounting', () => {
   let app: FastifyInstance;
   let userAToken: string;
   let userBToken: string;
@@ -106,7 +106,7 @@ describe('Tradingzone v2.0: Upstox V3 Adapter, Real Auth, PIN, User Isolation, D
     await adapter.dispose();
   });
 
-  test('User Registration, Sign-In, PIN setup/verification, and Account Recovery work end-to-end', async () => {
+  test('User Registration, Sign-In, Direct Session Access (PIN Lock Removed), and Account Recovery work end-to-end', async () => {
     // 1. Register User A
     const userAEmail = `arjun.mehta.${testRunId}@example.com`;
     const userBEmail = `priya.sharma.${testRunId}@example.com`;
@@ -123,6 +123,8 @@ describe('Tradingzone v2.0: Upstox V3 Adapter, Real Auth, PIN, User Isolation, D
     const regABody = JSON.parse(regARes.body);
     assert.ok(regABody.token);
     assert.equal(regABody.user.email, userAEmail);
+    assert.equal(regABody.user.hasPin, false);
+    assert.equal(regABody.user.biometricEnabled, false);
     assert.equal(regABody.account.cashBalanceINR, 100000);
     userAToken = regABody.token;
 
@@ -150,32 +152,32 @@ describe('Tradingzone v2.0: Upstox V3 Adapter, Real Auth, PIN, User Isolation, D
     });
     assert.equal(badLogin.statusCode, 401);
 
-    // 4. Setup 4-digit PIN for User A and verify
+    // 4. Verify PIN endpoints are completely removed (404) and /api/v1/auth/me returns hasPin: false
     const pinSetup = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/pin/setup',
       headers: { authorization: `Bearer ${userAToken}` },
       payload: { pin: '4829', biometricEnabled: true },
     });
-    assert.equal(pinSetup.statusCode, 200);
-    assert.equal(JSON.parse(pinSetup.body).hasPin, true);
+    assert.equal(pinSetup.statusCode, 404);
 
-    const pinBad = await app.inject({
-      method: 'POST',
-      url: '/api/v1/auth/pin/verify',
-      headers: { authorization: `Bearer ${userAToken}` },
-      payload: { pin: '0000' },
-    });
-    assert.equal(pinBad.statusCode, 401);
-
-    const pinGood = await app.inject({
+    const pinVerify = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/pin/verify',
       headers: { authorization: `Bearer ${userAToken}` },
       payload: { pin: '4829' },
     });
-    assert.equal(pinGood.statusCode, 200);
-    assert.equal(JSON.parse(pinGood.body).verified, true);
+    assert.equal(pinVerify.statusCode, 404);
+
+    const meRes = await app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/me',
+      headers: { authorization: `Bearer ${userAToken}` },
+    });
+    assert.equal(meRes.statusCode, 200);
+    const meBody = JSON.parse(meRes.body);
+    assert.equal(meBody.user.hasPin, false);
+    assert.equal(meBody.user.biometricEnabled, false);
   });
 
   test('User Isolation: Drawings, Watchlists, Holdings, and Orders are strictly isolated per user', async () => {
@@ -321,6 +323,41 @@ describe('Tradingzone v2.0: Upstox V3 Adapter, Real Auth, PIN, User Isolation, D
       ).body
     );
     assert.equal(accAfterCancel.lockedMarginINR, accBeforeLimit.lockedMarginINR);
+  });
+
+  test('WebSocket /ws accepts both type: SUBSCRIBE and action: SUBSCRIBE and delivers initial QUOTE_TICK snapshot', async () => {
+    const ws = await app.injectWS('/ws');
+    const receivedMessages: any[] = [];
+
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        ws.terminate();
+        reject(new Error(`Timed out waiting for WebSocket QUOTE_TICK; received: ${JSON.stringify(receivedMessages)}`));
+      }, 4000);
+
+      ws.on('message', (data: Buffer) => {
+        try {
+          const parsed = JSON.parse(data.toString());
+          receivedMessages.push(parsed);
+          const hasSubscribed = receivedMessages.some((m) => m.type === 'SUBSCRIBED' && Array.isArray(m.symbols) && m.symbols.includes('NSE:NIFTY50:999000'));
+          const hasQuoteTick = receivedMessages.some((m) => m.type === 'QUOTE_TICK' && m.data?.globalId === 'NSE:NIFTY50:999000' && (m.data?.ltp ?? m.data?.lastTradedPrice) > 0);
+          if (hasSubscribed && hasQuoteTick) {
+            clearTimeout(timer);
+            ws.terminate();
+            resolve();
+          }
+        } catch (err) {
+          // ignore
+        }
+      });
+
+      ws.send(JSON.stringify({ type: 'AUTH', token: userAToken }));
+      ws.send(JSON.stringify({ type: 'SUBSCRIBE', symbols: ['NSE:NIFTY50:999000', 'NSE:RELIANCE:2885'] }));
+    });
+
+    assert.ok(receivedMessages.some((m) => m.type === 'AUTH_SUCCESS'));
+    assert.ok(receivedMessages.some((m) => m.type === 'SUBSCRIBED'));
+    assert.ok(receivedMessages.some((m) => m.type === 'QUOTE_TICK' && m.data?.globalId === 'NSE:NIFTY50:999000'));
   });
 });
 

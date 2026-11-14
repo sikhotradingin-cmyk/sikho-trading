@@ -186,6 +186,8 @@ export async function buildServer(
     app.get('/index.html', serveAsset('index.html', 'text/html; charset=utf-8'));
     app.get('/styles.css', serveAsset('styles.css', 'text/css; charset=utf-8'));
     app.get('/app.js', serveAsset('app.js', 'application/javascript; charset=utf-8'));
+    app.get('/instrument-identity.js', serveAsset('instrument-identity.js', 'application/javascript; charset=utf-8'));
+    app.get('/app-icon.png', serveAsset('app-icon.png', 'image/png'));
     app.get('/lightweight-charts.standalone.production.js', serveAsset('lightweight-charts.standalone.production.js', 'application/javascript; charset=utf-8'));
     app.get('/lightweight-charts.js', serveAsset('lightweight-charts.standalone.production.js', 'application/javascript; charset=utf-8'));
   }
@@ -299,8 +301,8 @@ export async function buildServer(
           userId: user.id,
           name: user.name,
           email: user.email,
-          hasPin: user.hasPin,
-          biometricEnabled: user.biometricEnabled,
+          hasPin: false,
+          biometricEnabled: false,
           isDevAccount: false,
           providerMode: activeProvider.providerId,
         },
@@ -374,8 +376,8 @@ export async function buildServer(
           userId: user.id,
           name: user.name,
           email: user.email,
-          hasPin: user.hasPin,
-          biometricEnabled: user.biometricEnabled,
+          hasPin: false,
+          biometricEnabled: false,
           isDevAccount: false,
           providerMode: activeProvider.providerId,
         },
@@ -501,8 +503,8 @@ export async function buildServer(
           name: user.name,
           email: user.email,
           avatarUrl: user.avatarUrl,
-          hasPin: user.hasPin,
-          biometricEnabled: user.biometricEnabled,
+          hasPin: false,
+          biometricEnabled: false,
           isDevAccount: false,
           providerMode: activeProvider.providerId,
         },
@@ -516,9 +518,9 @@ export async function buildServer(
     }
   });
 
-  // 2E. Account Password / Forgotten PIN Recovery (with rate limiting protection)
+  // 2E. Account Password Recovery (with rate limiting protection)
   app.post('/api/v1/auth/recover', async (req, reply) => {
-    const body = (req.body as { email?: string; newPassword?: string; clearPin?: boolean }) || {};
+    const body = (req.body as { email?: string; newPassword?: string }) || {};
     const email = (body.email || '').trim().toLowerCase();
     const newPassword = body.newPassword || '';
 
@@ -540,9 +542,6 @@ export async function buildServer(
     try {
       const user = await repo.resetUserPassword(email, newPassword);
       resetRateLimit(rateKey);
-      if (body.clearPin) {
-        await repo.clearUserPin(user.id);
-      }
       const account = await repo.provisionInitialAccount(user.id, `${user.name}'s Practice Account`, 'PRO');
       const token = app.jwt.sign({
         userId: user.id,
@@ -559,8 +558,8 @@ export async function buildServer(
           userId: user.id,
           name: user.name,
           email: user.email,
-          hasPin: body.clearPin ? false : user.hasPin,
-          biometricEnabled: body.clearPin ? false : user.biometricEnabled,
+          hasPin: false,
+          biometricEnabled: false,
           isDevAccount: false,
           providerMode: activeProvider.providerId,
         },
@@ -583,7 +582,7 @@ export async function buildServer(
     }
   });
 
-  // 2F. PIN & Biometric Lock Management
+  // 2F. Authenticated Session Profile
   app.get('/api/v1/auth/me', { preHandler: [(app as any).authenticate] }, async (req: any, reply) => {
     const user = await repo.getUserById(req.user.userId);
     const account = await repo.getAccount(req.user.accountId);
@@ -597,8 +596,8 @@ export async function buildServer(
             name: user.name,
             email: user.email,
             avatarUrl: user.avatarUrl,
-            hasPin: user.hasPin,
-            biometricEnabled: user.biometricEnabled,
+            hasPin: false,
+            biometricEnabled: false,
             providerMode: activeProvider.providerId,
           }
         : {
@@ -611,49 +610,6 @@ export async function buildServer(
           },
       account: formatAccountResponse(account),
     };
-  });
-
-  app.post('/api/v1/auth/pin/setup', { preHandler: [(app as any).authenticate] }, async (req: any, reply) => {
-    const body = (req.body as { pin?: string; biometricEnabled?: boolean }) || {};
-    if (!body.pin || !/^\d{4}$/.test(body.pin)) {
-      return reply.status(400).send({ error: 'PIN must be exactly 4 digits.', code: 'ERR_INVALID_PIN' });
-    }
-    try {
-      const updated = await repo.setupUserPin(req.user.userId, body.pin, Boolean(body.biometricEnabled));
-      return {
-        success: true,
-        hasPin: updated.hasPin,
-        biometricEnabled: updated.biometricEnabled,
-      };
-    } catch (err: any) {
-      return reply.status(400).send({ error: err.message });
-    }
-  });
-
-  app.post('/api/v1/auth/pin/verify', { preHandler: [(app as any).authenticate] }, async (req: any, reply) => {
-    const body = (req.body as { pin?: string }) || {};
-    if (!body.pin) {
-      return reply.status(400).send({ error: 'PIN is required.', code: 'ERR_MISSING_PIN' });
-    }
-
-    const rateKey = `pin:${req.user.userId}`;
-    const rl = checkRateLimit(rateKey, 5, 60000, 300000); // 5 attempts per min, 5 min lockout
-    if (!rl.allowed) {
-      return reply.status(429).send({ error: rl.error, code: 'ERR_RATE_LIMIT_EXCEEDED', retryAfter: rl.retryAfterSec });
-    }
-
-    const ok = await repo.verifyUserPin(req.user.userId, body.pin);
-    if (!ok) {
-      return reply.status(401).send({ verified: false, error: 'Incorrect 4-digit PIN.', code: 'ERR_WRONG_PIN' });
-    }
-
-    resetRateLimit(rateKey);
-    return { verified: true };
-  });
-
-  app.post('/api/v1/auth/pin/clear', { preHandler: [(app as any).authenticate] }, async (req: any) => {
-    await repo.clearUserPin(req.user.userId);
-    return { success: true, hasPin: false, biometricEnabled: false };
   });
 
   // 3. Instruments Master with Search, Multi-Facet Filtering, and Pagination
@@ -1644,10 +1600,15 @@ export async function buildServer(
       }
     }
 
-    ws.on('message', async (raw: any) => {
+    // Serialize messages per socket so AUTH always finishes before subsequent SUBSCRIBE messages
+    let messageQueue: Promise<void> = Promise.resolve();
+
+    const processClientMessage = async (raw: any) => {
       try {
         const msg = JSON.parse(raw.toString());
-        if (msg.action === 'AUTH' && msg.token) {
+        const actionType = (msg.action || msg.type || '').toUpperCase();
+
+        if (actionType === 'AUTH' && msg.token) {
           try {
             const decoded = (app as any).jwt?.verify(msg.token);
             if (decoded && decoded.userId) {
@@ -1664,27 +1625,63 @@ export async function buildServer(
                   }
                 }
               }
-              ws.send(JSON.stringify({ type: 'AUTH_SUCCESS', tier: clientState.tier }));
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'AUTH_SUCCESS', tier: clientState.tier }));
+              }
             }
           } catch {
-            ws.send(JSON.stringify({ type: 'AUTH_ERROR', error: 'Invalid token' }));
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'AUTH_ERROR', error: 'Invalid token' }));
+            }
           }
-        } else if (msg.action === 'SUBSCRIBE' && Array.isArray(msg.symbols)) {
+        } else if (actionType === 'SUBSCRIBE' && Array.isArray(msg.symbols)) {
           for (const s of msg.symbols) {
-            const inst = instruments.find((i) => i.globalId === s || i.symbol === s) || parseFallbackInstrument(s);
+            if (!s || typeof s !== 'string') continue;
+            const resolvedInst = activeProvider.getInstrumentById
+              ? await activeProvider.getInstrumentById(s)
+              : undefined;
+            const inst =
+              resolvedInst ||
+              instruments.find((i) => i.globalId === s || i.symbol === s) ||
+              parseFallbackInstrument(s);
+
             if (clientState.tier === 'FREE' && !isFreeTierAllowedInstrument(inst)) {
-              ws.send(JSON.stringify({ type: 'RESTRICTED_ACCESS', symbol: s, error: 'UPGRADE_REQUIRED' }));
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'RESTRICTED_ACCESS', symbol: s, error: 'UPGRADE_REQUIRED' }));
+              }
               continue;
             }
+            const canonicalId = inst.globalId || s;
             clientState.subscriptions.add(s);
-            ensureEngineSubscription(s);
+            clientState.subscriptions.add(canonicalId);
+            ensureEngineSubscription(canonicalId);
+
+            // Immediately emit initial quote snapshot so active charts & watchlists reconcile without waiting for next tick
+            activeProvider
+              .getQuote(canonicalId)
+              .then((snap) => {
+                if (snap && ws.readyState === WebSocket.OPEN && clientState.subscriptions.has(canonicalId)) {
+                  ws.send(JSON.stringify({ type: 'QUOTE_TICK', data: snap }));
+                }
+              })
+              .catch(() => {});
           }
-        } else if (msg.action === 'UNSUBSCRIBE' && Array.isArray(msg.symbols)) {
-          for (const s of msg.symbols) clientState.subscriptions.delete(s);
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'SUBSCRIBED', symbols: Array.from(clientState.subscriptions) }));
+          }
+        } else if (actionType === 'UNSUBSCRIBE' && Array.isArray(msg.symbols)) {
+          for (const s of msg.symbols) {
+            if (!s || typeof s !== 'string') continue;
+            clientState.subscriptions.delete(s);
+          }
         }
       } catch {
         // ignore malformed message
       }
+    };
+
+    ws.on('message', (raw: any) => {
+      messageQueue = messageQueue.then(() => processClientMessage(raw)).catch(() => {});
     });
 
     ws.on('close', () => {

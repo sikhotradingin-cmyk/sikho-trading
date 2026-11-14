@@ -242,40 +242,13 @@ export class PostgresRepository {
     }
     const userId = res.rows[0].id;
     const hash = hashSecretPBKDF2(newPassword);
-    await this.db.query('UPDATE users SET password_hash = $1, updated_at = $2 WHERE id = $3', [
+    await this.db.query('UPDATE users SET password_hash = $1, pin_hash = NULL, biometric_enabled = FALSE, updated_at = $2 WHERE id = $3', [
       hash,
       Date.now(),
       userId,
     ]);
     const updated = await this.db.query('SELECT * FROM users WHERE id = $1', [userId]);
     return this.mapUser(updated.rows[0]);
-  }
-
-  public async setupUserPin(userId: string, pin: string, biometricEnabled: boolean = false): Promise<UserRecord> {
-    if (!/^\d{4}$/.test(pin)) {
-      throw new Error('ERR_INVALID_PIN: PIN must be exactly 4 digits.');
-    }
-    const pinHash = hashSecretPBKDF2(pin);
-    await this.db.query(
-      'UPDATE users SET pin_hash = $1, biometric_enabled = $2, updated_at = $3 WHERE id = $4',
-      [pinHash, biometricEnabled, Date.now(), userId]
-    );
-    const updated = await this.db.query('SELECT * FROM users WHERE id = $1', [userId]);
-    if (updated.rows.length === 0) throw new Error('User not found');
-    return this.mapUser(updated.rows[0]);
-  }
-
-  public async verifyUserPin(userId: string, pin: string): Promise<boolean> {
-    const res = await this.db.query('SELECT pin_hash FROM users WHERE id = $1', [userId]);
-    if (res.rows.length === 0) return false;
-    return verifySecretPBKDF2(pin, res.rows[0].pin_hash);
-  }
-
-  public async clearUserPin(userId: string): Promise<void> {
-    await this.db.query(
-      'UPDATE users SET pin_hash = NULL, biometric_enabled = FALSE, updated_at = $1 WHERE id = $2',
-      [Date.now(), userId]
-    );
   }
 
   public async getDrawings(userId: string, instrumentId: string): Promise<any[]> {
@@ -885,8 +858,8 @@ export class PostgresRepository {
       hasPassword: Boolean(row.password_hash),
       googleSub: row.google_sub ?? undefined,
       avatarUrl: row.avatar_url ?? undefined,
-      hasPin: Boolean(row.pin_hash),
-      biometricEnabled: Boolean(row.biometric_enabled),
+      hasPin: false,
+      biometricEnabled: false,
       createdAt: Number(row.created_at),
       updatedAt: Number(row.updated_at),
     };

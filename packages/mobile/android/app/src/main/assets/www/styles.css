@@ -258,59 +258,37 @@ html, body {
   margin-bottom: 14px;
 }
 
-/* PIN Unlock Screen (newui4.jpeg inspired) */
-.pin-boxes-row {
-  display: flex;
-  justify-content: center;
-  gap: 14px;
-  margin: 24px 0 18px;
-}
-
-.pin-box {
-  width: 52px;
-  height: 56px;
-  border-radius: 12px;
-  background: var(--surface-dark-raised);
-  border: 1.5px solid #2D3748;
-  display: flex;
+.candle-countdown-pill {
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  font-size: 24px;
-  font-weight: 700;
-  color: var(--text-on-black-primary);
-}
-
-.pin-box.filled {
-  border-color: var(--accent-lime);
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: rgba(199, 245, 66, 0.12);
+  border: 1px solid rgba(199, 245, 66, 0.3);
   color: var(--accent-lime);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
 }
 
-.pin-keypad {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  max-width: 320px;
-  margin: 0 auto;
-  width: 100%;
+.candle-countdown-pill.state-closed {
+  background: rgba(148, 163, 184, 0.14);
+  border-color: rgba(148, 163, 184, 0.3);
+  color: #94A3B8;
 }
 
-.pin-key {
-  height: 56px;
-  border-radius: 14px;
-  background: var(--surface-dark-raised);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  color: var(--text-on-black-primary);
-  font-size: 22px;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
+.candle-countdown-pill.state-warn {
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.35);
+  color: #F59E0B;
 }
 
-.pin-key:active {
-  background: var(--accent-lime);
-  color: var(--bg-midnight);
+.candle-countdown-pill.state-err {
+  background: rgba(239, 68, 68, 0.14);
+  border-color: rgba(239, 68, 68, 0.35);
+  color: #EF4444;
 }
 
 /* ==========================================================================

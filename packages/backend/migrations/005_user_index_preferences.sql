@@ -6,3 +6,4 @@ CREATE TABLE IF NOT EXISTS user_index_preferences (
 );
 
 CREATE INDEX IF NOT EXISTS idx_user_index_preferences_user ON user_index_preferences(user_id);
+

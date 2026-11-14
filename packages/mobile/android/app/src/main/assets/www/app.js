@@ -36,8 +36,6 @@
     token: null,
     user: null,
     account: null,
-    pinUnlocked: false,
-    pinBuffer: '',
     mainTab: 'explore',
     exploreCategory: 'STOCKS', // 'STOCKS' | 'FNO'
     stocksSectorFilter: 'ALL',
@@ -55,6 +53,11 @@
     orders: [],
     feedHealth: null,
     searchSegment: '',
+    wsConnected: false,
+    lastAnyTickReceiveMs: 0,
+    lastTickTimestamps: {},
+    lastCumulativeVolume: {},
+    activeChartSubId: null,
 
     // Active Chart State
     chartOpen: false,
@@ -217,7 +220,7 @@
     }
 
     const data = await res.json().catch(() => ({}));
-    if (res.status === 401 && state.token && !path.includes('/auth/pin/verify') && !path.includes('/auth/login')) {
+    if (res.status === 401 && state.token && !path.includes('/auth/login')) {
       signOut('Your session has expired. Please sign in again.');
       throw new Error(data.error || 'Session expired');
     }
@@ -275,8 +278,6 @@
     let screen = 'screen-auth';
     if (document.getElementById('screen-auth')?.classList.contains('active')) {
       screen = 'screen-auth';
-    } else if (document.getElementById('screen-pin')?.classList.contains('active')) {
-      screen = 'screen-pin';
     } else if (document.getElementById('screen-main')?.classList.contains('active')) {
       screen = state.mainTab || 'explore';
     }
@@ -446,11 +447,11 @@
       toggleBtn.textContent = 'Already have an account? Sign In';
       toggleBtn.onclick = () => toggleAuthMode('login');
     } else if (mode === 'recover') {
-      heading.textContent = 'Account & PIN Recovery';
-      sub.textContent = 'Reset your password and clear any locked PIN while keeping your portfolio';
+      heading.textContent = 'Account Password Recovery';
+      sub.textContent = 'Reset your password while keeping your virtual portfolio and track record';
       nameGrp.style.display = 'none';
       passLbl.textContent = 'New Password (min 6 chars)';
-      btnTxt.textContent = 'Reset Password & Unlock Account';
+      btnTxt.textContent = 'Reset Password';
       toggleBtn.textContent = 'Back to Sign In';
       toggleBtn.onclick = () => toggleAuthMode('login');
     } else {
@@ -528,7 +529,7 @@
       } else if (state.authMode === 'recover') {
         res = await apiFetch('/api/v1/auth/recover', {
           method: 'POST',
-          body: JSON.stringify({ email, newPassword: password, clearPin: true }),
+          body: JSON.stringify({ email, newPassword: password }),
         });
       } else {
         res = await apiFetch('/api/v1/auth/login', {
@@ -730,6 +731,23 @@
     localStorage.setItem('tz_api_base', newUrl);
     updateServerDisplay();
     closeServerConfigModal();
+    if (wsConn) {
+      const oldSock = wsConn;
+      wsConn = null;
+      oldSock.onclose = null;
+      oldSock.onerror = null;
+      oldSock.onmessage = null;
+      try { oldSock.close(); } catch {}
+    }
+    apiFetch('/api/v1/feed-health')
+      .then((fh) => {
+        if (fh) state.feedHealth = fh;
+        connectRealtimeWebSocket();
+        if (state.chartOpen) updateChartCountdownUI();
+      })
+      .catch(() => {
+        connectRealtimeWebSocket();
+      });
   }
 
   async function probeAndSelectServer() {
@@ -756,8 +774,10 @@
     updateServerDisplay();
   }
 
-  function completeAuthenticatedSession(token, user, account, skipPinNow) {
-    const saved = saveSessionSecure({ token, user, account });
+  function completeAuthenticatedSession(token, user, account) {
+    // Strip any legacy PIN/biometric flags from persisted user session so upgrades open directly
+    const cleanUser = Object.assign({}, user || {}, { hasPin: false, biometricEnabled: false });
+    const saved = saveSessionSecure({ token, user: cleanUser, account });
     if (!saved) {
       showAuthError('Secure session storage failed on this device. Please sign in again.');
       clearSessionSecure();
@@ -765,104 +785,16 @@
       return false;
     }
     state.token = token;
-    state.user = user;
+    state.user = cleanUser;
     state.account = account;
-
-    if (user.hasPin && !skipPinNow) {
-      state.pinUnlocked = false;
-      state.pinBuffer = '';
-      renderPinUnlockScreen();
-      showTopScreen('screen-pin');
-    } else {
-      state.pinUnlocked = true;
-      enterMainWorkspace();
-    }
+    enterMainWorkspace();
     return true;
-  }
-
-  function renderPinUnlockScreen() {
-    const name = state.user?.name || 'Trader';
-    document.getElementById('pin-user-avatar').textContent = name.charAt(0).toUpperCase();
-    document.getElementById('pin-user-greeting').textContent = `Welcome back, ${name}`;
-    document.getElementById('pin-user-email').textContent = state.user?.email || '';
-    document.getElementById('pin-error-text').textContent = '';
-    updatePinBoxesUI();
-  }
-
-  function updatePinBoxesUI() {
-    for (let i = 0; i < 4; i++) {
-      const box = document.getElementById(`pin-box-${i}`);
-      if (i < state.pinBuffer.length) {
-        box.textContent = '●';
-        box.classList.add('filled');
-      } else {
-        box.textContent = '';
-        box.classList.remove('filled');
-      }
-    }
-  }
-
-  async function pressPinDigit(digit) {
-    if (state.pinBuffer.length >= 4) return;
-    state.pinBuffer += digit;
-    updatePinBoxesUI();
-    if (state.pinBuffer.length === 4) {
-      try {
-        const res = await apiFetch('/api/v1/auth/pin/verify', {
-          method: 'POST',
-          body: JSON.stringify({ pin: state.pinBuffer }),
-        });
-        if (res.verified) {
-          state.pinUnlocked = true;
-          enterMainWorkspace();
-        }
-      } catch (err) {
-        document.getElementById('pin-error-text').textContent = 'Incorrect PIN. Please try again.';
-        state.pinBuffer = '';
-        updatePinBoxesUI();
-      }
-    }
-  }
-
-  function pressPinBackspace() {
-    state.pinBuffer = state.pinBuffer.slice(0, -1);
-    updatePinBoxesUI();
-  }
-
-  function triggerBiometricUnlock() {
-    if (window.TradingzoneNative && typeof window.TradingzoneNative.triggerDeviceBiometricPrompt === 'function') {
-      window.TradingzoneNative.triggerDeviceBiometricPrompt(
-        'Unlock Tradingzone',
-        'Verify your fingerprint or device credential to access your paper trading account'
-      );
-    } else {
-      document.getElementById('pin-error-text').textContent =
-        'Enter your 4-digit Tradingzone PIN above (device biometric prompt requires Android hardware screen lock).';
-    }
-  }
-
-  window.onTradingzoneBiometricResult = function (success) {
-    if (success) {
-      state.pinUnlocked = true;
-      enterMainWorkspace();
-    } else {
-      document.getElementById('pin-error-text').textContent = 'Biometric unlock cancelled; please enter 4-digit PIN.';
-    }
-  };
-
-  function forgotPinRecovery() {
-    const email = state.user?.email || '';
-    signOut();
-    document.getElementById('auth-input-email').value = email;
-    toggleAuthMode('recover');
   }
 
   function signOut(optionalNotice) {
     state.token = null;
     state.user = null;
     state.account = null;
-    state.pinUnlocked = false;
-    state.pinBuffer = '';
     clearSessionSecure();
     if (wsConn) {
       try { wsConn.close(); } catch { }
@@ -897,9 +829,6 @@
     document.getElementById('prof-avatar-circle').textContent = initial;
     document.getElementById('prof-user-name').textContent = state.user.name || 'Trader';
     document.getElementById('prof-user-email').textContent = state.user.email || '';
-    document.getElementById('prof-pin-status-sub').textContent = state.user.hasPin
-      ? '4-Digit PIN Lock is ENABLED on this account'
-      : 'PIN Lock is currently OFF • Tap to set a 4-digit PIN';
   }
 
   async function refreshFeedHealth() {
@@ -1939,6 +1868,24 @@
     document.getElementById('chart-sym-title').textContent = inst.symbol;
     document.getElementById('chart-seg-badge').textContent = `${inst.exchange} • ${inst.instrumentType}`;
 
+    // Manage active chart WebSocket subscription without duplicates
+    if (state.activeChartSubId && state.activeChartSubId !== inst.globalId) {
+      const keepPrev =
+        (state.selectedIndices || []).includes(state.activeChartSubId) ||
+        (state.watchlists?.[0]?.instruments || []).includes(state.activeChartSubId) ||
+        (state.positionsData?.positions || []).some(
+          (p) => p.globalInstrumentId === state.activeChartSubId && Math.abs(p.quantity || 0) > 0
+        );
+      if (!keepPrev && wsConn && wsConn.readyState === WebSocket.OPEN) {
+        try {
+          wsConn.send(JSON.stringify({ action: 'UNSUBSCRIBE', type: 'UNSUBSCRIBE', symbols: [state.activeChartSubId] }));
+        } catch {}
+      }
+    }
+    state.activeChartSubId = inst.globalId;
+    sendWsSubscribe([inst.globalId]);
+    startChartCountdownTimer();
+
     renderChartBottomTradeBar(inst);
     initLightweightChartInstance();
     await Promise.all([loadChartCandlesInitial(), loadUserDrawingsForActiveInstrument()]);
@@ -1946,6 +1893,7 @@
 
   function closeChartWorkspace() {
     state.chartOpen = false;
+    stopChartCountdownTimer();
     document.getElementById('screen-chart').classList.remove('active');
     if (window.TradingzoneNative && typeof window.TradingzoneNative.setSystemBarTheme === 'function') {
       window.TradingzoneNative.setSystemBarTheme(true, '#FFFFFF');
@@ -2119,7 +2067,12 @@
       }
       if (data.latestQuote) {
         updateChartHeaderQuote(data.latestQuote);
+        // Reconcile initial snapshot against the latest loaded candle if snapshot is at or after the latest candle
+        if (state.candles.length > 0 && Number(data.latestQuote.ltp) > 0) {
+          reconcileCandleWithTick(data.latestQuote, true);
+        }
       }
+      updateChartCountdownUI();
       recalculateAndRenderIndicators();
       renderDrawingsSvgOverlay();
     } catch { }
@@ -2187,6 +2140,7 @@
     document.querySelectorAll('.chart-controls-strip .tf-pill').forEach((b) => {
       b.classList.toggle('active', b.getAttribute('data-tf') === tf);
     });
+    updateChartCountdownUI();
     loadChartCandlesInitial();
   }
 
@@ -3071,34 +3025,6 @@
     }
   }
 
-  async function promptSetupPin() {
-    const pin = prompt('Enter a new 4-digit Tradingzone PIN (or leave blank to disable PIN lock):');
-    if (pin === null) return;
-    if (pin.trim() === '') {
-      await apiFetch('/api/v1/auth/pin/clear', { method: 'POST', body: '{}' });
-      state.user.hasPin = false;
-      saveSessionSecure({ token: state.token, user: state.user, account: state.account });
-      updateProfileHeaderUI();
-      return;
-    }
-    if (!/^\d{4}$/.test(pin.trim())) {
-      alert('PIN must be exactly 4 numeric digits.');
-      return;
-    }
-    try {
-      const res = await apiFetch('/api/v1/auth/pin/setup', {
-        method: 'POST',
-        body: JSON.stringify({ pin: pin.trim(), biometricEnabled: true }),
-      });
-      state.user.hasPin = res.hasPin;
-      saveSessionSecure({ token: state.token, user: state.user, account: state.account });
-      updateProfileHeaderUI();
-      alert('4-Digit Tradingzone PIN enabled!');
-    } catch (err) {
-      alert(err.message);
-    }
-  }
-
   async function loadAndShowLedger() {
     const box = document.getElementById('prof-ledger-box');
     if (box.style.display === 'block') {
@@ -3148,10 +3074,211 @@
   }
 
   // =========================================================================
-  // 10. REALTIME WEBSOCKET TICK CONSUMPTION (WITH AUTO-RECONNECT FOR CELLULAR/WIFI)
+  // 10. REALTIME WEBSOCKET TICK CONSUMPTION, CANDLE AGGREGATION & COUNTDOWN
   // =========================================================================
   let wsReconnectTimer = null;
   let wsReconnectAttempts = 0;
+  let chartCountdownTimer = null;
+
+  function getTimeframeIntervalSec(tf) {
+    switch (tf) {
+      case '1m': return 60;
+      case '3m': return 180;
+      case '5m': return 300;
+      case '15m': return 900;
+      case '30m': return 1800;
+      case '1h': return 3600;
+      case '1D': return 86400;
+      default: return 300;
+    }
+  }
+
+  /**
+   * Computes the candle bucket start timestamp (in UTC seconds) for a given epoch ms and timeframe,
+   * aligned to the existing historical series anchor or IST market open (09:15 IST = UTC+03:45 = 13500s offset).
+   */
+  function computeCandleBucketSec(epochMs, tf, referenceBarTimeSec) {
+    const intervalSec = getTimeframeIntervalSec(tf);
+    const tickSec = Math.floor(Number(epochMs || Date.now()) / 1000);
+    if (tf === '1D') {
+      // Align daily bar to IST midnight (UTC + 19800s) or match referenceBarTimeSec if same IST date
+      const istOffsetSec = 19800;
+      const tickIstDay = Math.floor((tickSec + istOffsetSec) / 86400);
+      if (referenceBarTimeSec) {
+        const refIstDay = Math.floor((referenceBarTimeSec + istOffsetSec) / 86400);
+        if (tickIstDay === refIstDay) {
+          return referenceBarTimeSec;
+        }
+        const dayDiff = tickIstDay - refIstDay;
+        return referenceBarTimeSec + dayDiff * 86400;
+      }
+      return tickIstDay * 86400 - istOffsetSec;
+    }
+
+    if (referenceBarTimeSec && referenceBarTimeSec > 0) {
+      const anchorMod = ((referenceBarTimeSec % intervalSec) + intervalSec) % intervalSec;
+      const shifted = tickSec - anchorMod;
+      return Math.floor(shifted / intervalSec) * intervalSec + anchorMod;
+    }
+
+    // Standard NSE/BSE 09:15 IST alignment (09:15 IST is 03:45 UTC = 13500 seconds from UTC midnight)
+    const istAnchorMod = 13500 % intervalSec;
+    return Math.floor((tickSec - istAnchorMod) / intervalSec) * intervalSec + istAnchorMod;
+  }
+
+  function isExchangeOpenNowIST(exchange) {
+    const now = new Date();
+    // Convert to IST (UTC + 5:30)
+    const istMs = now.getTime() + 19800 * 1000;
+    const istDate = new Date(istMs);
+    const day = istDate.getUTCDay(); // 0 = Sun, 6 = Sat
+    if (day === 0 || day === 6) return false;
+    const mins = istDate.getUTCHours() * 60 + istDate.getUTCMinutes();
+    if (exchange === 'MCX') {
+      // MCX 09:00 to 23:55 IST
+      return mins >= 540 && mins <= 1435;
+    }
+    // NSE / BSE / NFO / BFO: 09:15 to 15:30 IST
+    return mins >= 555 && mins <= 930;
+  }
+
+  function formatCountdownRemaining(remSec) {
+    const s = Math.max(0, Math.floor(remSec));
+    const hrs = Math.floor(s / 3600);
+    const mins = Math.floor((s % 3600) / 60);
+    const secs = s % 60;
+    const pad = (n) => (n < 10 ? '0' + n : String(n));
+    if (hrs > 0) {
+      return `${pad(hrs)}:${pad(mins)}:${pad(secs)}`;
+    }
+    return `${pad(mins)}:${pad(secs)}`;
+  }
+
+  function updateChartCountdownUI() {
+    if (!state.chartOpen) return;
+    const pill = document.getElementById('chart-candle-countdown');
+    if (!pill) return;
+
+    const inst = state.activeInstrument;
+    const exch = inst?.exchange || 'NSE';
+    const tf = state.activeTimeframe || '5m';
+    const intervalSec = getTimeframeIntervalSec(tf);
+    const nowMs = Date.now();
+    const nowSec = Math.floor(nowMs / 1000);
+    const refTime = state.candles.length > 0 ? state.candles[state.candles.length - 1].time : null;
+
+    let nextBoundarySec;
+    if (tf === '1D') {
+      // Next market close (15:30 IST for NSE/BSE, 23:55 IST for MCX) or next day boundary
+      const istOffsetSec = 19800;
+      const istNowSec = nowSec + istOffsetSec;
+      const startOfIstDaySec = Math.floor(istNowSec / 86400) * 86400 - istOffsetSec;
+      const closeOffsetSec = exch === 'MCX' ? (23 * 3600 + 55 * 60) : (15 * 3600 + 30 * 60);
+      const todayCloseSec = startOfIstDaySec + closeOffsetSec;
+      nextBoundarySec = nowSec < todayCloseSec ? todayCloseSec : startOfIstDaySec + 86400;
+    } else {
+      const currentBucketSec = computeCandleBucketSec(nowMs, tf, refTime);
+      nextBoundarySec = currentBucketSec + intervalSec;
+    }
+
+    const remSec = Math.max(0, nextBoundarySec - nowSec);
+    const timeStr = formatCountdownRemaining(remSec);
+
+    const isLiveOrDemo = Boolean(
+      state.feedHealth?.activeProvider?.status === 'LIVE' ||
+      state.feedHealth?.activeProvider?.isSimulated ||
+      state.feedHealth?.activeProvider?.source === 'DEMO'
+    );
+    const mktOpen = isLiveOrDemo || (state.feedHealth?.marketSession?.isMarketOpen !== undefined
+      ? Boolean(state.feedHealth.marketSession.isMarketOpen) || isExchangeOpenNowIST(exch)
+      : isExchangeOpenNowIST(exch));
+
+    pill.classList.remove('state-closed', 'state-warn', 'state-err');
+
+    if (!wsConn || wsConn.readyState !== WebSocket.OPEN) {
+      pill.classList.add('state-err');
+      pill.textContent = `⚡ Disconnected • ${timeStr}`;
+      return;
+    }
+
+    if (!mktOpen || state.feedHealth?.activeProvider?.status === 'MARKET_CLOSED') {
+      pill.classList.add('state-closed');
+      pill.textContent = `⏸ Market Closed • ${tf} (${timeStr})`;
+      return;
+    }
+
+    const lastInstTickMs = inst?.globalId ? (state.lastTickTimestamps[inst.globalId] || 0) : 0;
+    const tickAgeMs = lastInstTickMs > 0 ? (nowMs - lastInstTickMs) : (state.lastAnyTickReceiveMs > 0 ? nowMs - state.lastAnyTickReceiveMs : 0);
+    if (tickAgeMs > 20000) {
+      pill.classList.add('state-warn');
+      pill.textContent = `⚠ Stale Feed • ${timeStr}`;
+      return;
+    }
+
+    pill.textContent = `⏱ ${timeStr}`;
+  }
+
+  function startChartCountdownTimer() {
+    stopChartCountdownTimer();
+    updateChartCountdownUI();
+    chartCountdownTimer = setInterval(() => {
+      updateChartCountdownUI();
+    }, 1000);
+  }
+
+  function stopChartCountdownTimer() {
+    if (chartCountdownTimer) {
+      clearInterval(chartCountdownTimer);
+      chartCountdownTimer = null;
+    }
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      if (state.chartOpen) {
+        updateChartCountdownUI();
+      }
+      if (!wsConn || wsConn.readyState !== WebSocket.OPEN) {
+        connectRealtimeWebSocket();
+      }
+    }
+  });
+
+  function collectDesiredSubscriptions() {
+    const subs = new Set(
+      (state.selectedIndices && state.selectedIndices.length)
+        ? state.selectedIndices
+        : ['NSE:NIFTY 50:99926000', 'NSE:BANKNIFTY:99926009', 'BSE:SENSEX:99919000']
+    );
+    if (state.chartOpen && state.activeInstrument?.globalId) {
+      subs.add(state.activeInstrument.globalId);
+    }
+    if (state.positionsData?.positions) {
+      for (const p of state.positionsData.positions) {
+        if (p.globalInstrumentId && Math.abs(p.quantity || 0) > 0) {
+          subs.add(p.globalInstrumentId);
+        }
+      }
+    }
+    if (state.watchlists?.[0]?.instruments) {
+      for (const gid of state.watchlists[0].instruments) {
+        if (gid) subs.add(gid);
+      }
+    }
+    return Array.from(subs);
+  }
+
+  function sendWsSubscribe(symbols) {
+    if (!Array.isArray(symbols) || symbols.length === 0) return;
+    if (!wsConn || wsConn.readyState !== WebSocket.OPEN) return;
+    try {
+      wsConn.send(JSON.stringify({
+        action: 'SUBSCRIBE',
+        type: 'SUBSCRIBE',
+        symbols,
+      }));
+    } catch {}
+  }
 
   function scheduleWsReconnect() {
     if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
@@ -3169,64 +3296,149 @@
     }
     try {
       const wsUrl = API_BASE.replace(/^http/, 'ws') + '/ws';
-      wsConn = new WebSocket(wsUrl);
+      const sock = new WebSocket(wsUrl);
+      wsConn = sock;
 
-      wsConn.onopen = () => {
+      sock.onopen = () => {
+        if (wsConn !== sock) return;
         wsReconnectAttempts = 0;
+        state.wsConnected = true;
         if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
         if (state.token) {
           try {
-            wsConn.send(JSON.stringify({ action: 'AUTH', token: state.token }));
+            sock.send(JSON.stringify({ action: 'AUTH', type: 'AUTH', token: state.token }));
           } catch { }
         }
-        try {
-          const subs = (state.selectedIndices && state.selectedIndices.length)
-            ? state.selectedIndices
-            : ['NSE:NIFTY 50:99926000', 'NSE:BANKNIFTY:99926009', 'BSE:SENSEX:99919000'];
-          wsConn.send(JSON.stringify({ type: 'SUBSCRIBE', symbols: subs }));
-        } catch { }
+        sendWsSubscribe(collectDesiredSubscriptions());
+        if (state.chartOpen) {
+          updateChartCountdownUI();
+        }
       };
 
-      wsConn.onmessage = (ev) => {
+      sock.onmessage = (ev) => {
+        if (wsConn !== sock) return;
         try {
           const msg = JSON.parse(ev.data);
-          if (msg.type === 'QUOTE_TICK' && msg.data) {
+          if (msg.type === 'AUTH_SUCCESS') {
+            // Re-send desired subscriptions once authenticated so Pro-tier instruments are authorized
+            sendWsSubscribe(collectDesiredSubscriptions());
+          } else if (msg.type === 'QUOTE_TICK' && msg.data) {
             handleIncomingQuoteTick(msg.data);
           }
         } catch { }
       };
 
-      wsConn.onclose = () => {
+      sock.onclose = () => {
+        if (wsConn !== sock) return;
         wsConn = null;
+        state.wsConnected = false;
+        if (state.chartOpen) {
+          updateChartCountdownUI();
+        }
         scheduleWsReconnect();
       };
 
-      wsConn.onerror = () => {
-        if (wsConn) {
-          try { wsConn.close(); } catch { }
-        }
+      sock.onerror = () => {
+        if (wsConn !== sock) return;
+        try { sock.close(); } catch { }
       };
     } catch {
       scheduleWsReconnect();
     }
   }
 
+  /**
+   * Reconciles a live tick or initial quote snapshot with the active chart's candle series:
+   * - Updates close, high, low while preserving open when in the same interval bucket
+   * - Starts a new candle at the exact interval boundary when a valid tick for a newer interval arrives
+   * - Preserves user zoom, scroll position, and drawings
+   */
+  function reconcileCandleWithTick(quote, isInitialSnapshot = false) {
+    if (!candleSeries || state.candles.length === 0 || state.replayMode) return;
+    const ltp = Number(quote.ltp);
+    if (!ltp || isNaN(ltp) || ltp <= 0) return;
+
+    const tf = state.activeTimeframe || '5m';
+    const lastBar = state.candles[state.candles.length - 1];
+    const tickTimeMs = Number(quote.providerTimestamp || quote.receiveTimestamp || quote.timestamp || Date.now());
+    const bucketSec = computeCandleBucketSec(tickTimeMs, tf, lastBar.time);
+
+    // Compute volume delta from cumulative day volume if available
+    let volDelta = 0;
+    const cumVol = Number(quote.volume);
+    const gid = quote.globalId;
+    if (!isNaN(cumVol) && cumVol >= 0 && gid) {
+      const prevCum = state.lastCumulativeVolume[gid];
+      if (prevCum !== undefined && cumVol >= prevCum) {
+        volDelta = cumVol - prevCum;
+      }
+      state.lastCumulativeVolume[gid] = cumVol;
+    }
+
+    // Do not allow an older historical snapshot to roll back or corrupt a newer candle
+    if (bucketSec < lastBar.time) {
+      return;
+    }
+
+    if (bucketSec === lastBar.time || isInitialSnapshot) {
+      const updatedBar = {
+        time: lastBar.time,
+        open: lastBar.open,
+        high: Math.max(lastBar.high, ltp),
+        low: Math.min(lastBar.low, ltp),
+        close: ltp,
+        volume: Number(lastBar.volume || 0) + volDelta,
+      };
+      state.candles[state.candles.length - 1] = updatedBar;
+      candleSeries.update(updatedBar);
+      const legendEl = document.getElementById('chart-ohlc-legend');
+      if (legendEl) {
+        legendEl.textContent =
+          `O ${fmtNum(updatedBar.open)}  H ${fmtNum(updatedBar.high)}  L ${fmtNum(updatedBar.low)}  C ${fmtNum(updatedBar.close)}`;
+      }
+    } else if (bucketSec > lastBar.time) {
+      // Genuine tick in a new timeframe interval -> start a new candle at the exact boundary
+      const newBar = {
+        time: bucketSec,
+        open: ltp,
+        high: ltp,
+        low: ltp,
+        close: ltp,
+        volume: volDelta,
+      };
+      state.candles.push(newBar);
+      candleSeries.update(newBar);
+      const legendEl = document.getElementById('chart-ohlc-legend');
+      if (legendEl) {
+        legendEl.textContent =
+          `O ${fmtNum(newBar.open)}  H ${fmtNum(newBar.high)}  L ${fmtNum(newBar.low)}  C ${fmtNum(newBar.close)}`;
+      }
+      const statsEl = document.getElementById('chart-candle-stats');
+      if (statsEl) {
+        statsEl.textContent = `${state.candles.length} bars`;
+      }
+      renderDrawingsSvgOverlay();
+    }
+  }
+
   function handleIncomingQuoteTick(quote) {
     if (!quote || !quote.globalId) return;
     state.lastTickTimestamps = state.lastTickTimestamps || {};
-    const quoteTime = Number(quote.timestamp) || 0;
+    const quoteTime = Number(quote.providerTimestamp || quote.receiveTimestamp || quote.timestamp || Date.now());
     const lastTime = state.lastTickTimestamps[quote.globalId] || 0;
     if (quoteTime && lastTime && quoteTime < lastTime) {
-      // Discard duplicate or out-of-order tick
+      // Discard out-of-order tick for this specific instrument only
       return;
     }
     if (quoteTime) {
       state.lastTickTimestamps[quote.globalId] = quoteTime;
     }
-    const latencyMs = quote.timestamp ? Math.max(0, Date.now() - Number(quote.timestamp)) : null;
+    state.lastAnyTickReceiveMs = Date.now();
+
+    const latencyMs = quoteTime ? Math.max(0, Date.now() - quoteTime) : null;
     const latencyPill = document.getElementById('header-latency-pill');
     if (latencyPill && latencyMs !== null) {
-      latencyPill.textContent = `${latencyMs}ms`;
+      latencyPill.textContent = `${ Math.min(latencyMs, 999) }ms`;
       latencyPill.style.display = 'inline-block';
     }
 
@@ -3261,39 +3473,39 @@
     });
 
     // Authoritative Live P&L streaming: update open positions live even when chart is closed
-    if (state.positionsData && state.positionsData.positions) {
-      let pnlChanged = false;
-      state.positionsData.positions.forEach((pos) => {
-        if (pos.globalInstrumentId === quote.globalId && pos.quantity !== 0) {
-          const entryPrice = Number(pos.averageEntryPriceINR || 0);
-          const currentPrice = Number(quote.ltp || 0);
-          const mult = pos.side === 'BUY' ? 1 : -1;
-          pos.currentLtpINR = currentPrice;
-          pos.unrealizedPnlINR = Math.round((currentPrice - entryPrice) * pos.quantity * mult * 100) / 100;
-          pnlChanged = true;
-        }
-      });
-      if (pnlChanged) {
+    if (state.positionsData) {
+      const updatePosList = (arr) => {
+        if (!Array.isArray(arr)) return false;
+        let changed = false;
+        arr.forEach((pos) => {
+          if (pos.globalInstrumentId === quote.globalId && pos.quantity !== 0 && Number(quote.ltp) > 0) {
+            const entryPrice = Number(pos.averageEntryPrice ?? pos.averageEntryPriceINR ?? 0);
+            const currentPrice = Number(quote.ltp);
+            const diffPerUnit = pos.quantity > 0 ? currentPrice - entryPrice : entryPrice - currentPrice;
+            pos.currentPrice = currentPrice;
+            pos.currentLtpINR = currentPrice;
+            pos.unrealizedPnlINR = Math.round(diffPerUnit * Math.abs(pos.quantity) * 100) / 100;
+            changed = true;
+          }
+        });
+        return changed;
+      };
+
+      const c1 = updatePosList(state.positionsData.positions);
+      const c2 = updatePosList(state.positionsData.activePositions);
+      const c3 = updatePosList(state.positionsData.holdings);
+      if (c1 || c2 || c3) {
         renderAccountBalancesUI();
+        if (state.mainTab === 'portfolio') {
+          renderPortfolioTab();
+        }
       }
     }
 
     if (state.chartOpen && state.activeInstrument && state.activeInstrument.globalId === quote.globalId) {
       updateChartHeaderQuote(quote);
-      // Only update current timeframe candle's high/low/close from live LTP; never inject daily quote OHLC into intraday series!
-      if (candleSeries && state.candles.length > 0 && state.activeTimeframe !== '1D') {
-        const lastBar = state.candles[state.candles.length - 1];
-        const updatedBar = {
-          time: lastBar.time,
-          open: lastBar.open,
-          high: Math.max(lastBar.high, quote.ltp),
-          low: Math.min(lastBar.low, quote.ltp),
-          close: quote.ltp,
-          volume: lastBar.volume,
-        };
-        state.candles[state.candles.length - 1] = updatedBar;
-        candleSeries.update(updatedBar);
-      }
+      reconcileCandleWithTick(quote, false);
+      updateChartCountdownUI();
     }
   }
 
@@ -3499,10 +3711,6 @@
     toggleAuthMode,
     submitAuthForm,
     handleGoogleSignIn,
-    pressPinDigit,
-    pressPinBackspace,
-    triggerBiometricUnlock,
-    forgotPinRecovery,
     signOut,
     switchMainTab,
     setExploreCategory,
@@ -3582,7 +3790,6 @@
     showBrandedAlert,
     showConfirmSheet,
     closeConfirmSheet,
-    promptSetupPin,
     loadAndShowLedger,
     openAdPrivacyOptions,
     togglePasswordVisibility,
@@ -3597,7 +3804,7 @@
     probeAndSelectServer();
     const saved = readSessionSecure();
     if (saved && saved.token && saved.user) {
-      completeAuthenticatedSession(saved.token, saved.user, saved.account, false);
+      completeAuthenticatedSession(saved.token, saved.user, saved.account);
     } else {
       showTopScreen('screen-auth');
     }

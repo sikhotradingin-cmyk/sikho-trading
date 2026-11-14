@@ -453,6 +453,9 @@ export class UpstoxAdapter implements IMarketDataProvider {
   private lastTickTime = 0;
   private lastErrorReason: string | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
+  private wsReconnectTimer: NodeJS.Timeout | null = null;
+  private wsReconnectAttempts = 0;
+  private isDisposed = false;
   private availableFilters = {
     exchanges: ['NSE', 'NFO', 'BSE', 'BFO'],
     segments: ['INDEX_SPOT', 'EQUITY_STOCK', 'FUTIDX', 'OPTIDX', 'FUTSTK', 'OPTSTK'],
@@ -493,7 +496,7 @@ export class UpstoxAdapter implements IMarketDataProvider {
     if (this.hasConfiguredToken() && !this.pollTimer) {
       this.pollTimer = setInterval(() => {
         this.pollSubscribedIntradayQuotes().catch(() => { });
-      }, 5000);
+      }, 2500);
     }
   }
 
@@ -1312,19 +1315,20 @@ export class UpstoxAdapter implements IMarketDataProvider {
 
       if (!opts.before) {
         const existingQuote = this.quotes.get(inst.globalId);
-        if (!existingQuote) {
+        const latestTimeMs = latestBar.time * 1000;
+        if (!existingQuote || latestTimeMs >= existingQuote.providerTimestamp) {
           this.quotes.set(inst.globalId, {
             globalId: inst.globalId,
             token: inst.token,
             ltp: latestBar.close,
-            open: latestBar.open,
-            high: latestBar.high,
-            low: latestBar.low,
-            close: prevSessionClose ?? latestBar.open,
+            open: existingQuote?.open ?? latestBar.open,
+            high: existingQuote ? Math.max(existingQuote.high, latestBar.high) : latestBar.high,
+            low: existingQuote ? Math.min(existingQuote.low, latestBar.low) : latestBar.low,
+            close: prevSessionClose ?? existingQuote?.close ?? latestBar.open,
             bidPrice: Number((latestBar.close - inst.tickSize).toFixed(2)),
             askPrice: Number((latestBar.close + inst.tickSize).toFixed(2)),
             volume: latestBar.volume,
-            providerTimestamp: latestBar.time * 1000,
+            providerTimestamp: latestTimeMs,
             receiveTimestamp: Date.now(),
             source: 'UPSTOX',
             isSimulated: false,
@@ -1409,8 +1413,23 @@ export class UpstoxAdapter implements IMarketDataProvider {
     return cached || null;
   }
 
+  private scheduleWebSocketReconnect(): void {
+    if (this.isDisposed || !this.hasConfiguredToken()) return;
+    if (this.wsReconnectTimer) {
+      clearTimeout(this.wsReconnectTimer);
+    }
+    const delayMs = Math.min(30000, 2000 * Math.pow(1.6, Math.min(this.wsReconnectAttempts, 6)));
+    this.wsReconnectAttempts++;
+    this.wsReconnectTimer = setTimeout(() => {
+      this.wsReconnectTimer = null;
+      if (!this.isDisposed && !this.isConnected) {
+        this.connectWebSocket().catch(() => {});
+      }
+    }, delayMs);
+  }
+
   private async connectWebSocket(): Promise<void> {
-    if (!this.hasConfiguredToken()) return;
+    if (!this.hasConfiguredToken() || this.isDisposed) return;
     try {
       const authRes = await fetch('https://api.upstox.com/v3/feed/market-data-feed/authorize', {
         headers: this.getAuthHeaders(),
@@ -1419,6 +1438,7 @@ export class UpstoxAdapter implements IMarketDataProvider {
         this.isConnected = false;
         this.isTokenVerified = false;
         this.lastErrorReason = `Upstox Market Data Feed V3 authorization failed (HTTP ${authRes.status}). Verify UPSTOX_ANALYTICS_TOKEN in packages/backend/.env.`;
+        this.scheduleWebSocketReconnect();
         return;
       }
       const authJson = (await authRes.json()) as any;
@@ -1426,14 +1446,22 @@ export class UpstoxAdapter implements IMarketDataProvider {
       if (!wsUrl) {
         this.isConnected = false;
         this.lastErrorReason = 'Upstox authorize endpoint did not return an authorizedRedirectUri.';
+        this.scheduleWebSocketReconnect();
         return;
       }
 
       this.isTokenVerified = true;
+      if (this.ws) {
+        try {
+          this.ws.removeAllListeners();
+          this.ws.close();
+        } catch {}
+      }
       this.ws = new WebSocket(wsUrl, { followRedirects: true });
 
       this.ws.on('open', () => {
         this.isConnected = true;
+        this.wsReconnectAttempts = 0;
         this.lastErrorReason = null;
         this.sendActiveWebSocketSubscriptions();
       });
@@ -1450,10 +1478,12 @@ export class UpstoxAdapter implements IMarketDataProvider {
 
       this.ws.on('close', () => {
         this.isConnected = false;
+        this.scheduleWebSocketReconnect();
       });
     } catch (err: any) {
       this.isConnected = false;
       this.lastErrorReason = `Upstox WebSocket connection error: ${err?.message || 'Unknown'}`;
+      this.scheduleWebSocketReconnect();
     }
   }
 
@@ -1510,16 +1540,24 @@ export class UpstoxAdapter implements IMarketDataProvider {
   }
 
   private async pollSubscribedIntradayQuotes(): Promise<void> {
-    if (this.isConnected) return; // WebSocket is streaming directly
+    if (this.isConnected || this.isDisposed) return; // WebSocket is streaming directly
     const activeIds = Array.from(this.listeners.keys()).filter(
       (id) => (this.listeners.get(id)?.size || 0) > 0
     );
-    for (const globalId of activeIds.slice(0, 8)) {
-      const q = await this.getQuote(globalId);
-      if (q) {
-        this.lastTickTime = q.receiveTimestamp;
-        const subs = this.listeners.get(globalId);
-        if (subs) subs.forEach((cb) => cb(q));
+    if (activeIds.length === 0) return;
+
+    // Poll in reverse registration order so newly subscribed chart/position instruments get highest priority
+    const prioritizedIds = [...activeIds].reverse().slice(0, 16);
+    for (const globalId of prioritizedIds) {
+      try {
+        const q = await this.getQuote(globalId);
+        if (q) {
+          this.lastTickTime = q.receiveTimestamp;
+          const subs = this.listeners.get(globalId);
+          if (subs) subs.forEach((cb) => cb(q));
+        }
+      } catch {
+        // Ignore individual quote errors during background polling
       }
     }
   }
@@ -1543,6 +1581,15 @@ export class UpstoxAdapter implements IMarketDataProvider {
       };
       this.ws.send(Buffer.from(JSON.stringify(payload), 'utf8'));
     }
+
+    // Immediately deliver cached or freshly fetched snapshot so newly subscribed charts/positions reconcile right away
+    this.getQuote(key)
+      .then((snap) => {
+        if (snap && this.listeners.get(key)?.has(listener)) {
+          listener(snap);
+        }
+      })
+      .catch(() => {});
 
     return () => {
       this.listeners.get(key)?.delete(listener);
@@ -1627,12 +1674,20 @@ export class UpstoxAdapter implements IMarketDataProvider {
   }
 
   public async dispose(): Promise<void> {
+    this.isDisposed = true;
+    if (this.wsReconnectTimer) {
+      clearTimeout(this.wsReconnectTimer);
+      this.wsReconnectTimer = null;
+    }
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
     }
     if (this.ws) {
-      this.ws.close();
+      try {
+        this.ws.removeAllListeners();
+        this.ws.close();
+      } catch {}
       this.ws = null;
     }
     this.isConnected = false;

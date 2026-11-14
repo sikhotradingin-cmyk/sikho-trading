@@ -7,5 +7,6 @@
     <color name="tradingzone_red">#EF4444</color>
     <color name="tradingzone_slate_900">#0F172A</color>
     <color name="tradingzone_slate_50">#F8FAFC</color>
+    <color name="sikho_icon_bg">#02070E</color>
     <color name="white">#FFFFFFFF</color>
 </resources>

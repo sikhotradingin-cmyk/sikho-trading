@@ -1,8 +1,6 @@
 package com.indianpapertrading
 
 import android.annotation.SuppressLint
-import android.app.Activity
-import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -23,7 +21,6 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import androidx.activity.OnBackPressedCallback
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -77,20 +74,6 @@ class MainActivity : AppCompatActivity() {
             }
         } catch (e: Exception) {
             false
-        }
-    }
-
-    private val credentialUnlockLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        val success = result.resultCode == Activity.RESULT_OK
-        if (::webView.isInitialized) {
-            webView.post {
-                webView.evaluateJavascript(
-                    "if (window.onTradingzoneBiometricResult) window.onTradingzoneBiometricResult($success);",
-                    null
-                )
-            }
         }
     }
 
@@ -226,36 +209,6 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun getDefaultServerUrl(): String {
             return BuildConfig.DEFAULT_SERVER_URL
-        }
-
-        @JavascriptInterface
-        fun isDeviceSecure(): Boolean {
-            val km = context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
-            return km?.isDeviceSecure == true
-        }
-
-        @JavascriptInterface
-        fun triggerDeviceBiometricPrompt(title: String, description: String) {
-            if (!verifyCallerIsTrusted()) return
-            runOnUiThread {
-                val km = context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
-                if (km != null && km.isDeviceSecure) {
-                    @Suppress("DEPRECATION")
-                    val intent: Intent? = km.createConfirmDeviceCredentialIntent(title, description)
-                    if (intent != null) {
-                        credentialUnlockLauncher.launch(intent)
-                        return@runOnUiThread
-                    }
-                }
-                if (::webView.isInitialized) {
-                    webView.post {
-                        webView.evaluateJavascript(
-                            "if (window.onTradingzoneBiometricResult) window.onTradingzoneBiometricResult(false);",
-                            null
-                        )
-                    }
-                }
-            }
         }
 
         /**
