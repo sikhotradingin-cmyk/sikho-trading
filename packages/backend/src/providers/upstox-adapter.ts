@@ -460,6 +460,8 @@ export class UpstoxAdapter implements IMarketDataProvider {
   private lastErrorReason: string | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
   private wsReconnectTimer: NodeJS.Timeout | null = null;
+  private wsHeartbeatTimer: NodeJS.Timeout | null = null;
+  private lastPongAt = 0;
   private wsReconnectAttempts = 0;
   private isDisposed = false;
   private availableFilters = {
@@ -1323,6 +1325,9 @@ export class UpstoxAdapter implements IMarketDataProvider {
         const existingQuote = this.quotes.get(inst.globalId);
         const latestTimeMs = latestBar.time * 1000;
         if (!existingQuote || latestTimeMs >= existingQuote.providerTimestamp) {
+          // Honest last-known snapshot derived from the latest provider candle. We deliberately do
+          // NOT synthesise a bid/ask spread from a candle close - that would look like an
+          // executable live book. Only ltp/OHLC/volume are populated.
           this.quotes.set(inst.globalId, {
             globalId: inst.globalId,
             token: inst.token,
@@ -1331,8 +1336,6 @@ export class UpstoxAdapter implements IMarketDataProvider {
             high: existingQuote ? Math.max(existingQuote.high, latestBar.high) : latestBar.high,
             low: existingQuote ? Math.min(existingQuote.low, latestBar.low) : latestBar.low,
             close: prevSessionClose ?? existingQuote?.close ?? latestBar.open,
-            bidPrice: Number((latestBar.close - inst.tickSize).toFixed(2)),
-            askPrice: Number((latestBar.close + inst.tickSize).toFixed(2)),
             volume: latestBar.volume,
             providerTimestamp: latestTimeMs,
             receiveTimestamp: Date.now(),
@@ -1463,16 +1466,24 @@ export class UpstoxAdapter implements IMarketDataProvider {
           this.ws.close();
         } catch {}
       }
+      this.clearWsHeartbeat();
       this.ws = new WebSocket(wsUrl, { followRedirects: true });
 
       this.ws.on('open', () => {
         this.isConnected = true;
         this.wsReconnectAttempts = 0;
         this.lastErrorReason = null;
+        this.lastPongAt = Date.now();
+        this.startWsHeartbeat();
         this.sendActiveWebSocketSubscriptions();
       });
 
+      this.ws.on('pong', () => {
+        this.lastPongAt = Date.now();
+      });
+
       this.ws.on('message', (data: Buffer) => {
+        this.lastPongAt = Date.now();
         const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as any);
         this.handleBinaryFeedPacket(buf);
       });
@@ -1484,12 +1495,44 @@ export class UpstoxAdapter implements IMarketDataProvider {
 
       this.ws.on('close', () => {
         this.isConnected = false;
+        this.clearWsHeartbeat();
         this.scheduleWebSocketReconnect();
       });
     } catch (err: any) {
       this.isConnected = false;
       this.lastErrorReason = `Upstox WebSocket connection error: ${err?.message || 'Unknown'}`;
       this.scheduleWebSocketReconnect();
+    }
+  }
+
+  /**
+   * Upstox (and mobile/NAT paths) silently drop half-open sockets. A heartbeat lets us notice a
+   * dead feed and reconnect instead of serving stale quotes until the next user action.
+   */
+  private startWsHeartbeat(): void {
+    this.clearWsHeartbeat();
+    this.wsHeartbeatTimer = setInterval(() => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+      const lastActivity = Math.max(this.lastPongAt, this.lastProviderEventAt);
+      if (Date.now() - lastActivity > 90000) {
+        this.lastErrorReason = 'Upstox WebSocket heartbeat timeout; reconnecting.';
+        this.isConnected = false;
+        try {
+          this.ws.terminate();
+        } catch {}
+        return;
+      }
+      try {
+        this.ws.ping();
+      } catch {}
+    }, 25000);
+    if (typeof this.wsHeartbeatTimer.unref === 'function') this.wsHeartbeatTimer.unref();
+  }
+
+  private clearWsHeartbeat(): void {
+    if (this.wsHeartbeatTimer) {
+      clearInterval(this.wsHeartbeatTimer);
+      this.wsHeartbeatTimer = null;
     }
   }
 
@@ -1721,6 +1764,7 @@ export class UpstoxAdapter implements IMarketDataProvider {
 
   public async dispose(): Promise<void> {
     this.isDisposed = true;
+    this.clearWsHeartbeat();
     if (this.wsReconnectTimer) {
       clearTimeout(this.wsReconnectTimer);
       this.wsReconnectTimer = null;

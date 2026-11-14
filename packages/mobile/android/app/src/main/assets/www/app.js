@@ -58,7 +58,9 @@
     wsConnected: false,
     lastAnyTickReceiveMs: 0,
     lastTickTimestamps: {},
+    lastTickClientReceiveMs: {},
     lastCumulativeVolume: {},
+    wsNeedsGapRecovery: false,
     activeChartSubId: null,
 
     // Active Chart State
@@ -189,6 +191,40 @@
     const pct = base > 0 ? (diff / base) * 100 : 0;
     const sign = diff > 0 ? '+' : '';
     return { diff, pct, sign };
+  }
+
+  function quoteTimestamp(q) {
+    return Number(q?.providerTimestamp || q?.receiveTimestamp || 0);
+  }
+
+  /**
+   * Returns the freshest known quote for an instrument. A REST refresh that comes back with a
+   * null/partial quote must never blank a price that is already streaming.
+   */
+  function pickQuote(inst) {
+    if (!inst) return null;
+    const live = inst.globalId ? state.quotesMap?.get(inst.globalId) : null;
+    const rest = inst.latestQuote || null;
+    const liveOk = live && Number(live.ltp) > 0;
+    const restOk = rest && Number(rest.ltp) > 0;
+    if (liveOk && restOk) return quoteTimestamp(rest) > quoteTimestamp(live) ? rest : live;
+    if (liveOk) return live;
+    if (restOk) return rest;
+    return live || rest || null;
+  }
+
+  /** Merges fresh REST quotes into the live cache without ever replacing a newer value. */
+  function seedQuotesFromInstruments(list) {
+    if (!Array.isArray(list)) return;
+    state.quotesMap = state.quotesMap || new Map();
+    for (const inst of list) {
+      const q = inst?.latestQuote;
+      if (!q || !(Number(q.ltp) > 0) || !inst.globalId) continue;
+      const existing = state.quotesMap.get(inst.globalId);
+      if (!existing || quoteTimestamp(q) >= quoteTimestamp(existing)) {
+        state.quotesMap.set(inst.globalId, q);
+      }
+    }
   }
 
   async function apiFetch(path, opts = {}) {
@@ -444,9 +480,11 @@
     const heading = document.getElementById('auth-card-heading');
     const sub = document.getElementById('auth-card-subtitle');
     const nameGrp = document.getElementById('auth-name-group');
+    const currentPassGrp = document.getElementById('auth-current-password-group');
     const passLbl = document.getElementById('auth-label-password');
     const btnTxt = document.getElementById('btn-auth-submit-text');
     const toggleBtn = document.getElementById('btn-auth-toggle-mode');
+    if (currentPassGrp) currentPassGrp.style.display = 'none';
 
     if (mode === 'register') {
       heading.textContent = 'Create your account';
@@ -457,11 +495,14 @@
       toggleBtn.textContent = 'Already have an account? Sign In';
       toggleBtn.onclick = () => toggleAuthMode('login');
     } else if (mode === 'recover') {
-      heading.textContent = 'Account Password Recovery';
-      sub.textContent = 'Reset your password while keeping your virtual portfolio and track record';
+      // Security: no email-verification provider is configured, so a password change requires
+      // proof of ownership (the current password). A bare email is not proof of ownership.
+      heading.textContent = 'Change Account Password';
+      sub.textContent = 'Verify ownership with your current password. Your virtual portfolio and track record are preserved.';
       nameGrp.style.display = 'none';
+      if (currentPassGrp) currentPassGrp.style.display = 'block';
       passLbl.textContent = 'New Password (min 6 chars)';
-      btnTxt.textContent = 'Reset Password';
+      btnTxt.textContent = 'Update Password';
       toggleBtn.textContent = 'Back to Sign In';
       toggleBtn.onclick = () => toggleAuthMode('login');
     } else {
@@ -503,17 +544,24 @@
     const emailInput = document.getElementById('auth-input-email');
     const passwordInput = document.getElementById('auth-input-password');
     const nameInput = document.getElementById('auth-input-name');
+    const currentPasswordInput = document.getElementById('auth-input-current-password');
 
     const email = (emailInput?.value || '').trim();
     // Maintain password integrity: do not trim or modify password
     const password = passwordInput?.value || '';
     const name = (nameInput?.value || '').trim();
+    const currentPassword = currentPasswordInput?.value || '';
 
     if (!email || !email.includes('@')) {
       return showAuthError('Please enter a valid email address.');
     }
     if (!password || password.length < 6) {
       return showAuthError('Please enter a password of at least 6 characters.');
+    }
+    if (state.authMode === 'recover' && !currentPassword) {
+      return showAuthError(
+        'Enter your current password to prove account ownership. Email-based reset is unavailable because email ownership verification is not configured for this deployment.'
+      );
     }
 
     if (submitBtn) submitBtn.disabled = true;
@@ -522,7 +570,7 @@
       if (state.authMode === 'register') {
         submitText.textContent = 'Creating Practice Account...';
       } else if (state.authMode === 'recover') {
-        submitText.textContent = 'Resetting Password...';
+        submitText.textContent = 'Updating Password...';
       } else {
         submitText.textContent = 'Signing In...';
       }
@@ -539,7 +587,7 @@
       } else if (state.authMode === 'recover') {
         res = await apiFetch('/api/v1/auth/recover', {
           method: 'POST',
-          body: JSON.stringify({ email, newPassword: password }),
+          body: JSON.stringify({ email, newPassword: password, currentPassword }),
         });
       } else {
         res = await apiFetch('/api/v1/auth/login', {
@@ -563,12 +611,26 @@
   let googleSignInTimeoutId = null;
 
   let activeGoogleSignInRequestId = null;
+  // Request IDs that must never be able to authenticate: timed-out, cancelled or already handled.
+  // This prevents a late native callback (e.g. arriving after the 45s client timeout) from
+  // silently logging the user in through a stale response.
+  const expiredGoogleRequestIds = new Set();
+  const handledGoogleRequestIds = new Set();
 
   // Callback registered globally for native Android Credential Manager result
   window.onTradingzoneGoogleSignInResult = async function (success, dataJsonStr, errorMsg, requestId) {
-    if (requestId && activeGoogleSignInRequestId && requestId !== activeGoogleSignInRequestId) {
-      return; // Ignore stale callback from timed-out or superseded sign-in attempt
+    const reqId = typeof requestId === 'string' ? requestId : '';
+    if (reqId && expiredGoogleRequestIds.has(reqId)) {
+      console.warn('Ignoring stale Google Sign-In callback for expired request:', reqId);
+      return;
     }
+    if (reqId && handledGoogleRequestIds.has(reqId)) {
+      return; // Duplicate native callback for the same request
+    }
+    if (reqId && activeGoogleSignInRequestId && reqId !== activeGoogleSignInRequestId) {
+      return; // Ignore callback from a superseded sign-in attempt
+    }
+    if (reqId) handledGoogleRequestIds.add(reqId);
     activeGoogleSignInRequestId = null;
 
     if (googleSignInTimeoutId) {
@@ -587,18 +649,33 @@
 
     if (!success) {
       resetGoogleBtn();
-      if (errorMsg === 'USER_CANCELLED') {
-        showAuthError('Google sign-in was cancelled.');
-      } else if (errorMsg && errorMsg.includes('PLAY_SERVICES_UNAVAILABLE')) {
-        showAuthError('Google Play Services is unavailable or needs an update on this device. Please update Google Play Services or sign in with email/password.');
-      } else if (errorMsg && errorMsg.includes('SIGN_IN_TIMEOUT')) {
-        showAuthError('Google sign-in timed out. Please try again or use email login.');
-      } else if (errorMsg && errorMsg.includes('NO_CREDENTIALS')) {
-        showAuthError('Google Sign-In could not obtain an eligible Google ID credential from Play Services. Check that Google Play Services is updated and a Google account is active on this device, or sign in with email/password.');
-      } else if (errorMsg && (errorMsg.includes('CREDENTIAL_ERROR') || errorMsg.includes('16:'))) {
-        showAuthError('Google Sign-In configuration mismatch (SHA-1/Package). Ensure package com.indianpapertrading and signing fingerprint are registered in Google Cloud Console, or sign in with email/password.');
+      const err = String(errorMsg || '');
+      if (err.includes('USER_CANCELLED')) {
+        showAuthError('Google sign-in was cancelled. Tap "Continue with Google" to try again.');
+      } else if (err.includes('PLAY_SERVICES_UNAVAILABLE')) {
+        showAuthError('Google Play Services is unavailable on this device. Update Google Play Services from the Play Store, then retry — or use email/password sign-in.');
+      } else if (err.includes('SIGN_IN_TIMEOUT')) {
+        showAuthError('Google sign-in timed out waiting for the account picker. Check your connection and retry, or use email/password sign-in.');
+      } else if (err.includes('NO_CREDENTIALS')) {
+        // Honest diagnosis: accounts may exist on the phone and still produce this error when the
+        // app build's package + signing certificate is not registered as an Android OAuth client.
+        showAuthError(
+          'Google sign-in could not obtain a credential for this build. Google accounts on the phone are not the cause: the usual cause is that this APK\'s signing certificate (SHA-1) + package name is not registered as an Android OAuth client in the same Google Cloud project as GOOGLE_CLIENT_ID. Use email/password sign-in for now; the diagnostics details below identify the exact fingerprint.'
+        );
+        logGoogleSignInDiagnostics();
+      } else if (err.includes('CONFIGURATION_ERROR')) {
+        showAuthError('Google sign-in is not configured correctly: the server OAuth client ID is missing. Contact the app owner.');
+      } else if (err.includes('ACTIVITY_NOT_ACTIVE')) {
+        showAuthError('Google sign-in was interrupted because the app was closing. Reopen the app and retry.');
+      } else if (err.includes('SIGN_IN_IN_PROGRESS')) {
+        showAuthError('A Google sign-in request is already open. Finish or cancel it before starting another.');
+      } else if (err.includes('CREDENTIAL_ERROR') || err.includes('CREDENTIAL_PROVIDER_CONFIGURATION') || err.includes('DEVELOPER_ERROR') || err.includes('10:')) {
+        showAuthError('Google sign-in configuration error. The package/signing-certificate fingerprint may not match the registered Android OAuth client. Details: ' + (err || 'unknown'));
+        logGoogleSignInDiagnostics();
+      } else if (err.includes('UNTRUSTED_ORIGIN')) {
+        showAuthError('Google sign-in was blocked for security reasons. Restart the app and retry.');
       } else {
-        showAuthError(errorMsg || 'Google sign-in failed.');
+        showAuthError('Google sign-in failed: ' + (err || 'unknown error') + '. You can sign in with email/password.');
       }
       return;
     }
@@ -658,11 +735,16 @@
         if (googleSignInTimeoutId) clearTimeout(googleSignInTimeoutId);
         googleSignInTimeoutId = setTimeout(() => {
           if (state.isGoogleSignInPending && activeGoogleSignInRequestId === reqId) {
+            // Mark the request dead on BOTH sides so a late native callback can never authenticate.
+            expiredGoogleRequestIds.add(reqId);
+            if (window.TradingzoneNative && typeof window.TradingzoneNative.cancelNativeGoogleSignIn === 'function') {
+              try { window.TradingzoneNative.cancelNativeGoogleSignIn(reqId); } catch { }
+            }
             activeGoogleSignInRequestId = null;
             state.isGoogleSignInPending = false;
             if (googleBtn) googleBtn.disabled = false;
             if (googleBtnText) googleBtnText.textContent = 'Continue with Google';
-            showAuthError('Google sign-in timed out. Please try again or use email login.');
+            showAuthError('Google sign-in timed out waiting for the account picker. Check your connection and retry, or use email/password sign-in.');
           }
         }, 45000);
 
@@ -675,9 +757,37 @@
       showAuthError('Native Google Sign-In requires an Android device. In browser mode, sign in with email and password.');
     } catch (err) {
       state.isGoogleSignInPending = false;
+      if (activeGoogleSignInRequestId) expiredGoogleRequestIds.add(activeGoogleSignInRequestId);
+      activeGoogleSignInRequestId = null;
       showAuthError(err.message || 'Failed to start Google sign-in.');
       if (googleBtn) googleBtn.disabled = false;
       if (googleBtnText) googleBtnText.textContent = 'Continue with Google';
+    }
+  }
+
+  /**
+   * Pulls the native Google Sign-In diagnostics (package, versionCode, signing SHA-1, Play
+   * Services state, last exception) so the exact owner-side Cloud Console fix is visible.
+   * SHA-1 fingerprints are public information, never credentials.
+   */
+  function logGoogleSignInDiagnostics() {
+    try {
+      if (window.TradingzoneNative && typeof window.TradingzoneNative.getGoogleSignInDiagnostics === 'function') {
+        const raw = window.TradingzoneNative.getGoogleSignInDiagnostics();
+        const diag = typeof raw === 'string' ? JSON.parse(raw || '{}') : raw;
+        console.warn('[GoogleSignInDiagnostics]', diag);
+        const fingerprint = diag && diag.signingSha1 ? ` SHA-1: ${diag.signingSha1}` : '';
+        const pkg = diag && diag.packageName ? ` Package: ${diag.packageName}` : '';
+        const last = diag && diag.lastErrorCode ? ` Last error: ${diag.lastErrorCode}` : '';
+        if (document.getElementById('auth-error-msg')) {
+          showAuthError(
+            'Google Sign-In diagnostics —' + pkg + fingerprint + last +
+            '. Register this exact package + SHA-1 as an Android OAuth client in the same Google Cloud project as the Web client ID, then reinstall this build. Email/password sign-in works meanwhile.'
+          );
+        }
+      }
+    } catch (e) {
+      console.warn('Could not read Google sign-in diagnostics:', e);
     }
   }
 
@@ -837,6 +947,8 @@
     state.account = null;
     state.subscription = null;
     state.entitlementResolved = false;
+    stopFeedHealthPolling();
+    serverClockOffsetMs = 0;
     state.positionsData = { positions: [], holdings: [], activePositions: [], closedPositions: [] };
     state.orders = [];
     state.watchlists = [];
@@ -865,6 +977,7 @@
     notifyNativeScreenState();
     updateProfileHeaderUI();
     connectRealtimeWebSocket();
+    startFeedHealthPolling();
     await Promise.all([
       refreshFeedHealth(),
       refreshAccountAndPortfolio(),
@@ -886,6 +999,9 @@
     try {
       const h = await apiFetch('/api/v1/feed-health');
       state.feedHealth = h;
+      // Measured clock correction: the backend timestamp lets the countdown follow the exchange
+      // clock even when the phone's clock is skewed. Network latency shifts this by ~RTT/2.
+      noteServerClock(h.serverTimestamp);
       const src = h.activeProvider?.source || 'UPSTOX';
       const mktOpen = h.marketSession?.isMarketOpen ? 'Market OPEN' : 'Market CLOSED';
       const provEl = document.getElementById('header-provider-label');
@@ -894,6 +1010,38 @@
       document.getElementById('prof-provider-sub').textContent =
         h.activeProvider?.message || h.marketSession?.note || '';
     } catch { }
+  }
+
+  // =========================================================================
+  // SERVER CLOCK CORRECTION & FEED-HEALTH POLLING
+  // =========================================================================
+  let feedHealthPollTimer = null;
+  let serverClockOffsetMs = 0;
+
+  function noteServerClock(serverTimestamp) {
+    const ts = Number(serverTimestamp);
+    if (!Number.isFinite(ts) || ts <= 0) return;
+    // Smooth the measured offset to avoid jitter from individual requests.
+    const sample = ts - Date.now();
+    serverClockOffsetMs = serverClockOffsetMs === 0 ? sample : Math.round(serverClockOffsetMs * 0.7 + sample * 0.3);
+  }
+
+  function serverNowMs() {
+    return Date.now() + serverClockOffsetMs;
+  }
+
+  function startFeedHealthPolling() {
+    stopFeedHealthPolling();
+    feedHealthPollTimer = setInterval(() => {
+      if (state.token) refreshFeedHealth();
+    }, 30000);
+  }
+
+  function stopFeedHealthPolling() {
+    if (feedHealthPollTimer) {
+      clearInterval(feedHealthPollTimer);
+      feedHealthPollTimer = null;
+    }
   }
 
   async function refreshAccountAndPortfolio() {
@@ -1088,11 +1236,7 @@
       ]);
       state.indices = idxRes.indices || [];
       state.quotesMap = state.quotesMap || new Map();
-      (state.indices || []).forEach((inst) => {
-        if (inst.latestQuote && inst.latestQuote.ltp > 0) {
-          state.quotesMap.set(inst.globalId, inst.latestQuote);
-        }
-      });
+      seedQuotesFromInstruments(state.indices);
 
       // Canonical index sorting: NIFTY 50 -> BANKNIFTY -> SENSEX -> FINNIFTY -> MIDCPNIFTY -> NIFTY IT...
       const INDEX_ORDER = ['NIFTY 50', 'BANKNIFTY', 'SENSEX', 'FINNIFTY', 'MIDCPNIFTY', 'NIFTY IT', 'NIFTY PHARMA', 'NIFTY METAL', 'BANKEX'];
@@ -1130,6 +1274,15 @@
       state.exploreFnoStocks = futStkRes.instruments || [];
       state.commodities = commRes || { metals: [], energy: [], agriculture: [] };
       state.commoditySpecs = specsRes?.specs || {};
+
+      // Seed the live quote cache from every REST list so a later refresh returning a
+      // null/partial latestQuote cannot blank an already-streaming price.
+      seedQuotesFromInstruments(state.exploreStocks);
+      seedQuotesFromInstruments(state.exploreFnoIndices);
+      seedQuotesFromInstruments(state.exploreFnoStocks);
+      seedQuotesFromInstruments(state.commodities?.metals);
+      seedQuotesFromInstruments(state.commodities?.energy);
+      seedQuotesFromInstruments(state.commodities?.agriculture);
 
       renderBenchmarkIndexStrip();
       renderExploreStocksList();
@@ -1500,7 +1653,7 @@
           `;
         }
 
-        const q = inst.latestQuote;
+        const q = pickQuote(inst);
         const { diff, pct, sign } = calcChange(q);
         const cls = diff >= 0 ? 'val-pos' : 'val-neg';
         const hasOptions = inst.hasDerivatives || ['CRUDEOIL', 'GOLD', 'SILVER', 'NATURALGAS', 'COPPER'].includes(und);
@@ -1627,7 +1780,7 @@
       `;
     }
 
-    const q = inst.latestQuote;
+    const q = pickQuote(inst);
     const { diff, pct, sign } = calcChange(q);
     const cls = diff >= 0 ? 'val-pos' : 'val-neg';
     const chainUnderlying = inst.underlying || inst.symbol;
@@ -2227,6 +2380,59 @@
     }
   }
 
+  /**
+   * Deliberate reconciliation after a WebSocket reconnect / backend restart.
+   * Reloads the history tail, merges it with any bars aggregated locally while the request was
+   * in flight, then restores the user's viewport (unless they are following the latest bar).
+   */
+  async function recoverChartAfterReconnect() {
+    if (!state.activeInstrument || !candleSeries || state.replayMode) return;
+    const seq = state.chartLoadSeq;
+    const gid = state.activeInstrument.globalId;
+    const tf = state.activeTimeframe;
+    const intervalSec = getTimeframeIntervalSec(tf);
+    let previousVisibleRange = null;
+    try {
+      previousVisibleRange = tvChart ? tvChart.timeScale().getVisibleRange() : null;
+    } catch { }
+
+    try {
+      const data = await apiFetch(
+        `/api/v1/market-data/candles?globalId=${encodeURIComponent(gid)}&timeframe=${encodeURIComponent(tf)}&limit=500`
+      );
+      if (seq !== state.chartLoadSeq) return; // user switched symbol/timeframe meanwhile
+      const history = Array.isArray(data.candles) ? data.candles : [];
+      if (history.length === 0) return;
+
+      const byTime = new Map();
+      for (const c of history) byTime.set(c.time, c);
+      const lastHistoryTime = history[history.length - 1].time;
+      // Preserve locally aggregated bars that are genuinely newer than the fetched history.
+      for (const c of state.candles) {
+        if (!byTime.has(c.time) && c.time > lastHistoryTime) {
+          byTime.set(c.time, c);
+        }
+      }
+      const merged = Array.from(byTime.values()).sort((a, b) => a.time - b.time);
+      // Guard against a bogus gap: never introduce bars whose spacing exceeds one interval.
+      const bounded = merged.filter((c) => c.time <= lastHistoryTime + intervalSec * 2);
+      state.candles = bounded;
+      state.earliestTime = bounded[0]?.time || state.earliestTime;
+      candleSeries.setData(state.candles);
+      recalculateAndRenderIndicators();
+      renderDrawingsSvgOverlay();
+      if (previousVisibleRange && state.isUserScrolledBack) {
+        try {
+          tvChart.timeScale().setVisibleRange(previousVisibleRange);
+        } catch { }
+      }
+      updateChartCountdownUI();
+      if (data.latestQuote) updateChartHeaderQuote(data.latestQuote);
+    } catch {
+      // Non-fatal: live ticks continue to update the existing series.
+    }
+  }
+
   function scrollToLatestBar() {
     if (tvChart) {
       const totalBars = state.candles.length;
@@ -2312,6 +2518,32 @@
       }
       emaSeries.setData(data);
       indicatorSeriesMap.ema50 = emaSeries;
+    }
+  }
+
+  /**
+   * Lightweight indicator refresh for the forming bar: updates only the last SMA/EMA point so
+   * indicators stay continuous with the candle series without a full rebuild on every tick.
+   */
+  function updateIndicatorsForLastBar() {
+    if (!tvChart || state.candles.length === 0) return;
+    const closes = state.candles.map((c) => c.close);
+    const lastIdx = state.candles.length - 1;
+    const lastTime = state.candles[lastIdx].time;
+    try {
+      if (indicatorSeriesMap.sma20 && lastIdx >= 19) {
+        let sum = 0;
+        for (let j = lastIdx - 19; j <= lastIdx; j++) sum += closes[j];
+        indicatorSeriesMap.sma20.update({ time: lastTime, value: Number((sum / 20).toFixed(2)) });
+      }
+      if (indicatorSeriesMap.ema50 && lastIdx >= 49) {
+        const k = 2 / 51;
+        let ema = closes.slice(0, 50).reduce((a, b) => a + b, 0) / 50;
+        for (let i = 50; i <= lastIdx; i++) ema = closes[i] * k + ema * (1 - k);
+        indicatorSeriesMap.ema50.update({ time: lastTime, value: Number(ema.toFixed(2)) });
+      }
+    } catch {
+      // Series may have been removed by the user toggling indicators.
     }
   }
 
@@ -3279,7 +3511,9 @@
     const exch = inst?.exchange || 'NSE';
     const tf = state.activeTimeframe || '5m';
     const intervalSec = getTimeframeIntervalSec(tf);
-    const nowMs = Date.now();
+    // Countdown is derived from the corrected server clock against the real interval boundary,
+    // never from candle movement. It ticks once per second independently of incoming data.
+    const nowMs = serverNowMs();
     const nowSec = Math.floor(nowMs / 1000);
     const refTime = state.candles.length > 0 ? state.candles[state.candles.length - 1].time : null;
 
@@ -3323,8 +3557,12 @@
       return;
     }
 
-    const lastInstTickMs = inst?.globalId ? (state.lastTickTimestamps[inst.globalId] || 0) : 0;
-    const tickAgeMs = lastInstTickMs > 0 ? (nowMs - lastInstTickMs) : (state.lastAnyTickReceiveMs > 0 ? nowMs - state.lastAnyTickReceiveMs : 0);
+    const lastInstTickMs = inst?.globalId
+      ? (state.lastTickClientReceiveMs?.[inst.globalId] || 0)
+      : 0;
+    const tickAgeMs = lastInstTickMs > 0
+      ? (Date.now() - lastInstTickMs)
+      : (state.lastAnyTickReceiveMs > 0 ? Date.now() - state.lastAnyTickReceiveMs : 0);
     if (tickAgeMs > 20000) {
       pill.classList.add('state-warn');
       pill.textContent = `⚠ Stale Feed • ${timeStr}`;
@@ -3351,10 +3589,13 @@
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
+      // Recalculate on resume: the countdown, feed state and boundary may all have moved on.
+      refreshFeedHealth();
       if (state.chartOpen) {
         updateChartCountdownUI();
       }
       if (!wsConn || wsConn.readyState !== WebSocket.OPEN) {
+        state.wsNeedsGapRecovery = true;
         connectRealtimeWebSocket();
       }
     }
@@ -3436,8 +3677,15 @@
         try {
           const msg = JSON.parse(ev.data);
           if (msg.type === 'AUTH_SUCCESS') {
+            noteServerClock(msg.serverTimestamp);
             // Re-send desired subscriptions once authenticated so Pro-tier instruments are authorized
             sendWsSubscribe(collectDesiredSubscriptions());
+            // After a dropped connection, reload the tail of history so candles created while the
+            // socket was down are not missing from the chart (deliberate reconciliation).
+            if (state.wsNeedsGapRecovery) {
+              state.wsNeedsGapRecovery = false;
+              recoverChartAfterReconnect();
+            }
           } else if (msg.type === 'ENTITLEMENT_UPDATED') {
             const newTier = msg.tier || msg.entitlement?.tier || 'FREE';
             if (msg.entitlement) {
@@ -3466,17 +3714,35 @@
               !state.replayMode
             ) {
               const tf = state.activeTimeframe || '5m';
+              const intervalSec = getTimeframeIntervalSec(tf);
               const serverBar = msg.candles[tf];
               const lastBar = state.candles[state.candles.length - 1];
-              if (serverBar && serverBar.time >= lastBar.time && Number(serverBar.close) > 0) {
-                if (serverBar.time === lastBar.time) {
+              if (serverBar && Number(serverBar.close) > 0) {
+                const serverBarTime = Number(serverBar.time);
+                // The snapshot bar must be aligned to the SAME session-open phase as the loaded
+                // history and must never sit in the future. A mismatch means an older or
+                // misaligned server build: ignore it instead of drawing a phantom candle.
+                const alignedTime = computeCandleBucketSec(serverBarTime * 1000, tf, lastBar.time);
+                const nowBucket = computeCandleBucketSec(serverNowMs(), tf, lastBar.time);
+                const isAligned = Number.isFinite(serverBarTime) && alignedTime === serverBarTime;
+                const isPlausible =
+                  serverBarTime >= lastBar.time - intervalSec && serverBarTime <= nowBucket + intervalSec;
+                if (!isAligned || !isPlausible) {
+                  console.warn('Ignoring misaligned forming-candle snapshot', {
+                    serverBarTime,
+                    lastBarTime: lastBar.time,
+                    tf,
+                  });
+                } else if (serverBarTime === lastBar.time) {
                   lastBar.high = Math.max(lastBar.high, serverBar.high);
                   lastBar.low = Math.min(lastBar.low, serverBar.low);
                   lastBar.close = serverBar.close;
                   candleSeries.update({ ...lastBar });
+                  updateIndicatorsForLastBar();
+                  updateChartCountdownUI();
                 } else {
                   const nextBar = {
-                    time: serverBar.time,
+                    time: serverBarTime,
                     open: serverBar.open,
                     high: serverBar.high,
                     low: serverBar.low,
@@ -3484,8 +3750,9 @@
                   };
                   state.candles.push(nextBar);
                   candleSeries.update(nextBar);
+                  recalculateAndRenderIndicators();
+                  updateChartCountdownUI();
                 }
-                updateChartCountdownUI();
               }
             }
           } else if (msg.type === 'QUOTE_TICK' && msg.data) {
@@ -3498,6 +3765,9 @@
         if (wsConn !== sock) return;
         wsConn = null;
         state.wsConnected = false;
+        // Anything that happened while the socket was down must be reconciled from history when
+        // the next authenticated connection is established.
+        state.wsNeedsGapRecovery = true;
         if (state.chartOpen) {
           updateChartCountdownUI();
         }
@@ -3546,7 +3816,7 @@
       return;
     }
 
-    if (bucketSec === lastBar.time || isInitialSnapshot) {
+    if (bucketSec === lastBar.time) {
       const updatedBar = {
         time: lastBar.time,
         open: lastBar.open,
@@ -3557,13 +3827,16 @@
       };
       state.candles[state.candles.length - 1] = updatedBar;
       candleSeries.update(updatedBar);
+      updateIndicatorsForLastBar();
       const legendEl = document.getElementById('chart-ohlc-legend');
       if (legendEl) {
         legendEl.textContent =
           `O ${fmtNum(updatedBar.open)}  H ${fmtNum(updatedBar.high)}  L ${fmtNum(updatedBar.low)}  C ${fmtNum(updatedBar.close)}`;
       }
     } else if (bucketSec > lastBar.time) {
-      // Genuine tick in a new timeframe interval -> start a new candle at the exact boundary
+      // Genuine tick in a new timeframe interval -> start a new candle at the exact boundary.
+      // Note: an "initial snapshot" is NOT special-cased into the previous bar; doing so used to
+      // merge the new interval's price into the old candle and corrupt its OHLC.
       const newBar = {
         time: bucketSec,
         open: ltp,
@@ -3574,6 +3847,7 @@
       };
       state.candles.push(newBar);
       candleSeries.update(newBar);
+      recalculateAndRenderIndicators();
       const legendEl = document.getElementById('chart-ohlc-legend');
       if (legendEl) {
         legendEl.textContent =
@@ -3599,6 +3873,8 @@
     if (quoteTime) {
       state.lastTickTimestamps[quote.globalId] = quoteTime;
     }
+    state.lastTickClientReceiveMs = state.lastTickClientReceiveMs || {};
+    state.lastTickClientReceiveMs[quote.globalId] = Date.now();
     state.lastAnyTickReceiveMs = Date.now();
     state.clientTicksReceived = (state.clientTicksReceived || 0) + 1;
     state.lastClientRenderMs = state.lastAnyTickReceiveMs;
@@ -3653,9 +3929,18 @@
             const entryPrice = Number(pos.averageEntryPrice ?? pos.averageEntryPriceINR ?? 0);
             const currentPrice = Number(quote.ltp);
             const diffPerUnit = pos.quantity > 0 ? currentPrice - entryPrice : entryPrice - currentPrice;
+            // Mirror the server's contract multiplier (commodities settle per contract unit) so
+            // the streamed P&L never disagrees with the server-authoritative REST value.
+            const multiplier = Number(pos.pnlMultiplier) > 0 ? Number(pos.pnlMultiplier) : 1;
             pos.currentPrice = currentPrice;
             pos.currentLtpINR = currentPrice;
-            pos.unrealizedPnlINR = Math.round(diffPerUnit * Math.abs(pos.quantity) * 100) / 100;
+            pos.unrealizedPnlINR =
+              Math.round(diffPerUnit * multiplier * Math.abs(pos.quantity) * 100) / 100;
+            pos.priceSource = 'WEBSOCKET';
+            pos.priceTimestamp = Number(quote.providerTimestamp || quote.receiveTimestamp) || Date.now();
+            pos.priceAgeMs = 0;
+            pos.priceStale = false;
+            pos.pnlTimestamp = Date.now();
             changed = true;
           }
         });

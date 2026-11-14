@@ -164,6 +164,14 @@ class AdMobManager(
         if (isMobileAdsInitialized.getAndSet(true)) return
 
         activity.runOnUiThread {
+            // Debug builds request official Google test ads; register the emulator as a test device
+            // so rendering can be verified without risking policy violations on real inventory.
+            if (BuildConfig.DEBUG) {
+                val testConfig = RequestConfiguration.Builder()
+                    .setTestDeviceIds(listOf(AdRequest.DEVICE_ID_EMULATOR))
+                    .build()
+                MobileAds.setRequestConfiguration(testConfig)
+            }
             MobileAds.initialize(activity) { status ->
                 Log.i(TAG, "Google Mobile Ads SDK Initialized: $status")
                 // Once initialized, evaluate if banner or interstitial preload is needed
@@ -199,8 +207,14 @@ class AdMobManager(
                 onBannerHeightChange(false, 0)
                 lastEligibilityCheckReason = "REASON_PRO_TIER"
             } else if (currentUserTier != "FREE") {
+                // Unresolved entitlement: cancel queued work and discard any loaded/in-flight ad so
+                // a stale FREE state can never leak an impression after logout/account switch.
                 retryHandler.removeCallbacksAndMessages(null)
-                hideBanner()
+                destroyBanner()
+                interstitialAd = null
+                isInterstitialLoading = false
+                bannerContainer.visibility = View.GONE
+                onBannerHeightChange(false, 0)
                 lastEligibilityCheckReason = "REASON_TIER_UNKNOWN"
             } else {
                 updateBannerVisibility()
@@ -309,6 +323,12 @@ class AdMobManager(
 
         adView.adListener = object : AdListener() {
             override fun onAdLoaded() {
+                if (currentUserTier != "FREE") {
+                    // Entitlement changed to PRO/UNKNOWN while the banner was loading: discard it.
+                    Log.i(TAG, "Discarding banner load because tier is now $currentUserTier")
+                    destroyBanner()
+                    return
+                }
                 bannerLoaded = true
                 lastBannerLoadError = null
                 Log.i(TAG, "Anchored Adaptive Banner loaded successfully ($adSize)")
@@ -381,6 +401,12 @@ class AdMobManager(
             object : InterstitialAdLoadCallback() {
                 override fun onAdLoaded(ad: InterstitialAd) {
                     isInterstitialLoading = false
+                    if (currentUserTier != "FREE") {
+                        // PRO/UNKNOWN: never retain or show an ad that was requested while FREE.
+                        Log.i(TAG, "Discarding preloaded interstitial because tier is now $currentUserTier")
+                        interstitialAd = null
+                        return
+                    }
                     interstitialAd = ad
                     lastInterstitialLoadError = null
                     retryAttempt = 0
@@ -564,6 +590,12 @@ class AdMobManager(
         return org.json.JSONObject().apply {
             put("tier", currentUserTier)
             put("userId", currentUserId)
+            // Non-secret ad identity so the console-side "Publisher data not found" cause can be
+            // separated from SDK/response issues.
+            put("isDebugBuild", BuildConfig.DEBUG)
+            put("bannerAdUnitId", BuildConfig.BANNER_AD_UNIT_ID)
+            put("interstitialAdUnitId", BuildConfig.INTERSTITIAL_AD_UNIT_ID)
+            put("usingOfficialTestAdUnits", BuildConfig.DEBUG)
             put("canRequestAds", consentInformation.canRequestAds())
             put("isMobileAdsInitialized", isMobileAdsInitialized.get())
             put("bannerRequestCount", bannerRequestCount)

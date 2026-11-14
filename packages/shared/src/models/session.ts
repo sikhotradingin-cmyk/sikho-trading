@@ -35,6 +35,11 @@ export interface SubscriptionPlan {
   durationDays: number;
   isPrepaid: boolean;
   renewalDescription: string;
+  /**
+   * Google Play Console product id when it differs from the internal plan id.
+   * Server-side purchase verification resolves the product against this exact id.
+   */
+  playProductId?: string;
 }
 
 export const FREE_MIN_CAPITAL_INR = 100000;

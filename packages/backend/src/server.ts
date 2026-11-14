@@ -28,6 +28,7 @@ import { initializeDatabase, IDatabase } from './db/database.js';
 import { PostgresRepository } from './db/postgres-repository.js';
 import { BillingService } from './monetization/billing-service.js';
 import { AdsCoordinator } from './monetization/ads-coordinator.js';
+import { FormingCandleTracker } from './market/forming-candles.js';
 import { WebSocket } from 'ws';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
@@ -39,6 +40,44 @@ if (!(BigInt.prototype as any).toJSON) {
   (BigInt.prototype as any).toJSON = function () {
     return this.toString();
   };
+}
+
+/** Application version advertised by /health (kept in sync with the Android versionName). */
+export const SERVICE_VERSION = '1.0.7';
+const SERVICE_STARTED_AT = new Date().toISOString();
+
+/** Browser/WebSocket clients must be told the server clock so countdowns can be corrected. */
+export const WS_HEARTBEAT_INTERVAL_MS = 25000;
+
+/**
+ * Pure validation of an already cryptographically verified Google ID token payload.
+ * Exported so the identity rules are unit-testable without network access to Google.
+ */
+export function validateGoogleIdTokenPayload(
+  payload: any,
+  configuredClientId: string
+): { ok: true } | { ok: false; code: string; error: string } {
+  if (!payload || !payload.email) {
+    return { ok: false, code: 'ERR_INVALID_GOOGLE_TOKEN', error: 'Google ID token payload could not be verified.' };
+  }
+  if (payload.aud !== configuredClientId) {
+    return { ok: false, code: 'ERR_GOOGLE_AUDIENCE_MISMATCH', error: 'Google ID token audience mismatch.' };
+  }
+  if (payload.email_verified === false) {
+    return {
+      ok: false,
+      code: 'ERR_GOOGLE_EMAIL_UNVERIFIED',
+      error: 'Google account email address is not verified by Google.',
+    };
+  }
+  if (!payload.sub || typeof payload.sub !== 'string') {
+    return {
+      ok: false,
+      code: 'ERR_GOOGLE_SUBJECT_MISSING',
+      error: 'Google ID token is missing the immutable subject identifier.',
+    };
+  }
+  return { ok: true };
 }
 
 export async function buildServer(
@@ -84,7 +123,9 @@ export async function buildServer(
   }
 
   // Database & Repositories (automatically connects pool and executes pending migrations if DATABASE_URL is configured)
-  const db = customDb || (await initializeDatabase(process.env.DATABASE_URL));
+  // Use the validated config value: in test execution this resolves to TEST_DATABASE_URL (or the emulated
+  // database), never the production DATABASE_URL that may be present in a shell or .env file.
+  const db = customDb || (await initializeDatabase(config.databaseUrl));
   const repo = new PostgresRepository(db);
   const accountEngine = new VirtualAccountEngine();
   const simEngine = new SimulationEngine(repo);
@@ -184,54 +225,18 @@ export async function buildServer(
     }
   };
 
-  interface FormingCandleBar {
-    time: number;
-    open: number;
-    high: number;
-    low: number;
-    close: number;
-  }
-  const FORMING_INTERVALS: Record<string, number> = {
-    '1m': 60,
-    '5m': 300,
-    '15m': 900,
-    '30m': 1800,
-    '1h': 3600,
-    '1d': 86400,
-  };
-  const formingCandles = new Map<string, Record<string, FormingCandleBar>>();
+  // Centralised (server-side) forming-candle aggregation. Session-open aligned, true-epoch bars so
+  // that snapshots reconcile with provider history instead of creating phantom future candles.
+  const formingTracker = new FormingCandleTracker();
   let wsTicksEmitted = 0;
   let lastWsEmitTime = 0;
-
-  const updateFormingCandlesForTick = (quote: QuoteSnapshot) => {
-    const ltp = Number(quote.ltp);
-    if (!Number.isFinite(ltp) || ltp <= 0) return;
-    const tickMs = Number(quote.providerTimestamp || quote.receiveTimestamp || Date.now());
-    const istSec = Math.floor((tickMs + 19800000) / 1000);
-    let byTf = formingCandles.get(quote.globalId);
-    if (!byTf) {
-      byTf = {};
-      formingCandles.set(quote.globalId, byTf);
-    }
-    for (const [tf, sec] of Object.entries(FORMING_INTERVALS)) {
-      const bucketSec = Math.floor(istSec / sec) * sec;
-      const existing = byTf[tf];
-      if (!existing || bucketSec > existing.time) {
-        byTf[tf] = { time: bucketSec, open: ltp, high: ltp, low: ltp, close: ltp };
-      } else if (bucketSec === existing.time) {
-        existing.high = Math.max(existing.high, ltp);
-        existing.low = Math.min(existing.low, ltp);
-        existing.close = ltp;
-      }
-    }
-  };
 
   const ensureEngineSubscription = (globalId: string) => {
     if (engineSubscribedIds.has(globalId)) return;
     engineSubscribedIds.add(globalId);
     activeProvider.subscribe(globalId, (quote: QuoteSnapshot) => {
       simEngine.onMarketTick(quote).catch(() => { });
-      updateFormingCandlesForTick(quote);
+      formingTracker.applyTick(quote);
       const msg = JSON.stringify({ type: 'QUOTE_TICK', data: quote });
       for (const client of wsClients) {
         if (client.subscriptions.has(globalId) || client.subscriptions.has(quote.globalId)) {
@@ -292,6 +297,11 @@ export async function buildServer(
       status: 'ok',
       serverTimestamp: Date.now(),
       mode: activeProvider.providerId,
+      // Deployment identity so the delivered revision can be verified independently of a
+      // hosting dashboard (Render exposes RENDER_GIT_COMMIT to the running service).
+      revision: (process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || 'unknown').trim(),
+      version: SERVICE_VERSION,
+      startedAt: SERVICE_STARTED_AT,
     };
   });
 
@@ -318,7 +328,7 @@ export async function buildServer(
         wsTicksEmitted,
         lastWsEmitTime,
         wsClientsCount: wsClients.size,
-        trackedFormingInstruments: formingCandles.size,
+        ...formingTracker.getTelemetry(),
       },
       marketSession: {
         isMarketOpen: isIndianMarketOpen(),
@@ -440,27 +450,22 @@ export async function buildServer(
     try {
       let user = await repo.getUserByEmail(email);
 
-      if (password !== undefined && password.length > 0) {
-        if (!user) {
-          return reply.status(401).send({
-            error: 'No account found for this email. Please create an account first.',
-            code: 'ERR_USER_NOT_FOUND',
-          });
-        }
-        user = await repo.authenticateUser(email, password);
-      } else {
-        // If user has a password set, require it!
-        if (user && user.hasPassword) {
-          return reply.status(401).send({
-            error: 'Password is required to sign in to this account.',
-            code: 'ERR_PASSWORD_REQUIRED',
-          });
-        }
-        if (!user) {
-          const fallbackName = (body.name || email.split('@')[0] || 'Tradingzone Member').trim();
-          user = await repo.registerUser({ email, name: fallbackName });
-        }
+      // Password is mandatory. There is deliberately NO passwordless/implicit-registration path:
+      // an unauthenticated caller must never be able to claim an email address or obtain a token
+      // for an existing account. New users must use /api/v1/auth/register or Google Sign-In.
+      if (!password || password.length === 0) {
+        return reply.status(401).send({
+          error: 'Password is required to sign in. Use "Create new account" to register.',
+          code: 'ERR_PASSWORD_REQUIRED',
+        });
       }
+      if (!user) {
+        return reply.status(401).send({
+          error: 'No account found for this email. Please create an account first.',
+          code: 'ERR_USER_NOT_FOUND',
+        });
+      }
+      user = await repo.authenticateUser(email, password);
 
       resetRateLimit(rateKey);
 
@@ -571,26 +576,25 @@ export async function buildServer(
       });
 
       const payload = ticket.getPayload();
-      if (!payload || !payload.email) {
+      if (!payload) {
         return reply.status(401).send({
           error: 'Google ID token payload could not be verified.',
           code: 'ERR_INVALID_GOOGLE_TOKEN',
         });
       }
-
-      if (payload.aud !== configuredClientId) {
-        return reply.status(401).send({
-          error: 'Google ID token audience mismatch.',
-          code: 'ERR_GOOGLE_AUDIENCE_MISMATCH',
-        });
+      const payloadCheck = validateGoogleIdTokenPayload(payload, configuredClientId);
+      if (!payloadCheck.ok) {
+        return reply.status(401).send({ error: payloadCheck.error, code: payloadCheck.code });
       }
 
       resetRateLimit(rateKey);
 
+      const googleEmail = String(payload.email);
+      const googleName = payload.name || googleEmail.split('@')[0];
       const user = await repo.upsertGoogleUser({
-        email: payload.email,
-        name: payload.name || payload.email.split('@')[0],
-        googleSub: payload.sub,
+        email: googleEmail,
+        name: googleName,
+        googleSub: String(payload.sub),
         avatarUrl: payload.picture,
       });
 
@@ -631,11 +635,15 @@ export async function buildServer(
     }
   });
 
-  // 2E. Account Password Recovery (with rate limiting protection)
+  // 2E. Authenticated Password Change (with rate limiting protection)
+  // SECURITY: a bare email is not proof of account ownership. No email-verification provider is
+  // configured, so an unauthenticated "reset by email" flow would be a trivial account-takeover
+  // vector. Proof of the current password is therefore mandatory (fail closed).
   app.post('/api/v1/auth/recover', async (req, reply) => {
-    const body = (req.body as { email?: string; newPassword?: string }) || {};
+    const body = (req.body as { email?: string; newPassword?: string; currentPassword?: string }) || {};
     const email = (body.email || '').trim().toLowerCase();
     const newPassword = body.newPassword || '';
+    const currentPassword = body.currentPassword || '';
 
     if (!email || !email.includes('@')) {
       return reply.status(400).send({ error: 'Valid email is required.', code: 'ERR_INVALID_EMAIL' });
@@ -645,6 +653,13 @@ export async function buildServer(
         .status(400)
         .send({ error: 'New password must be at least 6 characters.', code: 'ERR_WEAK_PASSWORD' });
     }
+    if (!currentPassword) {
+      return reply.status(403).send({
+        error:
+          'ERR_RECOVERY_PROOF_REQUIRED: Email ownership verification is not configured, so a password change requires your current password. Sign in with Google if this account was created with Google, or contact the owner.',
+        code: 'ERR_RECOVERY_PROOF_REQUIRED',
+      });
+    }
 
     const rateKey = `recover:${email}`;
     const rl = checkRateLimit(rateKey, 3, 60000, 600000); // 3 attempts per min, 10 min lockout
@@ -653,6 +668,7 @@ export async function buildServer(
     }
 
     try {
+      await repo.authenticateUser(email, currentPassword);
       const user = await repo.resetUserPassword(email, newPassword);
       resetRateLimit(rateKey);
       const account = await repo.provisionInitialAccount(user.id, `${user.name}'s Practice Account`, 'FREE');
@@ -683,9 +699,10 @@ export async function buildServer(
         entitlement,
       };
     } catch (err: any) {
-      return reply.status(404).send({
+      const isCredentialError = String(err?.message || '').startsWith('ERR_INVALID_CREDENTIALS');
+      return reply.status(isCredentialError ? 401 : 404).send({
         error: err.message || 'Recovery failed.',
-        code: 'ERR_RECOVERY_FAILED',
+        code: isCredentialError ? 'ERR_INVALID_CREDENTIALS' : 'ERR_RECOVERY_FAILED',
       });
     }
   });
@@ -1489,18 +1506,49 @@ export async function buildServer(
 
   app.get('/api/v1/positions', { preHandler: [(app as any).authenticate] }, async (req: any) => {
     const positions = await repo.getPositions(req.user.accountId);
+    const now = Date.now();
     const enriched = await Promise.all(
       positions.map(async (p) => {
         const inst = activeProvider.getInstrumentById
           ? await activeProvider.getInstrumentById(p.globalInstrumentId)
           : undefined;
         const quote = p.quantity !== 0 ? await activeProvider.getQuote(p.globalInstrumentId) : null;
-        const ltp = quote?.ltp ?? p.currentPrice ?? p.averageEntryPrice;
+
+        // Server-authoritative P&L: provider quote when available, otherwise the honest last
+        // persisted price - never a fabricated one and never silently erased.
+        const hasLiveQuote = Boolean(quote && Number(quote.ltp) > 0);
+        const ltp = hasLiveQuote
+          ? Number(quote!.ltp)
+          : Number(p.currentPrice) > 0
+            ? Number(p.currentPrice)
+            : Number(p.averageEntryPrice);
+
+        // Commodity contracts quote per unit but settle per contract multiplier. Mirror the
+        // simulation engine's math exactly so the REST view and realized P&L never disagree.
+        const pnlMultiplier =
+          inst?.exchange === 'MCX' && inst?.priceQuoteMultiplier
+            ? Number(inst.priceQuoteMultiplier) / (Number(inst.lotSize) || 1)
+            : 1;
+
         const diff = p.quantity > 0 ? ltp - p.averageEntryPrice : p.averageEntryPrice - ltp;
-        const unrealizedINR = p.quantity !== 0 ? Number((diff * Math.abs(p.quantity)).toFixed(2)) : 0;
+        const unrealizedINR =
+          p.quantity !== 0 ? Number((diff * pnlMultiplier * Math.abs(p.quantity)).toFixed(2)) : 0;
+
+        const priceTimestamp = hasLiveQuote
+          ? Number(quote!.providerTimestamp || quote!.receiveTimestamp) || null
+          : null;
+        const priceAgeMs = priceTimestamp ? Math.max(0, now - priceTimestamp) : null;
+        const marketOpen = isIndianMarketOpen();
+        const priceStale = priceTimestamp
+          ? marketOpen
+            ? priceAgeMs! > 15000
+            : false
+          : true;
+
         return {
           ...p,
           currentPrice: ltp,
+          pnlMultiplier,
           symbol: inst?.symbol || p.globalInstrumentId.split(':')[1] || p.globalInstrumentId,
           instrumentName: inst?.name || p.globalInstrumentId,
           instrumentType: inst?.instrumentType || 'EQUITY_STOCK',
@@ -1508,6 +1556,11 @@ export async function buildServer(
           lotSize: inst?.lotSize || 1,
           realizedPnlINR: Money.toRupees(p.realizedPnlPaise),
           unrealizedPnlINR: unrealizedINR,
+          priceSource: hasLiveQuote ? 'LIVE_PROVIDER' : 'LAST_KNOWN_PERSISTED',
+          priceTimestamp,
+          priceAgeMs,
+          priceStale,
+          pnlTimestamp: now,
         };
       })
     );
@@ -1842,7 +1895,13 @@ export async function buildServer(
                 }
               }
               if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'AUTH_SUCCESS', tier: clientState.tier }));
+                ws.send(
+                  JSON.stringify({
+                    type: 'AUTH_SUCCESS',
+                    tier: clientState.tier,
+                    serverTimestamp: Date.now(),
+                  })
+                );
               }
             }
           } catch {
@@ -1876,9 +1935,16 @@ export async function buildServer(
             ensureEngineSubscription(canonicalId);
 
             // Immediately emit initial quote snapshot + forming candle snapshot so active charts & watchlists reconcile after reconnect
-            const cachedForming = formingCandles.get(canonicalId);
+            const cachedForming = formingTracker.snapshot(canonicalId);
             if (cachedForming && ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'FORMING_CANDLE_SNAPSHOT', globalId: canonicalId, candles: cachedForming }));
+              ws.send(
+                JSON.stringify({
+                  type: 'FORMING_CANDLE_SNAPSHOT',
+                  globalId: canonicalId,
+                  candles: cachedForming,
+                  serverTimestamp: Date.now(),
+                })
+              );
             }
             activeProvider
               .getQuote(canonicalId)
@@ -1909,7 +1975,29 @@ export async function buildServer(
       messageQueue = messageQueue.then(() => processClientMessage(raw)).catch(() => { });
     });
 
+    // Heartbeat: mobile networks silently drop idle sockets. Without a keepalive the client only
+    // notices a dead feed when it next tries to send, which surfaces as "quotes only appear after
+    // tapping/reopening". Pinging also lets the server reap half-open sockets.
+    let lastPongAt = Date.now();
+    ws.on('pong', () => {
+      lastPongAt = Date.now();
+    });
+    const heartbeat = setInterval(() => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      if (Date.now() - lastPongAt > WS_HEARTBEAT_INTERVAL_MS * 3) {
+        try {
+          ws.terminate();
+        } catch { }
+        return;
+      }
+      try {
+        ws.ping();
+      } catch { }
+    }, WS_HEARTBEAT_INTERVAL_MS);
+    if (typeof heartbeat.unref === 'function') heartbeat.unref();
+
     ws.on('close', () => {
+      clearInterval(heartbeat);
       wsClients.delete(clientState as any);
     });
   });

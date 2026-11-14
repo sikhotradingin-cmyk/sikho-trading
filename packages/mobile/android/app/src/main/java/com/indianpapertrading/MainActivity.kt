@@ -4,9 +4,11 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.Gravity
@@ -33,6 +35,7 @@ import androidx.credentials.GetCredentialResponse
 import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.exceptions.GetCredentialException
 import androidx.credentials.exceptions.NoCredentialException
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
@@ -48,6 +51,8 @@ import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import java.io.File
 import java.security.KeyStore
+import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.roundToInt
@@ -60,6 +65,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var credentialManager: CredentialManager
     private val googleSignInInFlight = AtomicBoolean(false)
     private val activeGoogleSignInRequestId = AtomicLong(0L)
+
+    // Request IDs that have already produced a terminal result (prevents duplicate callbacks).
+    private val completedGoogleRequestIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    // Diagnostics surfaced to the WebView so the owner can see the real failure + signing identity.
+    @Volatile
+    private var lastGoogleSignInErrorCode: String? = null
+    @Volatile
+    private var lastGoogleSignInErrorDetail: String? = null
+    @Volatile
+    private var lastWebClientIdSuffix: String = ""
 
     // Starts as completely untrusted until verified main-frame navigation completes
     @Volatile
@@ -235,6 +250,7 @@ class MainActivity : AppCompatActivity() {
         fun startNativeGoogleSignIn(webServerClientId: String, requestId: String) {
             try {
                 val safeReqId = requestId.trim()
+                lastWebClientIdSuffix = webServerClientId.trim().takeLast(30)
                 Log.i("TradingzoneAuth", "startNativeGoogleSignIn called (req=$safeReqId, clientIdSuffix=${webServerClientId.takeLast(24)})")
                 if (!verifyCallerIsTrusted()) {
                     Log.w("TradingzoneAuth", "Rejected startNativeGoogleSignIn from untrusted origin: $currentTrustedUrl")
@@ -259,6 +275,13 @@ class MainActivity : AppCompatActivity() {
                             Log.w("TradingzoneAuth", "Activity is finishing or destroyed; aborting Google Sign-In.")
                             if (activeGoogleSignInRequestId.get() == seq) googleSignInInFlight.set(false)
                             sendGoogleSignInResult(false, null, "ACTIVITY_NOT_ACTIVE: Activity is finishing or destroyed.", safeReqId)
+                            return@runOnUiThread
+                        }
+                        // Credential Manager must be invoked from a foreground (RESUMED) Activity.
+                        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                            Log.w("TradingzoneAuth", "Activity not resumed (state=${lifecycle.currentState}); aborting Google Sign-In.")
+                            if (activeGoogleSignInRequestId.get() == seq) googleSignInInFlight.set(false)
+                            sendGoogleSignInResult(false, null, "ACTIVITY_NOT_ACTIVE: Activity is not in the foreground. Bring the app to the front and retry.", safeReqId)
                             return@runOnUiThread
                         }
 
@@ -344,24 +367,25 @@ class MainActivity : AppCompatActivity() {
                                     sendGoogleSignInResult(false, null, "USER_CANCELLED", safeReqId)
                                 }
                             } catch (e: NoCredentialException) {
-                                Log.w("TradingzoneAuth", "CredentialManager NoCredentialException (req=$safeReqId): ${e.message}")
+                                Log.w("TradingzoneAuth", "CredentialManager NoCredentialException (req=$safeReqId): type=${e.type} message=${e.message}")
                                 if (activeGoogleSignInRequestId.get() == seq) {
                                     sendGoogleSignInResult(
                                         false,
                                         null,
-                                        "NO_CREDENTIALS: Google Credential Manager returned no eligible Google ID credential. Ensure Google Play Services is updated, a Google account is signed in to Play Store, and the app OAuth SHA-1 is configured.",
+                                        "NO_CREDENTIALS: Google Credential Manager returned no eligible Google ID credential (type=${e.type}). The usual cause is a signing-certificate/package mismatch with the registered Android OAuth client, not a missing device Google account. Signing SHA-1 is reported by getGoogleSignInDiagnostics().",
                                         safeReqId
                                     )
                                 }
                             } catch (e: GetCredentialException) {
-                                Log.e("TradingzoneAuth", "Credential Manager error (req=$safeReqId): ${e.type} / ${e.message}", e)
+                                Log.e("TradingzoneAuth", "Credential Manager error (req=$safeReqId): type=${e.type} message=${e.message}", e)
                                 if (activeGoogleSignInRequestId.get() == seq) {
-                                    sendGoogleSignInResult(false, null, "CREDENTIAL_ERROR: ${e.message ?: e.type}", safeReqId)
+                                    val detail = "type=${e.type}; message=${e.message ?: "none"}"
+                                    sendGoogleSignInResult(false, null, "CREDENTIAL_ERROR: $detail", safeReqId)
                                 }
                             } catch (t: Throwable) {
                                 Log.e("TradingzoneAuth", "Google sign-in exception (req=$safeReqId): ${t.message}", t)
                                 if (activeGoogleSignInRequestId.get() == seq) {
-                                    sendGoogleSignInResult(false, null, "AUTH_EXCEPTION: ${t.message}", safeReqId)
+                                    sendGoogleSignInResult(false, null, "AUTH_EXCEPTION: ${t.javaClass.simpleName}: ${t.message}", safeReqId)
                                 }
                             } finally {
                                 if (activeGoogleSignInRequestId.get() == seq) {
@@ -402,6 +426,16 @@ class MainActivity : AppCompatActivity() {
 
         private fun sendGoogleSignInResult(success: Boolean, dataJson: String?, errorMsg: String?, requestId: String = "") {
             if (!::webView.isInitialized) return
+            // Exactly one terminal result per request id. A late callback after the WebView has
+            // already timed out must never deliver a credential.
+            if (requestId.isNotBlank() && !completedGoogleRequestIds.add(requestId)) {
+                Log.w("TradingzoneAuth", "Dropping duplicate Google Sign-In result for req=$requestId")
+                return
+            }
+            if (!success && !errorMsg.isNullOrBlank()) {
+                lastGoogleSignInErrorCode = errorMsg.substringBefore(':')
+                lastGoogleSignInErrorDetail = errorMsg.take(400)
+            }
             webView.post {
                 val safeData = JSONObject.quote(dataJson ?: "")
                 val safeErr = JSONObject.quote(errorMsg ?: "")
@@ -410,6 +444,71 @@ class MainActivity : AppCompatActivity() {
                     "if (window.onTradingzoneGoogleSignInResult) window.onTradingzoneGoogleSignInResult($success, $safeData, $safeErr, $safeReq);",
                     null
                 )
+            }
+        }
+
+        /**
+         * Invalidate an in-flight Google Sign-In request (called by the WebView when it times out).
+         * Any late result from Credential Manager is then discarded instead of authenticating.
+         */
+        @JavascriptInterface
+        fun cancelNativeGoogleSignIn(requestId: String) {
+            val safeReqId = requestId.trim()
+            if (safeReqId.isNotEmpty()) completedGoogleRequestIds.add(safeReqId)
+            activeGoogleSignInRequestId.incrementAndGet()
+            googleSignInInFlight.set(false)
+            Log.i("TradingzoneAuth", "Cancelled native Google Sign-In request (req=$safeReqId)")
+        }
+
+        /**
+         * Google Sign-In diagnostics for the support/owner flow. SHA-1 fingerprints are public
+         * information; this never exposes tokens or client secrets.
+         */
+        @JavascriptInterface
+        fun getGoogleSignInDiagnostics(): String {
+            if (!verifyCallerIsTrusted()) return "{}"
+            val gmsStatus = try {
+                GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(this@MainActivity)
+            } catch (t: Throwable) {
+                -1
+            }
+            return JSONObject().apply {
+                put("packageName", packageName)
+                put("versionName", BuildConfig.VERSION_NAME)
+                put("versionCode", BuildConfig.VERSION_CODE)
+                put("signingSha1", computeSigningSha1())
+                put("playServicesStatus", gmsStatus)
+                put("playServicesOk", gmsStatus == ConnectionResult.SUCCESS)
+                put("playServicesError", if (gmsStatus == ConnectionResult.SUCCESS) "" else GoogleApiAvailability.getInstance().getErrorString(gmsStatus))
+                put("credentialManagerAvailable", try { CredentialManager.create(this@MainActivity); true } catch (t: Throwable) { false })
+                put("webClientIdSuffix", lastWebClientIdSuffix)
+                put("lastErrorCode", lastGoogleSignInErrorCode ?: "")
+                put("lastErrorDetail", lastGoogleSignInErrorDetail ?: "")
+                put("requiredOAuthRegistration", "Android OAuth client: package=$packageName, SHA-1=${computeSigningSha1()}")
+            }.toString()
+        }
+
+        private fun computeSigningSha1(): String {
+            return try {
+                val pm = packageManager
+                val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    val info = pm.getPackageInfo(packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+                    val signingInfo = info.signingInfo
+                    when {
+                        signingInfo == null -> null
+                        signingInfo.hasMultipleSigners() -> signingInfo.apkContentsSigners
+                        else -> signingInfo.signingCertificateHistory
+                    }
+                } else {
+                    @Suppress("DEPRECATION")
+                    pm.getPackageInfo(packageName, PackageManager.GET_SIGNATURES).signatures
+                }
+                val first = signatures?.firstOrNull() ?: return "UNAVAILABLE"
+                val digest = MessageDigest.getInstance("SHA-1").digest(first.toByteArray())
+                digest.joinToString(":") { byte -> "%02X".format(byte) }
+            } catch (t: Throwable) {
+                Log.w("TradingzoneAuth", "Could not compute signing SHA-1: ${t.message}")
+                "UNAVAILABLE"
             }
         }
 

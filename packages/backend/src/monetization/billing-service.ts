@@ -1,10 +1,150 @@
-import {
-  UserTier,
-  SUBSCRIPTION_PLANS,
-  SubscriptionPlan,
-} from '@trading/shared';
+import { UserTier, SUBSCRIPTION_PLANS, SubscriptionPlan } from '@trading/shared';
 import { IDatabase } from '../db/database.js';
 import { randomUUID } from 'node:crypto';
+
+/**
+ * Result of a *real* Google Play Developer API verification.
+ * `verified: true` may only be produced after the Android Publisher API confirms the token,
+ * the package name, the product identity and the entitlement window.
+ */
+export interface PlayVerificationResult {
+  verified: boolean;
+  code?: string;
+  error?: string;
+  packageName?: string;
+  productId?: string;
+  expiryTimeMillis?: number;
+  isAutoRenewing?: boolean;
+  verificationSource: 'GOOGLE_PLAY_VERIFIED';
+}
+
+export interface PlayVerificationParams {
+  packageName: string;
+  productId: string;
+  purchaseToken: string;
+  isSubscription: boolean;
+}
+
+export type PlayPurchaseVerifier = (params: PlayVerificationParams) => Promise<PlayVerificationResult>;
+
+/** Play Console product identity. Only this package's purchases are ever honoured. */
+export const DEFAULT_GOOGLE_PLAY_PACKAGE_NAME = 'com.indianpapertrading';
+
+const ANDROID_PUBLISHER_SCOPE = 'https://www.googleapis.com/auth/androidpublisher';
+
+function normaliseServiceAccountKey(raw: string): any {
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('{')) return JSON.parse(trimmed);
+  // Allow base64-encoded JSON (common in hosted env var UIs).
+  return JSON.parse(Buffer.from(trimmed, 'base64').toString('utf8'));
+}
+
+/**
+ * Builds a verifier backed by the live Google Play Developer API.
+ * Fails closed: any transport/auth/parse problem surfaces as `verified: false`.
+ */
+export function createGooglePlayVerifier(serviceAccountKey: string): PlayPurchaseVerifier {
+  return async ({ packageName, productId, purchaseToken, isSubscription }) => {
+    const fail = (code: string, error: string): PlayVerificationResult => ({
+      verified: false,
+      code,
+      error,
+      verificationSource: 'GOOGLE_PLAY_VERIFIED',
+    });
+
+    let accessToken: string;
+    try {
+      // Imported lazily so unit tests can run without the dependency initialising crypto state.
+      const { JWT } = await import('google-auth-library');
+      const credentials = normaliseServiceAccountKey(serviceAccountKey);
+      const client = new JWT({
+        email: credentials.client_email,
+        key: credentials.private_key,
+        scopes: [ANDROID_PUBLISHER_SCOPE],
+      });
+      const authorised = await client.authorize();
+      accessToken = String(authorised?.access_token || '');
+      if (!accessToken) return fail('ERR_PLAY_AUTH', 'Google service account did not return an access token.');
+    } catch (err: any) {
+      return fail(
+        'ERR_PLAY_AUTH',
+        `Google Play Developer API authentication failed: ${err?.message || 'unknown error'}`
+      );
+    }
+
+    const base = 'https://androidpublisher.googleapis.com/androidpublisher/v3/applications';
+    const encodedPkg = encodeURIComponent(packageName);
+    const encodedToken = encodeURIComponent(purchaseToken);
+
+    try {
+      if (isSubscription) {
+        const url = `${base}/${encodedPkg}/purchases/subscriptionsv2/tokens/${encodedToken}`;
+        const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+        if (res.status === 404 || res.status === 400 || res.status === 410) {
+          return fail('ERR_PLAY_TOKEN_INVALID', `Google Play rejected the purchase token (HTTP ${res.status}).`);
+        }
+        if (!res.ok) {
+          return fail('ERR_PLAY_API', `Google Play Developer API returned HTTP ${res.status}.`);
+        }
+        const body: any = await res.json();
+        const state = String(body?.subscriptionState || '');
+        const activeStates = new Set([
+          'SUBSCRIPTION_STATE_ACTIVE',
+          'SUBSCRIPTION_STATE_IN_GRACE_PERIOD',
+        ]);
+        if (!activeStates.has(state)) {
+          return fail('ERR_PLAY_SUBSCRIPTION_INACTIVE', `Subscription state is ${state || 'UNKNOWN'}.`);
+        }
+        const lineItems: any[] = Array.isArray(body?.lineItems) ? body.lineItems : [];
+        const matching = lineItems.find((li) => li?.productId === productId);
+        if (!matching) {
+          return fail(
+            'ERR_PLAY_PRODUCT_MISMATCH',
+            `Purchase token is not for product '${productId}'.`
+          );
+        }
+        const expiryMs = Date.parse(String(matching?.expiryTime || ''));
+        if (!Number.isFinite(expiryMs) || expiryMs <= Date.now()) {
+          return fail('ERR_PLAY_EXPIRED', 'Verified subscription has already expired.');
+        }
+        return {
+          verified: true,
+          packageName,
+          productId,
+          expiryTimeMillis: expiryMs,
+          isAutoRenewing: true,
+          verificationSource: 'GOOGLE_PLAY_VERIFIED',
+        };
+      }
+
+      const url = `${base}/${encodedPkg}/purchases/products/${encodeURIComponent(productId)}/tokens/${encodedToken}`;
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+      if (res.status === 404 || res.status === 400 || res.status === 410) {
+        return fail('ERR_PLAY_TOKEN_INVALID', `Google Play rejected the purchase token (HTTP ${res.status}).`);
+      }
+      if (!res.ok) {
+        return fail('ERR_PLAY_API', `Google Play Developer API returned HTTP ${res.status}.`);
+      }
+      const body: any = await res.json();
+      if (Number(body?.purchaseState) !== 0) {
+        return fail('ERR_PLAY_PURCHASE_STATE', `Purchase state is ${body?.purchaseState} (not purchased).`);
+      }
+      if (body?.productId && body.productId !== productId) {
+        return fail('ERR_PLAY_PRODUCT_MISMATCH', `Purchase belongs to product '${body.productId}'.`);
+      }
+      return {
+        verified: true,
+        packageName,
+        productId,
+        expiryTimeMillis: undefined,
+        isAutoRenewing: false,
+        verificationSource: 'GOOGLE_PLAY_VERIFIED',
+      };
+    } catch (err: any) {
+      return fail('ERR_PLAY_API', `Google Play Developer API request failed: ${err?.message || 'unknown'}`);
+    }
+  };
+}
 
 export type SubscriptionStatus =
   | 'ACTIVE'
@@ -62,11 +202,28 @@ export interface SubscriptionRecord {
 
 export class BillingService {
   private isTestMode: boolean = false;
+  private playVerifier: PlayPurchaseVerifier | null;
 
-  constructor(private db: IDatabase, private googleServiceAccountKey?: string) {
+  constructor(
+    private db: IDatabase,
+    private googleServiceAccountKey?: string,
+    playVerifier?: PlayPurchaseVerifier
+  ) {
     if (!this.googleServiceAccountKey && process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
       this.googleServiceAccountKey = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
     }
+    this.playVerifier = playVerifier || null;
+  }
+
+  public getPlayPackageName(): string {
+    return (process.env.GOOGLE_PLAY_PACKAGE_NAME || DEFAULT_GOOGLE_PLAY_PACKAGE_NAME).trim();
+  }
+
+  private getPlayVerifier(): PlayPurchaseVerifier | null {
+    if (this.playVerifier) return this.playVerifier;
+    if (!this.googleServiceAccountKey) return null;
+    this.playVerifier = createGooglePlayVerifier(this.googleServiceAccountKey);
+    return this.playVerifier;
   }
 
   public enableTestMode(enabled: boolean = true) {
@@ -648,12 +805,12 @@ export class BillingService {
 
     // 1. Replay Attack Prevention: check if token already redeemed by a different account
     const existingTokenRes = await this.db.query(
-      'SELECT user_id, status FROM subscriptions WHERE purchase_token = $1 LIMIT 1',
+      'SELECT user_id, status, expires_at, plan_id, is_auto_renewing FROM subscriptions WHERE purchase_token = $1 LIMIT 1',
       [purchaseToken.trim()]
     );
     if (existingTokenRes.rows.length > 0) {
-      const existingUser = existingTokenRes.rows[0].user_id;
-      if (existingUser !== userId) {
+      const existing = existingTokenRes.rows[0];
+      if (existing.user_id !== userId) {
         return {
           success: false,
           tier: 'FREE',
@@ -662,6 +819,22 @@ export class BillingService {
           error: 'This purchase token has already been associated with another user account.',
         };
       }
+      // Same-owner restore: return the already-verified entitlement without creating a duplicate row.
+      if (String(existing.status) === 'ACTIVE' && Number(existing.expires_at) > Date.now()) {
+        return {
+          success: true,
+          tier: 'PRO',
+          status: 'ACTIVE',
+          expiresAt: Number(existing.expires_at),
+        };
+      }
+      return {
+        success: false,
+        tier: 'FREE',
+        status: 'EXPIRED',
+        code: 'ERR_TOKEN_ALREADY_REDEEMED',
+        error: 'This purchase token has already been redeemed and is no longer active.',
+      };
     }
 
     // 2. Google Play Developer API Authorization Check (Fail-closed)
@@ -676,12 +849,90 @@ export class BillingService {
       };
     }
 
-    const verificationSource = isConfigured ? 'GOOGLE_PLAY_VERIFIED' : 'TEST_HARNESS';
+    const packageName = this.getPlayPackageName();
+    let verificationSource: 'GOOGLE_PLAY_VERIFIED' | 'TEST_HARNESS' = 'TEST_HARNESS';
+    let verifiedExpiryMs: number | undefined;
+    let verifiedAutoRenewing = !plan.isPrepaid;
 
-    // Authoritative expiration calculation:
+    if (isConfigured) {
+      // A client-supplied purchase token is NEVER trusted on its own. Only a live Android
+      // Publisher API response may mint a GOOGLE_PLAY_VERIFIED entitlement.
+      const verifier = this.getPlayVerifier();
+      if (!verifier) {
+        return {
+          success: false,
+          tier: 'FREE',
+          status: 'EXPIRED',
+          code: 'CONFIGURATION_REQUIRED',
+          error: 'Google Play verification is configured but no verifier is available.',
+        };
+      }
+      let verification: PlayVerificationResult;
+      try {
+        verification = await verifier({
+          packageName,
+          productId: plan.playProductId || plan.id,
+          purchaseToken: purchaseToken.trim(),
+          isSubscription: !plan.isPrepaid,
+        });
+      } catch (err: any) {
+        // Transport/credential outage: fail closed, never grant from an unverified token.
+        return {
+          success: false,
+          tier: 'FREE',
+          status: 'EXPIRED',
+          code: 'ERR_PLAY_VERIFICATION_UNAVAILABLE',
+          error: `Google Play verification is temporarily unavailable: ${err?.message || 'unknown error'}`,
+        };
+      }
+      if (!verification.verified) {
+        return {
+          success: false,
+          tier: 'FREE',
+          status: 'EXPIRED',
+          code: verification.code || 'ERR_PLAY_VERIFICATION_FAILED',
+          error: verification.error || 'Google Play purchase verification failed.',
+        };
+      }
+      if (verification.packageName && verification.packageName !== packageName) {
+        return {
+          success: false,
+          tier: 'FREE',
+          status: 'EXPIRED',
+          code: 'ERR_PLAY_PACKAGE_MISMATCH',
+          error: 'Verified purchase belongs to a different application package.',
+        };
+      }
+      if (verification.productId && verification.productId !== (plan.playProductId || plan.id)) {
+        return {
+          success: false,
+          tier: 'FREE',
+          status: 'EXPIRED',
+          code: 'ERR_PLAY_PRODUCT_MISMATCH',
+          error: 'Verified purchase belongs to a different product.',
+        };
+      }
+      verificationSource = 'GOOGLE_PLAY_VERIFIED';
+      verifiedExpiryMs = verification.expiryTimeMillis;
+      verifiedAutoRenewing = Boolean(verification.isAutoRenewing);
+    }
+
+    // Expiration: use the provider's authoritative window when supplied, otherwise the plan duration.
     const now = Date.now();
     const durationMs = plan.durationDays * 24 * 60 * 60 * 1000;
-    const expiresAt = now + durationMs;
+    const expiresAt =
+      verifiedExpiryMs !== undefined && Number.isFinite(verifiedExpiryMs)
+        ? Number(verifiedExpiryMs)
+        : now + durationMs;
+    if (expiresAt <= now) {
+      return {
+        success: false,
+        tier: 'FREE',
+        status: 'EXPIRED',
+        code: 'ERR_PLAY_EXPIRED',
+        error: 'Verified purchase entitlement has already expired.',
+      };
+    }
 
     const subId = randomUUID();
     await this.db.query(
@@ -695,7 +946,7 @@ export class BillingService {
         'ACTIVE',
         purchaseToken.trim(),
         expiresAt,
-        !plan.isPrepaid,
+        verifiedAutoRenewing,
         plan.priceRupees,
         verificationSource,
         now,
