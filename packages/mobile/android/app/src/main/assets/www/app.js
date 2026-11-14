@@ -3725,8 +3725,13 @@
                 const alignedTime = computeCandleBucketSec(serverBarTime * 1000, tf, lastBar.time);
                 const nowBucket = computeCandleBucketSec(serverNowMs(), tf, lastBar.time);
                 const isAligned = Number.isFinite(serverBarTime) && alignedTime === serverBarTime;
+                // A snapshot may legitimately be up to two intervals ahead of loaded history (one
+                // forming bar + one rollover), never more: this also rejects the old +5:30-shifted
+                // server timestamps that used to append a phantom candle.
                 const isPlausible =
-                  serverBarTime >= lastBar.time - intervalSec && serverBarTime <= nowBucket + intervalSec;
+                  serverBarTime >= lastBar.time - intervalSec &&
+                  serverBarTime <= lastBar.time + intervalSec * 2 &&
+                  serverBarTime <= nowBucket + intervalSec;
                 if (!isAligned || !isPlausible) {
                   console.warn('Ignoring misaligned forming-candle snapshot', {
                     serverBarTime,
