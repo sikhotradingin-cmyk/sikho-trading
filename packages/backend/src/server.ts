@@ -184,16 +184,61 @@ export async function buildServer(
     }
   };
 
+  interface FormingCandleBar {
+    time: number;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+  }
+  const FORMING_INTERVALS: Record<string, number> = {
+    '1m': 60,
+    '5m': 300,
+    '15m': 900,
+    '30m': 1800,
+    '1h': 3600,
+    '1d': 86400,
+  };
+  const formingCandles = new Map<string, Record<string, FormingCandleBar>>();
+  let wsTicksEmitted = 0;
+  let lastWsEmitTime = 0;
+
+  const updateFormingCandlesForTick = (quote: QuoteSnapshot) => {
+    const ltp = Number(quote.ltp);
+    if (!Number.isFinite(ltp) || ltp <= 0) return;
+    const tickMs = Number(quote.providerTimestamp || quote.receiveTimestamp || Date.now());
+    const istSec = Math.floor((tickMs + 19800000) / 1000);
+    let byTf = formingCandles.get(quote.globalId);
+    if (!byTf) {
+      byTf = {};
+      formingCandles.set(quote.globalId, byTf);
+    }
+    for (const [tf, sec] of Object.entries(FORMING_INTERVALS)) {
+      const bucketSec = Math.floor(istSec / sec) * sec;
+      const existing = byTf[tf];
+      if (!existing || bucketSec > existing.time) {
+        byTf[tf] = { time: bucketSec, open: ltp, high: ltp, low: ltp, close: ltp };
+      } else if (bucketSec === existing.time) {
+        existing.high = Math.max(existing.high, ltp);
+        existing.low = Math.min(existing.low, ltp);
+        existing.close = ltp;
+      }
+    }
+  };
+
   const ensureEngineSubscription = (globalId: string) => {
     if (engineSubscribedIds.has(globalId)) return;
     engineSubscribedIds.add(globalId);
     activeProvider.subscribe(globalId, (quote: QuoteSnapshot) => {
       simEngine.onMarketTick(quote).catch(() => { });
+      updateFormingCandlesForTick(quote);
       const msg = JSON.stringify({ type: 'QUOTE_TICK', data: quote });
       for (const client of wsClients) {
         if (client.subscriptions.has(globalId) || client.subscriptions.has(quote.globalId)) {
           if (client.ws.readyState === WebSocket.OPEN) {
             client.ws.send(msg);
+            wsTicksEmitted += 1;
+            lastWsEmitTime = Date.now();
           }
         }
       }
@@ -268,6 +313,13 @@ export async function buildServer(
       googleClientId: config.googleClientId?.trim() || null,
       databaseEmulated: db.isEmulated(),
       serverTimestamp: Date.now(),
+      telemetry: {
+        ...upstoxAdapter.getTelemetry(),
+        wsTicksEmitted,
+        lastWsEmitTime,
+        wsClientsCount: wsClients.size,
+        trackedFormingInstruments: formingCandles.size,
+      },
       marketSession: {
         isMarketOpen: isIndianMarketOpen(),
         exchange: 'NSE',
@@ -1776,6 +1828,16 @@ export async function buildServer(
                   if (pos.quantity !== 0) {
                     clientState.subscriptions.add(pos.globalInstrumentId);
                     ensureEngineSubscription(pos.globalInstrumentId);
+                    activeProvider
+                      .getQuote(pos.globalInstrumentId)
+                      .then((snap) => {
+                        if (snap && ws.readyState === WebSocket.OPEN && clientState.subscriptions.has(pos.globalInstrumentId)) {
+                          ws.send(JSON.stringify({ type: 'QUOTE_TICK', data: snap }));
+                          wsTicksEmitted += 1;
+                          lastWsEmitTime = Date.now();
+                        }
+                      })
+                      .catch(() => {});
                   }
                 }
               }
@@ -1813,12 +1875,18 @@ export async function buildServer(
             clientState.subscriptions.add(canonicalId);
             ensureEngineSubscription(canonicalId);
 
-            // Immediately emit initial quote snapshot so active charts & watchlists reconcile without waiting for next tick
+            // Immediately emit initial quote snapshot + forming candle snapshot so active charts & watchlists reconcile after reconnect
+            const cachedForming = formingCandles.get(canonicalId);
+            if (cachedForming && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'FORMING_CANDLE_SNAPSHOT', globalId: canonicalId, candles: cachedForming }));
+            }
             activeProvider
               .getQuote(canonicalId)
               .then((snap) => {
                 if (snap && ws.readyState === WebSocket.OPEN && clientState.subscriptions.has(canonicalId)) {
                   ws.send(JSON.stringify({ type: 'QUOTE_TICK', data: snap }));
+                  wsTicksEmitted += 1;
+                  lastWsEmitTime = Date.now();
                 }
               })
               .catch(() => { });

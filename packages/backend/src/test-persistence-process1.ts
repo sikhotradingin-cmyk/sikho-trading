@@ -1,12 +1,13 @@
-import dotenv from 'dotenv';
 import path from 'node:path';
 import fs from 'node:fs';
+import { assertSafeTestDatabaseTarget } from './db/database.js';
 import { buildServer } from './server.js';
 
-dotenv.config();
-dotenv.config({ path: path.resolve(process.cwd(), 'packages/backend/.env') });
+process.env.SIKHO_TEST_MODE = 'true';
+process.env.TEST_USE_REAL_PG = 'true';
 
 async function main() {
+  assertSafeTestDatabaseTarget(process.env.TEST_DATABASE_URL);
   console.log('[PROCESS 1] Starting backend server process...');
   const { app, db } = await buildServer();
 

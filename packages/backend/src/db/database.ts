@@ -206,9 +206,66 @@ export class EmulatedPostgresDatabase implements IDatabase {
   }
 }
 
+const PRODUCTION_HOST_PATTERNS = [
+  /\.render\.com$/i,
+  /^dpg-[a-z0-9-]+/i,
+  /\.rds\.amazonaws\.com$/i,
+  /\.neon\.tech$/i,
+  /\.supabase\.co$/i,
+  /\.railway\.app$/i,
+];
+
+const LOCAL_TEST_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+export function isTestExecutionContext(): boolean {
+  return (
+    Boolean(process.env.NODE_TEST_CONTEXT) ||
+    process.env.NODE_ENV === 'test' ||
+    process.env.SIKHO_TEST_MODE === 'true'
+  );
+}
+
+export function assertSafeTestDatabaseTarget(connectionString?: string): void {
+  if (!connectionString || !connectionString.trim()) {
+    throw new Error(
+      '[TEST_DB_GUARD] Refusing to use real PostgreSQL in test mode without an explicit TEST_DATABASE_URL.'
+    );
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(connectionString.trim());
+  } catch {
+    throw new Error('[TEST_DB_GUARD] Invalid PostgreSQL connection string for test execution.');
+  }
+  const host = parsed.hostname.toLowerCase();
+  const dbName = parsed.pathname.replace(/^\/+/, '').toLowerCase();
+
+  if (PRODUCTION_HOST_PATTERNS.some((pattern) => pattern.test(host))) {
+    throw new Error(
+      `[TEST_DB_GUARD] Refusing to run tests against production database host "${host}".`
+    );
+  }
+  if (!LOCAL_TEST_HOSTS.has(host)) {
+    throw new Error(
+      `[TEST_DB_GUARD] Refusing to run tests against non-local database host "${host}". Only local test PostgreSQL instances are permitted.`
+    );
+  }
+  if (!dbName || (!dbName.includes('test') && dbName !== 'postgres')) {
+    throw new Error(
+      `[TEST_DB_GUARD] Refusing to run tests against non-test database "${dbName || '(empty)'}". Test database name must contain "test".`
+    );
+  }
+}
+
 export function createDatabase(connectionString?: string): IDatabase {
-  if (Boolean(process.env.NODE_TEST_CONTEXT) && process.env.TEST_USE_REAL_PG !== 'true') {
-    return new EmulatedPostgresDatabase();
+  if (isTestExecutionContext()) {
+    if (process.env.TEST_USE_REAL_PG !== 'true') {
+      return new EmulatedPostgresDatabase();
+    }
+    const explicitTestUrl = process.env.TEST_DATABASE_URL?.trim();
+    const candidate = explicitTestUrl || connectionString?.trim();
+    assertSafeTestDatabaseTarget(candidate);
+    return new RealPostgresDatabase(candidate!);
   }
   if (connectionString && (connectionString.startsWith('postgres://') || connectionString.startsWith('postgresql://'))) {
     return new RealPostgresDatabase(connectionString);

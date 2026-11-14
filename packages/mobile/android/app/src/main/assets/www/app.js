@@ -562,8 +562,15 @@
 
   let googleSignInTimeoutId = null;
 
+  let activeGoogleSignInRequestId = null;
+
   // Callback registered globally for native Android Credential Manager result
-  window.onTradingzoneGoogleSignInResult = async function (success, dataJsonStr, errorMsg) {
+  window.onTradingzoneGoogleSignInResult = async function (success, dataJsonStr, errorMsg, requestId) {
+    if (requestId && activeGoogleSignInRequestId && requestId !== activeGoogleSignInRequestId) {
+      return; // Ignore stale callback from timed-out or superseded sign-in attempt
+    }
+    activeGoogleSignInRequestId = null;
+
     if (googleSignInTimeoutId) {
       clearTimeout(googleSignInTimeoutId);
       googleSignInTimeoutId = null;
@@ -582,8 +589,12 @@
       resetGoogleBtn();
       if (errorMsg === 'USER_CANCELLED') {
         showAuthError('Google sign-in was cancelled.');
+      } else if (errorMsg && errorMsg.includes('PLAY_SERVICES_UNAVAILABLE')) {
+        showAuthError('Google Play Services is unavailable or needs an update on this device. Please update Google Play Services or sign in with email/password.');
+      } else if (errorMsg && errorMsg.includes('SIGN_IN_TIMEOUT')) {
+        showAuthError('Google sign-in timed out. Please try again or use email login.');
       } else if (errorMsg && errorMsg.includes('NO_CREDENTIALS')) {
-        showAuthError('No Google accounts found on this device. Please add a Google account in Android Settings or sign in with email/password.');
+        showAuthError('Google Sign-In could not obtain an eligible Google ID credential from Play Services. Check that Google Play Services is updated and a Google account is active on this device, or sign in with email/password.');
       } else if (errorMsg && (errorMsg.includes('CREDENTIAL_ERROR') || errorMsg.includes('16:'))) {
         showAuthError('Google Sign-In configuration mismatch (SHA-1/Package). Ensure package com.indianpapertrading and signing fingerprint are registered in Google Cloud Console, or sign in with email/password.');
       } else {
@@ -638,13 +649,16 @@
       // 1. If running inside Android Native wrapper with Credential Manager bridge
       if (window.TradingzoneNative && typeof window.TradingzoneNative.startNativeGoogleSignIn === 'function') {
         state.isGoogleSignInPending = true;
+        const reqId = `g_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        activeGoogleSignInRequestId = reqId;
         if (googleBtn) googleBtn.disabled = true;
         if (googleBtnText) googleBtnText.textContent = 'Opening Google Sign-In...';
 
         // 45-second timeout safety guard
         if (googleSignInTimeoutId) clearTimeout(googleSignInTimeoutId);
         googleSignInTimeoutId = setTimeout(() => {
-          if (state.isGoogleSignInPending) {
+          if (state.isGoogleSignInPending && activeGoogleSignInRequestId === reqId) {
+            activeGoogleSignInRequestId = null;
             state.isGoogleSignInPending = false;
             if (googleBtn) googleBtn.disabled = false;
             if (googleBtnText) googleBtnText.textContent = 'Continue with Google';
@@ -652,8 +666,8 @@
           }
         }, 45000);
 
-        // Immediately invoke native Credential Manager prompt with zero blocking pre-flight
-        window.TradingzoneNative.startNativeGoogleSignIn(GOOGLE_WEB_CLIENT_ID);
+        // Immediately invoke native Credential Manager prompt with request ID
+        window.TradingzoneNative.startNativeGoogleSignIn(GOOGLE_WEB_CLIENT_ID, reqId);
         return;
       }
 
@@ -797,6 +811,9 @@
     if (!saved) {
       showAuthError('Secure session storage failed on this device. Please sign in again.');
       clearSessionSecure();
+    if (window.TradingzoneNative && typeof window.TradingzoneNative.clearNativeGoogleCredentialState === 'function') {
+      try { window.TradingzoneNative.clearNativeGoogleCredentialState(); } catch { }
+    }
       showTopScreen('screen-auth');
       return false;
     }
@@ -825,6 +842,9 @@
     state.watchlists = [];
     state.performance = null;
     clearSessionSecure();
+    if (window.TradingzoneNative && typeof window.TradingzoneNative.clearNativeGoogleCredentialState === 'function') {
+      try { window.TradingzoneNative.clearNativeGoogleCredentialState(); } catch { }
+    }
     if (wsConn) {
       try { wsConn.close(); } catch { }
       wsConn = null;
@@ -3436,6 +3456,38 @@
             renderExploreFnoLists();
             renderCommoditiesList();
             notifyNativeUserTier();
+          } else if (msg.type === 'FORMING_CANDLE_SNAPSHOT' && msg.globalId && msg.candles) {
+            if (
+              state.chartOpen &&
+              state.activeInstrument &&
+              state.activeInstrument.globalId === msg.globalId &&
+              candleSeries &&
+              state.candles.length > 0 &&
+              !state.replayMode
+            ) {
+              const tf = state.activeTimeframe || '5m';
+              const serverBar = msg.candles[tf];
+              const lastBar = state.candles[state.candles.length - 1];
+              if (serverBar && serverBar.time >= lastBar.time && Number(serverBar.close) > 0) {
+                if (serverBar.time === lastBar.time) {
+                  lastBar.high = Math.max(lastBar.high, serverBar.high);
+                  lastBar.low = Math.min(lastBar.low, serverBar.low);
+                  lastBar.close = serverBar.close;
+                  candleSeries.update({ ...lastBar });
+                } else {
+                  const nextBar = {
+                    time: serverBar.time,
+                    open: serverBar.open,
+                    high: serverBar.high,
+                    low: serverBar.low,
+                    close: serverBar.close,
+                  };
+                  state.candles.push(nextBar);
+                  candleSeries.update(nextBar);
+                }
+                updateChartCountdownUI();
+              }
+            }
           } else if (msg.type === 'QUOTE_TICK' && msg.data) {
             handleIncomingQuoteTick(msg.data);
           }
@@ -3548,6 +3600,8 @@
       state.lastTickTimestamps[quote.globalId] = quoteTime;
     }
     state.lastAnyTickReceiveMs = Date.now();
+    state.clientTicksReceived = (state.clientTicksReceived || 0) + 1;
+    state.lastClientRenderMs = state.lastAnyTickReceiveMs;
 
     const latencyMs = quoteTime ? Math.max(0, Date.now() - quoteTime) : null;
     const latencyPill = document.getElementById('header-latency-pill');
@@ -3556,11 +3610,14 @@
       latencyPill.style.display = 'inline-block';
     }
 
-    // Robust quote cache: prevent null/partial ticks from clearing valid prices
+    // Robust quote cache: prevent null/undefined/partial ticks from clearing valid prices
     state.quotesMap = state.quotesMap || new Map();
-    if (quote.ltp !== undefined && quote.ltp !== null && quote.ltp > 0) {
+    if (quote.ltp !== undefined && quote.ltp !== null && Number(quote.ltp) > 0) {
       const existing = state.quotesMap.get(quote.globalId) || {};
-      const merged = { ...existing, ...quote };
+      const merged = { ...existing };
+      for (const [k, v] of Object.entries(quote)) {
+        if (v !== undefined && v !== null) merged[k] = v;
+      }
       state.quotesMap.set(quote.globalId, merged);
       if (state.indices) {
         const found = state.indices.find(i => i.globalId === quote.globalId);

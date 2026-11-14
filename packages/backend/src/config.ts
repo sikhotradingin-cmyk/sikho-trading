@@ -2,10 +2,17 @@ import dotenv from 'dotenv';
 import path from 'node:path';
 
 // Load from standard locations (packages/backend/.env takes precedence for local backend config)
-dotenv.config();
-dotenv.config({ path: path.resolve(process.cwd(), 'packages/backend/.env') });
-dotenv.config({ path: path.resolve(__dirname, '../.env') });
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+const isTestEnv =
+  Boolean(process.env.NODE_TEST_CONTEXT) ||
+  process.env.NODE_ENV === 'test' ||
+  process.env.SIKHO_TEST_MODE === 'true';
+
+if (!isTestEnv) {
+  dotenv.config();
+  dotenv.config({ path: path.resolve(process.cwd(), 'packages/backend/.env') });
+  dotenv.config({ path: path.resolve(__dirname, '../.env') });
+  dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+}
 
 export function isPlaceholderCredential(value?: string): boolean {
   if (!value) return false;
@@ -134,7 +141,7 @@ export const config: AppConfig = {
       ? 'DEMO'
       : undefined,
   googleClientId: process.env.GOOGLE_CLIENT_ID || '',
-  databaseUrl: process.env.DATABASE_URL,
+  databaseUrl: isTestEnv ? process.env.TEST_DATABASE_URL : process.env.DATABASE_URL,
   upstox: {
     analyticsToken: process.env.UPSTOX_ANALYTICS_TOKEN,
   },

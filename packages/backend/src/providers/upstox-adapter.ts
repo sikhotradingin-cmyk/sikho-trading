@@ -451,6 +451,12 @@ export class UpstoxAdapter implements IMarketDataProvider {
   private isConnected = false;
   private isTokenVerified = false;
   private lastTickTime = 0;
+  private providerEventsCount = 0;
+  private decodedTicksCount = 0;
+  private droppedOutOfOrderCount = 0;
+  private duplicateTickCount = 0;
+  private lastProviderEventAt = 0;
+  private lastDecodeAt = 0;
   private lastErrorReason: string | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
   private wsReconnectTimer: NodeJS.Timeout | null = null;
@@ -1495,25 +1501,52 @@ export class UpstoxAdapter implements IMarketDataProvider {
       if (inst?.upstoxInstrumentKey) keys.push(inst.upstoxInstrumentKey);
     }
     if (keys.length === 0) return;
-    const payload = {
-      guid: `tz-${Date.now()}`,
-      method: 'sub',
-      data: {
-        mode: 'full',
-        instrumentKeys: keys,
-      },
-    };
-    this.ws.send(Buffer.from(JSON.stringify(payload), 'utf8'));
+    const uniqueKeys = Array.from(new Set(keys));
+    for (let i = 0; i < uniqueKeys.length; i += 100) {
+      const batch = uniqueKeys.slice(i, i + 100);
+      const payload = {
+        guid: `tz-${Date.now()}-${i}`,
+        method: 'sub',
+        data: {
+          mode: 'full',
+          instrumentKeys: batch,
+        },
+      };
+      this.ws.send(Buffer.from(JSON.stringify(payload), 'utf8'));
+    }
   }
 
   public handleBinaryFeedPacket(buf: Buffer): void {
-    const ticks = decodeUpstoxFeedResponseProto(buf);
     const now = Date.now();
+    this.providerEventsCount += 1;
+    this.lastProviderEventAt = now;
+    const ticks = decodeUpstoxFeedResponseProto(buf);
+    if (ticks.length > 0) {
+      this.decodedTicksCount += ticks.length;
+      this.lastDecodeAt = now;
+    }
     for (const t of ticks) {
       const inst = this.byUpstoxKey.get(t.instrumentKey);
-      if (!inst) continue;
-      this.lastTickTime = now;
+      if (!inst || !Number.isFinite(t.ltp) || t.ltp <= 0) continue;
       const prev = this.quotes.get(inst.globalId);
+      const providerTs = t.ltt > 0 ? t.ltt : now;
+      if (prev && t.ltt > 0 && prev.providerTimestamp > 0 && t.ltt < prev.providerTimestamp) {
+        this.droppedOutOfOrderCount += 1;
+        continue;
+      }
+      if (
+        prev &&
+        t.ltt > 0 &&
+        prev.providerTimestamp === providerTs &&
+        prev.ltp === t.ltp &&
+        (t.volume === undefined || prev.volume === t.volume) &&
+        (t.bidPrice === undefined || prev.bidPrice === t.bidPrice) &&
+        (t.askPrice === undefined || prev.askPrice === t.askPrice)
+      ) {
+        this.duplicateTickCount += 1;
+        continue;
+      }
+      this.lastTickTime = now;
       const snap: QuoteSnapshot = {
         globalId: inst.globalId,
         token: inst.token,
@@ -1522,13 +1555,13 @@ export class UpstoxAdapter implements IMarketDataProvider {
         high: t.high ?? Math.max(prev?.high ?? t.ltp, t.ltp),
         low: t.low ?? Math.min(prev?.low ?? t.ltp, t.ltp),
         close: t.cp > 0 ? t.cp : prev?.close ?? t.ltp,
-        bidPrice: t.bidPrice ?? Number((t.ltp - inst.tickSize).toFixed(2)),
+        bidPrice: t.bidPrice ?? prev?.bidPrice ?? Number((t.ltp - inst.tickSize).toFixed(2)),
         bidQty: t.bidQty ?? prev?.bidQty,
-        askPrice: t.askPrice ?? Number((t.ltp + inst.tickSize).toFixed(2)),
+        askPrice: t.askPrice ?? prev?.askPrice ?? Number((t.ltp + inst.tickSize).toFixed(2)),
         askQty: t.askQty ?? prev?.askQty,
         volume: t.volume ?? prev?.volume,
         openInterest: t.oi ?? prev?.openInterest,
-        providerTimestamp: t.ltt > 0 ? t.ltt : now,
+        providerTimestamp: providerTs,
         receiveTimestamp: now,
         source: 'UPSTOX',
         isSimulated: false,
@@ -1537,6 +1570,19 @@ export class UpstoxAdapter implements IMarketDataProvider {
       const subs = this.listeners.get(inst.globalId);
       if (subs) subs.forEach((cb) => cb(snap));
     }
+  }
+
+  public getTelemetry() {
+    return {
+      providerEventsCount: this.providerEventsCount,
+      decodedTicksCount: this.decodedTicksCount,
+      droppedOutOfOrderCount: this.droppedOutOfOrderCount,
+      duplicateTickCount: this.duplicateTickCount,
+      lastProviderEventAt: this.lastProviderEventAt,
+      lastDecodeAt: this.lastDecodeAt,
+      cachedQuotesCount: this.quotes.size,
+      wsConnected: this.isConnected,
+    };
   }
 
   private async pollSubscribedIntradayQuotes(): Promise<void> {

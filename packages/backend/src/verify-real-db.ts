@@ -1,19 +1,14 @@
-import dotenv from 'dotenv';
-import path from 'node:path';
-import { createDatabase, runDatabaseMigrations } from './db/database.js';
+import { assertSafeTestDatabaseTarget, createDatabase, runDatabaseMigrations } from './db/database.js';
 import { PostgresRepository } from './db/postgres-repository.js';
 
-dotenv.config();
-dotenv.config({ path: path.resolve(process.cwd(), 'packages/backend/.env') });
+process.env.SIKHO_TEST_MODE = 'true';
+process.env.TEST_USE_REAL_PG = 'true';
 
 async function main() {
-  const dbUrl = process.env.DATABASE_URL?.trim();
-  if (!dbUrl || (!dbUrl.startsWith('postgres://') && !dbUrl.startsWith('postgresql://'))) {
-    console.error('ERROR: DATABASE_URL in packages/backend/.env is empty or not a valid postgres:// URL.');
-    process.exit(1);
-  }
+  const dbUrl = process.env.TEST_DATABASE_URL?.trim();
+  assertSafeTestDatabaseTarget(dbUrl);
 
-  console.log('[1/5] Connecting to Render PostgreSQL instance...');
+  console.log('[1/5] Connecting to approved test PostgreSQL instance...');
   const db = createDatabase(dbUrl);
 
   try {
