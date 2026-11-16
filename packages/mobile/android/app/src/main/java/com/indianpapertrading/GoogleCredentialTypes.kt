@@ -16,6 +16,17 @@ package com.indianpapertrading
  * are parsed by the same `GoogleIdTokenCredential.createFrom`.
  */
 object GoogleCredentialTypes {
+    // GMS can wrap provider/account failures in GetCredentialCancellationException. Preserve
+    // genuine dismissal, but never label the observed [16] reauth failure as user cancellation.
+    fun cancellationErrorCode(message: String?): String {
+        val text = message.orEmpty().lowercase()
+        return when {
+            text.contains("reauth") -> "GOOGLE_REAUTH_FAILED"
+            text.contains("developer") || text.contains("oauth") -> "CONFIGURATION_ERROR"
+            text.contains("network") -> "CREDENTIAL_ERROR"
+            else -> "USER_CANCELLED"
+        }
+    }
     const val TYPE_ID_TOKEN = "com.google.android.libraries.identity.googleid.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL"
     const val TYPE_ID_TOKEN_SIWG =
         "com.google.android.libraries.identity.googleid.TYPE_GOOGLE_ID_TOKEN_SIWG_CREDENTIAL"

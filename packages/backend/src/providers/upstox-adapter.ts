@@ -1744,12 +1744,17 @@ export class UpstoxAdapter implements IMarketDataProvider {
   public subscribe(globalId: string, listener: (quote: QuoteSnapshot) => void): () => void {
     const inst = this.resolveInstrument(globalId);
     const key = inst ? inst.globalId : globalId;
+    const wasSubscribed = (this.listeners.get(key)?.size || 0) > 0;
+    // This adapter uses full mode only: Upstox V3's normal single-mode limit is 2,000 keys.
+    if (!wasSubscribed && this.listeners.size >= 2000) {
+      throw new Error('ERR_MARKET_DATA_CAPACITY: Live provider subscription capacity reached.');
+    }
     if (!this.listeners.has(key)) {
       this.listeners.set(key, new Set());
     }
     this.listeners.get(key)!.add(listener);
 
-    if (this.isConnected && this.ws?.readyState === WebSocket.OPEN && inst?.upstoxInstrumentKey) {
+    if (!wasSubscribed && this.isConnected && this.ws?.readyState === WebSocket.OPEN && inst?.upstoxInstrumentKey) {
       const payload = {
         guid: `tz-sub-${Date.now()}`,
         method: 'sub',
@@ -1772,6 +1777,15 @@ export class UpstoxAdapter implements IMarketDataProvider {
 
     return () => {
       this.listeners.get(key)?.delete(listener);
+      if (this.listeners.get(key)?.size === 0) {
+        this.listeners.delete(key);
+        if (this.isConnected && this.ws?.readyState === WebSocket.OPEN && inst?.upstoxInstrumentKey) {
+          this.ws.send(Buffer.from(JSON.stringify({
+            guid: `tz-unsub-${Date.now()}`, method: 'unsub',
+            data: { instrumentKeys: [inst.upstoxInstrumentKey] },
+          }), 'utf8'));
+        }
+      }
     };
   }
 

@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { newDb, IMemoryDb } from 'pg-mem';
+import { newDb, IMemoryDb, DataType } from 'pg-mem';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -143,7 +143,11 @@ export class EmulatedPostgresDatabase implements IDatabase {
 
   constructor() {
     this.memDb = newDb();
-    // Register custom pg functions if needed
+    // PostgreSQL's standard NULLIF is used by repeat Google profile updates. pg-mem does
+    // not implement it, so emulate it here rather than changing production SQL for a test DB.
+    this.memDb.public.registerFunction({ name: 'nullif', args: [DataType.text, DataType.text],
+      returns: DataType.text, allowNullArguments: true,
+      implementation: (a: string | null, b: string | null) => a === b ? null : a });
     this.adapter = this.memDb.adapters.createPg();
     this.initSchema();
   }

@@ -58,6 +58,9 @@
 
   function isFreeTierAllowedInstrument(inst) {
     if (!inst) return false;
+    if (inst.provider === 'DEMO' && inst.isSimulatedFixture && ['DEMO-NIFTY50', 'DEMO-NIFTY-FUT'].includes(inst.symbol)) {
+      return isFreeTierAllowedInstrument(Object.assign({}, inst, { symbol: inst.instrumentType === 'INDEX_SPOT' ? 'NIFTY 50' : 'NIFTY 50 FUT', provider: undefined }));
+    }
 
     var exchange = String(inst.exchange || '').trim().toUpperCase();
     if (exchange && !FREE_EXCHANGES[exchange]) return false;
@@ -69,12 +72,14 @@
     if (declared && !FREE_UNDERLYINGS[declared]) return false;
 
     var fromSymbol = resolveUnderlyingFromSymbol(inst.symbol);
+    if (instrumentType === 'INDEX_SPOT') {
+      var spot = normaliseUnderlying(inst.symbol);
+      return !!FREE_UNDERLYINGS[spot] && (!declared || declared === spot);
+    }
+    if (fromSymbol && declared && fromSymbol !== declared) return false;
     if (declared && FREE_UNDERLYINGS[declared]) {
       if (inst.symbol && fromSymbol === null) {
-        var s = String(inst.symbol).trim().toUpperCase();
-        if (/^(FINNIFTY|MIDCPNIFTY|NIFTYIT|NIFTYNXT50|NIFTYFPI|NIFTYMID|NIFTYMIDSML|NIFTYSMALLCAP|NIFTYBANK|SENSEX|BANKEX)/.test(s)) {
-          return false;
-        }
+        return false;
       }
       return true;
     }
@@ -88,6 +93,7 @@
     var exchange = String(parts[0] || '').trim().toUpperCase();
     var symbol = String(parts[1] || '').trim();
     if (!FREE_EXCHANGES[exchange]) return false;
+    if (exchange === 'NSE' || exchange === 'BSE') return !!FREE_UNDERLYINGS[normaliseUnderlying(symbol)];
     return resolveUnderlyingFromSymbol(symbol) !== null;
   }
 

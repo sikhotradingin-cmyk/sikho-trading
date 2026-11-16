@@ -43,7 +43,7 @@ if (!(BigInt.prototype as any).toJSON) {
 }
 
 /** Application version advertised by /health (kept in sync with the Android versionName). */
-export const SERVICE_VERSION = '1.0.8';
+export const SERVICE_VERSION = '1.0.9';
 const SERVICE_STARTED_AT = new Date().toISOString();
 
 /** Browser/WebSocket clients must be told the server clock so countdowns can be corrected. */
@@ -182,6 +182,9 @@ export async function buildServer(
     subscriptions: Set<string>;
   }>();
   const engineSubscribedIds = new Set<string>();
+  const engineSubscriptionReleases = new Map<string, () => void>();
+  const defaultSubscriptionIds = new Set(instruments.map(i => i.globalId));
+  const activeOrderSubscriptions = new Map<string, number>();
 
   const notifyActiveUserWebSocketsTierChanged = async (userId: string) => {
     const entitlement = await billingService.resolveEntitlement(userId);
@@ -233,8 +236,7 @@ export async function buildServer(
 
   const ensureEngineSubscription = (globalId: string) => {
     if (engineSubscribedIds.has(globalId)) return;
-    engineSubscribedIds.add(globalId);
-    activeProvider.subscribe(globalId, (quote: QuoteSnapshot) => {
+    const release = activeProvider.subscribe(globalId, (quote: QuoteSnapshot) => {
       simEngine.onMarketTick(quote).catch(() => { });
       formingTracker.applyTick(quote);
       const msg = JSON.stringify({ type: 'QUOTE_TICK', data: quote });
@@ -248,6 +250,20 @@ export async function buildServer(
         }
       }
     });
+    engineSubscribedIds.add(globalId);
+    engineSubscriptionReleases.set(globalId, release);
+  };
+
+  const releaseUnusedEngineSubscriptions = async () => {
+    // Keep engine feeds for real open exposure and pending orders even if every UI closes.
+    const exposure = new Set(await repo.getAllOpenPositionInstrumentIds());
+    for (const [gid, release] of engineSubscriptionReleases) {
+      if (defaultSubscriptionIds.has(gid) || exposure.has(gid) || activeOrderSubscriptions.has(gid)) continue;
+      if (Array.from(wsClients).some(client => client.subscriptions.has(gid))) continue;
+      release();
+      engineSubscriptionReleases.delete(gid);
+      engineSubscribedIds.delete(gid);
+    }
   };
 
   for (const inst of instruments) {
@@ -323,6 +339,11 @@ export async function buildServer(
       googleOAuthConfigured: Boolean(config.googleClientId && config.googleClientId.trim().length > 0),
       googleClientId: config.googleClientId?.trim() || null,
       databaseEmulated: db.isEmulated(),
+      exchangeSessions: {
+        NSE: getExchangeSessionStatus('NSE'),
+        BSE: getExchangeSessionStatus('BSE'),
+        MCX: getExchangeSessionStatus('MCX'),
+      },
       serverTimestamp: Date.now(),
       telemetry: {
         ...upstoxAdapter.getTelemetry(),
@@ -547,6 +568,15 @@ export async function buildServer(
 
   // 2D. Google Sign-In ID Token Verification (fails closed if audience/client ID unconfigured)
   app.post('/api/v1/auth/google', async (req, reply) => {
+    const rawTraceId = req.headers['x-auth-request-id'];
+    const traceId = typeof rawTraceId === 'string' && /^g_[A-Za-z0-9_]{1,60}$/.test(rawTraceId) ? rawTraceId : req.id;
+    const startedAt = Date.now();
+    let authStage = 'VERIFY_TOKEN';
+    reply.header('X-Auth-Request-Id', traceId);
+    reply.raw.once('finish', () => {
+      console.info('[GoogleAuthTrace]', JSON.stringify({ authRequestId: traceId, stage: authStage, timestamp: Date.now(), elapsedMs: Date.now() - startedAt, statusCode: reply.statusCode }));
+    });
+    console.info('[GoogleAuthTrace]', JSON.stringify({ authRequestId: traceId, stage: 'BACKEND_RECEIVED', timestamp: startedAt }));
     const body = (req.body as { idToken?: string }) || {};
     const configuredClientId = config.googleClientId?.trim();
 
@@ -591,6 +621,7 @@ export async function buildServer(
       resetRateLimit(rateKey);
 
       const googleEmail = String(payload.email);
+      authStage = 'PERSIST_SESSION_ACCOUNT';
       const googleName = payload.name || googleEmail.split('@')[0];
       const user = await repo.upsertGoogleUser({
         email: googleEmail,
@@ -612,6 +643,7 @@ export async function buildServer(
         isDevAccount: false,
       });
 
+      authStage = 'SESSION_ISSUED';
       return {
         token,
         user: {
@@ -629,9 +661,13 @@ export async function buildServer(
         entitlement,
       };
     } catch (err: any) {
-      return reply.status(401).send({
-        error: `Google verification failed: ${err.message}`,
-        code: 'ERR_GOOGLE_AUTH_ERROR',
+      // Google library exception messages can contain claims or token material. Log class only.
+      console.warn('[GoogleAuthTrace]', JSON.stringify({ authRequestId: traceId, stage: authStage, exceptionClass: err?.constructor?.name || 'Error', timestamp: Date.now() }));
+      const verifying = authStage === 'VERIFY_TOKEN';
+      return reply.status(verifying ? 401 : 503).send({
+        error: verifying ? 'Google token verification failed. Check the configured Web OAuth audience.' : 'Could not persist the authenticated session. Please retry later.',
+        code: verifying ? 'ERR_GOOGLE_AUTH_ERROR' : 'ERR_GOOGLE_SESSION_UNAVAILABLE',
+        requestId: traceId,
       });
     }
   });
@@ -1036,8 +1072,6 @@ export async function buildServer(
     const from = query.from ? parseInt(query.from, 10) : undefined;
     const to = query.to ? parseInt(query.to, 10) : undefined;
 
-    ensureEngineSubscription(query.globalId);
-
     if (activeProvider.getCandlesPaginated) {
       const pageRes = await activeProvider.getCandlesPaginated(query.globalId, timeframe, {
         before,
@@ -1318,7 +1352,6 @@ export async function buildServer(
       return reply.status(404).send({ error: `Instrument ${body.globalInstrumentId} not found` });
     }
     await repo.syncInstruments([instrument]);
-    ensureEngineSubscription(instrument.globalId);
 
     // 1. Spot Index Check: Spot is reference only and cannot be traded by anyone
     if (instrument.instrumentType === 'INDEX_SPOT') {
@@ -1400,6 +1433,8 @@ export async function buildServer(
     }
 
     try {
+      activeOrderSubscriptions.set(instrument.globalId, (activeOrderSubscriptions.get(instrument.globalId) || 0) + 1);
+      ensureEngineSubscription(instrument.globalId);
       const result = await simEngine.submitOrder(
         { ...body, accountId, globalInstrumentId: instrument.globalId },
         instrument,
@@ -1437,6 +1472,11 @@ export async function buildServer(
       };
     } catch (err: any) {
       return reply.status(400).send({ error: err.message });
+    } finally {
+      const remaining = (activeOrderSubscriptions.get(instrument.globalId) || 1) - 1;
+      if (remaining > 0) activeOrderSubscriptions.set(instrument.globalId, remaining);
+      else activeOrderSubscriptions.delete(instrument.globalId);
+      releaseUnusedEngineSubscriptions().catch(() => {});
     }
   });
 
@@ -1948,6 +1988,11 @@ export async function buildServer(
               continue;
             }
             const canonicalId = inst.globalId || s;
+            // Reserve capacity for engine feeds needed by newly placed orders/open exposure.
+            if (activeProvider.providerId === 'UPSTOX' && !engineSubscribedIds.has(canonicalId) && engineSubscribedIds.size >= 1950) {
+              if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'QUOTE_SUBSCRIPTION_LIMIT', symbol: canonicalId, code: 'ERR_MARKET_DATA_CAPACITY' }));
+              continue;
+            }
             clientState.subscriptions.add(s);
             clientState.subscriptions.add(canonicalId);
             ensureEngineSubscription(canonicalId);
@@ -1982,7 +2027,10 @@ export async function buildServer(
           for (const s of msg.symbols) {
             if (!s || typeof s !== 'string') continue;
             clientState.subscriptions.delete(s);
+            const inst = activeProvider.getInstrumentById ? await activeProvider.getInstrumentById(s) : undefined;
+            if (inst) clientState.subscriptions.delete(inst.globalId);
           }
+          await releaseUnusedEngineSubscriptions();
         }
       } catch {
         // ignore malformed message
@@ -2017,6 +2065,7 @@ export async function buildServer(
     ws.on('close', () => {
       clearInterval(heartbeat);
       wsClients.delete(clientState as any);
+      releaseUnusedEngineSubscriptions().catch(() => {});
     });
   });
 

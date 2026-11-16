@@ -63,6 +63,8 @@ export interface FreeAccessInstrumentLike {
   underlying?: string;
   exchange?: string;
   instrumentType?: string;
+  provider?: string;
+  isSimulatedFixture?: boolean;
 }
 
 /**
@@ -71,6 +73,11 @@ export interface FreeAccessInstrumentLike {
  */
 export function isFreeTierAllowedInstrument(inst: FreeAccessInstrumentLike): boolean {
   if (!inst) return false;
+  // Explicit bundled test fixtures have display names prefixed DEMO; these exact fixtures do
+  // not relax production provider identities or accept arbitrary underlying declarations.
+  if (inst.provider === 'DEMO' && inst.isSimulatedFixture && ['DEMO-NIFTY50', 'DEMO-NIFTY-FUT'].includes(inst.symbol || '')) {
+    return isFreeTierAllowedInstrument({ ...inst, symbol: inst.instrumentType === 'INDEX_SPOT' ? 'NIFTY 50' : 'NIFTY 50 FUT', provider: undefined });
+  }
 
   const exchange = (inst.exchange || '').trim().toUpperCase();
   if (exchange && !FREE_EXCHANGES.has(exchange)) return false;
@@ -85,15 +92,19 @@ export function isFreeTierAllowedInstrument(inst: FreeAccessInstrumentLike): boo
   }
 
   const fromSymbol = resolveUnderlyingFromSymbol(inst.symbol);
+  // Reference indices require an exact name. A digit suffix such as NIFTY 100 is not a
+  // derivative merely because it starts with NIFTY followed by a number.
+  if (instrumentType === 'INDEX_SPOT') {
+    const spot = normaliseUnderlying(inst.symbol);
+    return FREE_UNDERLYINGS.has(spot) && (!declared || declared === spot);
+  }
+  if (fromSymbol && declared && fromSymbol !== declared) return false;
   if (declared && FREE_UNDERLYINGS.has(declared)) {
     // Guard against mismatched metadata: if the symbol clearly belongs to another product, reject.
     if (inst.symbol && fromSymbol === null && !/^\s*$/.test(inst.symbol)) {
       // Symbols that cannot be parsed are only accepted when the declared underlying is explicit
       // AND the symbol is not an obviously different NIFTY-family name.
-      const s = inst.symbol.trim().toUpperCase();
-      if (/^(FINNIFTY|MIDCPNIFTY|NIFTYIT|NIFTYNXT50|NIFTYFPI|NIFTYMID|NIFTYMIDSML|NIFTYSMALLCAP|NIFTYBANK|SENSEX|BANKEX)/.test(s)) {
-        return false;
-      }
+      return false;
       // "NIFTY BANK ..." normalises through the symbol parser; anything else with a declared
       // allowed underlying is treated as a provider-specific contract naming variant.
     }
@@ -114,6 +125,7 @@ export function isFreeTierAllowedGlobalId(globalId?: string): boolean {
   const exchange = parts[0]?.trim().toUpperCase() || '';
   const symbol = parts[1]?.trim() || '';
   if (!FREE_EXCHANGES.has(exchange)) return false;
+  if (exchange === 'NSE' || exchange === 'BSE') return FREE_UNDERLYINGS.has(normaliseUnderlying(symbol));
   // Spot indices have no instrumentType in the id; derivatives are inferred from the symbol.
   return resolveUnderlyingFromSymbol(symbol) !== null;
 }

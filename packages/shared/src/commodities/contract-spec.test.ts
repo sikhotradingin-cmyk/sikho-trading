@@ -122,9 +122,16 @@ describe('MCX Commodity Contract Specifications & Math Verification', () => {
     assert.strictEqual(getExchangeSessionStatus('NSE', sundayUtc).isOpen, false);
     assert.strictEqual(getExchangeSessionStatus('MCX', sundayUtc).isOpen, false);
 
-    // Test a Tuesday at 11:30 IST (06:00 UTC):
-    const tuesdayMorningUtc = new Date('2026-11-10T06:00:00.000Z');
+    // Ordinary weekday at 11:30 IST; November 10 is an exchange holiday.
+    const tuesdayMorningUtc = new Date('2026-11-11T06:00:00.000Z');
     assert.strictEqual(getExchangeSessionStatus('NSE', tuesdayMorningUtc).isOpen, true);
     assert.strictEqual(getExchangeSessionStatus('MCX', tuesdayMorningUtc).isOpen, true);
+  });
+
+  it('honours 2026 equity holidays and treats session close as exclusive', () => {
+    assert.equal(getExchangeSessionStatus('NSE', new Date('2026-11-10T06:00:00Z')).sessionName, 'HOLIDAY_CLOSED');
+    assert.equal(getExchangeSessionStatus('BSE', new Date('2026-11-24T06:00:00Z')).isOpen, false);
+    assert.equal(getExchangeSessionStatus('NFO', new Date('2026-11-16T09:59:59Z')).isOpen, true);
+    assert.equal(getExchangeSessionStatus('NFO', new Date('2026-11-16T10:00:00Z')).isOpen, false);
   });
 });

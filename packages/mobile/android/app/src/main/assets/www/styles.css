@@ -1239,6 +1239,10 @@ html, body {
 }
 
 /* Option-chain responsive 3-column (CALL | STRIKE | PUT) layout */
+#oc-scroll .oc-table { table-layout: fixed; }
+.oc-actions { display: flex; gap: 4px; margin-top: 4px; }
+.oc-actions button { flex: 1; min-width: 0; min-height: 36px; border: 1px solid #cbd5e1; border-radius: 6px; background: white; color: #0f172a; font-size: 11px; }
+#oc-scroll .oc-meta { white-space: normal; overflow-wrap: anywhere; }
 .oc-table th {
   font-size: 10.5px;
   letter-spacing: 0.02em;

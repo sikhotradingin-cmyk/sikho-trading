@@ -2,6 +2,7 @@ package com.indianpapertrading
 
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
@@ -9,6 +10,13 @@ import org.junit.Test
  * `TYPE_GOOGLE_ID_TOKEN_SIWG_CREDENTIAL`, which was rejected by the old single-constant check.
  */
 class GoogleCredentialTypesTest {
+    @Test
+    fun providerReauthFailureIsNotUserCancellation() {
+        assertEquals("GOOGLE_REAUTH_FAILED", GoogleCredentialTypes.cancellationErrorCode("[16] Account reauth failed"))
+        assertEquals("CONFIGURATION_ERROR", GoogleCredentialTypes.cancellationErrorCode("DEVELOPER_ERROR"))
+        assertEquals("USER_CANCELLED", GoogleCredentialTypes.cancellationErrorCode("activity cancelled by user"))
+        assertEquals("USER_CANCELLED", GoogleCredentialTypes.cancellationErrorCode(null))
+    }
     @Test
     fun acceptsOneTapCredentialType() {
         assertTrue(

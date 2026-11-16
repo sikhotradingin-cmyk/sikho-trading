@@ -90,3 +90,11 @@ test('declared premium underlying wins over a misleading symbol', () => {
     false
   );
 });
+
+test('numbered reference indices and conflicting derivative identities stay restricted', () => {
+  for (const symbol of ['NIFTY 100', 'NIFTY 500', 'NIFTY IT']) {
+    assert.equal(isFreeTierAllowedInstrument({ symbol, underlying: 'NIFTY', exchange: 'NSE', instrumentType: 'INDEX_SPOT' }), false);
+    assert.equal(isFreeTierAllowedGlobalId(`NSE:${symbol}:1234`), false);
+  }
+  assert.equal(isFreeTierAllowedInstrument({ symbol: 'BANKNIFTY23NOV26FUT', underlying: 'NIFTY', exchange: 'NFO', instrumentType: 'FUTIDX' }), false);
+});

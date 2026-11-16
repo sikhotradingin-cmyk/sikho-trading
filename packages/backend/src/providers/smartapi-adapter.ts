@@ -7,6 +7,7 @@ import {
   QuoteSnapshot,
   Timeframe,
   makeGlobalInstrumentId,
+  getExchangeSessionStatus,
 } from '@trading/shared';
 import {
   CandlePageResult,
@@ -89,20 +90,7 @@ export function generateTOTP(base32Secret: string, timeMs: number = Date.now()):
  * Checks if current time is within Indian equity/derivatives market session (09:15 - 15:30 IST, Mon-Fri).
  */
 export function isIndianMarketOpen(date: Date = new Date()): boolean {
-  const istOffsetMs = 5.5 * 60 * 60 * 1000;
-  const istDate = new Date(date.getTime() + istOffsetMs);
-
-  const day = istDate.getUTCDay();
-  if (day === 0 || day === 6) return false;
-
-  const hours = istDate.getUTCHours();
-  const minutes = istDate.getUTCMinutes();
-  const totalMinutes = hours * 60 + minutes;
-
-  const openMinutes = 9 * 60 + 15; // 09:15 IST
-  const closeMinutes = 15 * 60 + 30; // 15:30 IST
-
-  return totalMinutes >= openMinutes && totalMinutes <= closeMinutes;
+  return getExchangeSessionStatus('NSE', date).isOpen;
 }
 
 /**

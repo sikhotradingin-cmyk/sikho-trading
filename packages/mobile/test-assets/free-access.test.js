@@ -43,6 +43,14 @@ test('premium instruments stay locked (no loose NIFTY substring matching)', () =
   }
 });
 
+test('spot names and conflicting provider metadata fail closed', () => {
+  for (const symbol of ['NIFTY 100', 'NIFTY 500', 'NIFTY IT']) {
+    assert.equal(isFreeTierAllowedInstrument({ symbol, underlying: 'NIFTY', exchange: 'NSE', instrumentType: 'INDEX_SPOT' }), false);
+    assert.equal(isFreeTierAllowedGlobalId(`NSE:${symbol}:1234`), false);
+  }
+  assert.equal(isFreeTierAllowedInstrument({ symbol: 'BANKNIFTY23NOV26FUT', underlying: 'NIFTY', exchange: 'NFO', instrumentType: 'FUTIDX' }), false);
+});
+
 test('symbol resolution rejects NIFTY-family lookalikes', () => {
   assert.equal(resolveUnderlyingFromSymbol('NIFTY 50'), 'NIFTY');
   assert.equal(resolveUnderlyingFromSymbol('NIFTY BANK'), 'BANKNIFTY');

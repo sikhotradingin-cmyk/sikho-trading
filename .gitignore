@@ -20,3 +20,6 @@ local.properties
 packages/backend/data/
 paper trading/
 
+# Private device captures and verification outputs
+evidence/
+

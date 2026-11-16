@@ -31,6 +31,8 @@
           <div id="auth-card-subtitle" class="auth-card-sub">Sign in to your isolated Indian market practice account</div>
 
           <div id="auth-error-msg" class="auth-error-box"></div>
+          <button type="button" id="btn-google-compat" class="link-btn" style="display:none;width:100%;margin-bottom:10px;min-height:40px;"
+                  onclick="window.TZApp.handleGoogleSignIn(true)">Try Google compatibility sign-in</button>
 
           <form id="auth-form" onsubmit="event.preventDefault(); window.TZApp.submitAuthForm();">
             <div id="auth-name-group" class="form-group" style="display:none;">
@@ -631,8 +633,8 @@
               </svg>
             </button>
             <div style="min-width:0;">
-              <div id="oc-title" style="font-size:15px;font-weight:700;color:var(--text-on-black-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">NIFTY 50 Option Chain</div>
-              <div id="oc-spot-subtitle" style="font-size:11.5px;color:var(--accent-lime);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Spot: —</div>
+              <div id="oc-title" style="font-size:15px;font-weight:700;color:var(--text-on-white-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">NIFTY 50 Option Chain</div>
+              <div id="oc-spot-subtitle" style="font-size:11.5px;color:var(--text-on-white-secondary);white-space:normal;">Spot: —</div>
             </div>
           </div>
           <select id="oc-underlying-select" onchange="window.TZApp.onOptionChainUnderlyingChange(this.value)" style="max-width:128px;background:var(--surface-dark-raised);color:var(--text-on-black-primary);border:1px solid var(--surface-dark-border);border-radius:8px;padding:6px 8px;font-weight:700;font-size:12px;">
@@ -649,7 +651,7 @@
           </select>
         </div>
         <div id="oc-expiry-pills" class="filter-chips-scroll" style="background:transparent;border:none;padding:8px 0 0;gap:6px;"></div>
-        <div style="display:flex;justify-content:space-between;gap:8px;font-size:10.5px;color:var(--text-on-black-secondary);padding-top:5px;">
+        <div style="display:flex;justify-content:space-between;gap:8px;font-size:10.5px;color:var(--text-on-white-secondary);padding-top:5px;">
           <span id="oc-status-left">—</span>
           <span id="oc-status-right" style="text-align:right;">—</span>
         </div>
@@ -657,24 +659,25 @@
 
       <div id="oc-scroll" class="white-content-scroll" style="padding-bottom:8px;overflow-y:auto;-webkit-overflow-scrolling:touch;">
         <div id="oc-load-above" style="display:none;padding:6px;text-align:center;">
-          <button class="tool-action-pill" onclick="window.TZApp.loadMoreOptionStrikes('above')">▲ Load strikes above</button>
+          <button class="tool-action-pill" onclick="window.TZApp.loadMoreOptionStrikes('above')">▲ Load lower strikes</button>
         </div>
         <table class="oc-table">
           <thead>
             <tr>
-              <th style="width:36%;">CALL (CE)</th>
+              <th style="width:36%;">CALL (CE) · ₹</th>
               <th style="width:28%;">STRIKE</th>
-              <th style="width:36%;">PUT (PE)</th>
+              <th style="width:36%;">PUT (PE) · ₹</th>
             </tr>
           </thead>
           <tbody id="oc-table-body"></tbody>
         </table>
         <div id="oc-load-below" style="display:none;padding:6px;text-align:center;">
-          <button class="tool-action-pill" onclick="window.TZApp.loadMoreOptionStrikes('below')">▼ Load strikes below</button>
+          <button class="tool-action-pill" onclick="window.TZApp.loadMoreOptionStrikes('below')">▼ Load higher strikes</button>
         </div>
         <div style="padding:8px 14px 18px;font-size:10px;color:var(--text-on-white-secondary);">
           Tap CALL or PUT price to open the exact contract ticket (underlying, expiry, strike, CE/PE, lot size).
           Prices update from genuine provider ticks; “—” means no verified price is available yet.
+          LTP is ₹ per unit. OI/Vol are provider units (K=1,000; L=100,000; Cr=10,000,000).
         </div>
       </div>
     </div>

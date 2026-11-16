@@ -317,6 +317,16 @@ export function getExchangeSessionStatus(exchange: Exchange, date: Date = new Da
 
   const pad = (n: number) => n.toString().padStart(2, '0');
   const istTimeStr = `${pad(hours)}:${pad(minutes)} IST`;
+  // NSE CM circular 71775 (2026); BSE index derivatives follow the same full-day closures.
+  // MCX has separate morning/evening holiday sessions and must not inherit this list.
+  const equityHolidays2026 = new Set([
+    '2026-01-26', '2026-03-03', '2026-03-26', '2026-03-31', '2026-04-03',
+    '2026-04-14', '2026-05-01', '2026-05-28', '2026-06-26', '2026-09-14',
+    '2026-10-02', '2026-10-20', '2026-11-10', '2026-11-24', '2026-12-25',
+  ]);
+  if (exchange !== 'MCX' && equityHolidays2026.has(istDate.toISOString().slice(0, 10))) {
+    return { isOpen: false, exchange, sessionName: 'HOLIDAY_CLOSED', istTime: istTimeStr, nextEventDescription: 'Exchange holiday; next scheduled trading session 09:15 IST' };
+  }
 
   // Standard weekend check
   if (dayOfWeek === 0 || dayOfWeek === 6) {

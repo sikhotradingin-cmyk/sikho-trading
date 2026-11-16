@@ -48,6 +48,7 @@ import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
@@ -68,6 +69,18 @@ class MainActivity : AppCompatActivity() {
     private lateinit var credentialManager: CredentialManager
     private val googleSignInInFlight = AtomicBoolean(false)
     private val activeGoogleSignInRequestId = AtomicLong(0L)
+    @Volatile private var activeGoogleRequestKey: String = ""
+    private var googleSignInJob: Job? = null
+    private var googleRequestDeadlineMs = 0L
+
+    private fun credentialFailureDiagnostic(e: GetCredentialException): String {
+        // Provider cancellation sometimes wraps reauthentication/configuration failure. Extract
+        // only known categories and numeric status codes; never retain raw exception messages.
+        val msg = e.message.orEmpty().lowercase()
+        val category = listOf("reauth", "developer", "network", "sync", "cancel").firstOrNull { msg.contains(it) } ?: "unspecified"
+        val status = Regex("\\[(\\d{1,6})\\]").find(msg)?.groupValues?.get(1) ?: "none"
+        return "class=${e.javaClass.simpleName} type=${e.type} providerCategory=$category status=$status cause=${e.cause?.javaClass?.simpleName ?: "none"}"
+    }
 
     // Request IDs that have already produced a terminal result (prevents duplicate callbacks).
     private val completedGoogleRequestIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
@@ -280,6 +293,15 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun startNativeGoogleSignIn(webServerClientId: String, requestId: String) {
+            startGoogleSignIn(webServerClientId, requestId, false)
+        }
+
+        @JavascriptInterface
+        fun startNativeGoogleSignInCompatible(webServerClientId: String, requestId: String) {
+            startGoogleSignIn(webServerClientId, requestId, true)
+        }
+
+        private fun startGoogleSignIn(webServerClientId: String, requestId: String, compatibility: Boolean) {
             try {
                 val safeReqId = requestId.trim()
                 lastWebClientIdSuffix = webServerClientId.trim().takeLast(30)
@@ -296,9 +318,15 @@ class MainActivity : AppCompatActivity() {
                 }
                 if (!googleSignInInFlight.compareAndSet(false, true)) {
                     Log.w("TradingzoneAuth", "Ignoring duplicate startNativeGoogleSignIn while request is in flight (req=$safeReqId)")
-                    sendGoogleSignInResult(false, null, "SIGN_IN_IN_PROGRESS: A Google Sign-In request is already active.", safeReqId)
+                    // Repeated delivery of the same bridge call must not consume its terminal slot.
+                    if (safeReqId != activeGoogleRequestKey) sendGoogleSignInResult(false, null, "SIGN_IN_IN_PROGRESS: A Google Sign-In request is already active.", safeReqId)
                     return
                 }
+                activeGoogleRequestKey = safeReqId
+                lastCredentialType = null
+                lastGoogleSignInErrorCode = null
+                lastGoogleSignInErrorDetail = null
+                googleRequestDeadlineMs = android.os.SystemClock.elapsedRealtime() + 120000L
                 val seq = activeGoogleSignInRequestId.incrementAndGet()
 
                 runOnUiThread {
@@ -331,16 +359,19 @@ class MainActivity : AppCompatActivity() {
                             return@runOnUiThread
                         }
 
-                        lifecycleScope.launch(Dispatchers.Main) {
+                        googleSignInJob = lifecycleScope.launch(Dispatchers.Main) {
                             try {
-                                recordGoogleStage(safeReqId, "NATIVE_REQUEST_START", "flow=GetSignInWithGoogleOption")
-                                val result: GetCredentialResponse = withTimeout(45_000L) {
+                                recordGoogleStage(safeReqId, "NATIVE_REQUEST_START", if (compatibility) "flow=GetGoogleIdOption manual_compatibility" else "flow=GetSignInWithGoogleOption")
+                                val result: GetCredentialResponse = withTimeout(120_000L) {
                                     // Primary explicit button flow: GetSignInWithGoogleOption opens the
                                     // full Google account picker for all accounts on the device.
-                                    val signInWithGoogleOption = GetSignInWithGoogleOption.Builder(clientId).build()
-                                    val primaryRequest = GetCredentialRequest.Builder()
-                                        .addCredentialOption(signInWithGoogleOption)
-                                        .build()
+                                    val primaryRequest = if (compatibility) {
+                                        GetCredentialRequest.Builder().addCredentialOption(GetGoogleIdOption.Builder()
+                                            .setServerClientId(clientId).setFilterByAuthorizedAccounts(false)
+                                            .setAutoSelectEnabled(false).build()).build()
+                                    } else {
+                                        GetCredentialRequest.Builder().addCredentialOption(GetSignInWithGoogleOption.Builder(clientId).build()).build()
+                                    }
                                     credentialManager.getCredential(
                                         request = primaryRequest,
                                         context = this@MainActivity
@@ -353,17 +384,18 @@ class MainActivity : AppCompatActivity() {
                                 }
                                 handleGoogleCredentialResponse(result, safeReqId)
                             } catch (e: TimeoutCancellationException) {
-                                recordGoogleStage(safeReqId, "TIMEOUT", "afterMs=45000")
+                                recordGoogleStage(safeReqId, "TIMEOUT", "afterMs=120000")
                                 if (activeGoogleSignInRequestId.get() == seq) {
                                     sendGoogleSignInResult(false, null, "SIGN_IN_TIMEOUT: Google Sign-In timed out. Please try again.", safeReqId)
                                 }
                             } catch (e: GetCredentialCancellationException) {
-                                recordGoogleStage(safeReqId, "CANCELLED", "class=${e.javaClass.simpleName} type=${e.type}")
+                                val code = GoogleCredentialTypes.cancellationErrorCode(e.message)
+                                recordGoogleStage(safeReqId, code, credentialFailureDiagnostic(e))
                                 if (activeGoogleSignInRequestId.get() == seq) {
                                     sendGoogleSignInResult(
                                         false,
                                         null,
-                                        "USER_CANCELLED: The Google account selection was closed or interrupted before a credential was returned (${e.javaClass.simpleName}).",
+                                        "$code: Google returned no credential (${credentialFailureDiagnostic(e)}).",
                                         safeReqId
                                     )
                                 }
@@ -380,12 +412,14 @@ class MainActivity : AppCompatActivity() {
                             } catch (e: GetCredentialProviderConfigurationException) {
                                 recordGoogleStage(safeReqId, "PROVIDER_CONFIG_FALLBACK", "type=${e.type}")
                                 if (activeGoogleSignInRequestId.get() == seq) {
-                                    runLegacyGoogleIdFallback(clientId, seq, safeReqId)
+                                    if (compatibility) sendGoogleSignInResult(false, null, "CONFIGURATION_ERROR: Google credential provider unavailable.", safeReqId)
+                                    else runLegacyGoogleIdFallback(clientId, seq, safeReqId)
                                 }
                             } catch (e: GetCredentialUnsupportedException) {
                                 recordGoogleStage(safeReqId, "PROVIDER_UNSUPPORTED_FALLBACK", "type=${e.type}")
                                 if (activeGoogleSignInRequestId.get() == seq) {
-                                    runLegacyGoogleIdFallback(clientId, seq, safeReqId)
+                                    if (compatibility) sendGoogleSignInResult(false, null, "CONFIGURATION_ERROR: Google credential provider unsupported.", safeReqId)
+                                    else runLegacyGoogleIdFallback(clientId, seq, safeReqId)
                                 }
                             } catch (e: GetCredentialInterruptedException) {
                                 recordGoogleStage(safeReqId, "INTERRUPTED", "class=${e.javaClass.simpleName} type=${e.type}")
@@ -395,7 +429,7 @@ class MainActivity : AppCompatActivity() {
                             } catch (e: GetCredentialException) {
                                 recordGoogleStage(safeReqId, "CREDENTIAL_ERROR", "class=${e.javaClass.simpleName} type=${e.type}")
                                 if (activeGoogleSignInRequestId.get() == seq) {
-                                    val detail = "class=${e.javaClass.simpleName}; type=${e.type}; message=${e.message ?: "none"}"
+                                    val detail = credentialFailureDiagnostic(e)
                                     sendGoogleSignInResult(false, null, "CREDENTIAL_ERROR: $detail", safeReqId)
                                 }
                             } catch (t: Throwable) {
@@ -446,10 +480,13 @@ class MainActivity : AppCompatActivity() {
          */
         @JavascriptInterface
         fun cancelNativeGoogleSignIn(requestId: String) {
+            if (!verifyCallerIsTrusted()) return
             val safeReqId = requestId.trim()
+            if (safeReqId != activeGoogleRequestKey) return
             if (safeReqId.isNotEmpty()) completedGoogleRequestIds.add(safeReqId)
             activeGoogleSignInRequestId.incrementAndGet()
             googleSignInInFlight.set(false)
+            runOnUiThread { if (activeGoogleRequestKey == safeReqId) googleSignInJob?.cancel() }
             recordGoogleStage(safeReqId, "CANCELLED_BY_CLIENT", "timeout_or_user_reset")
         }
 
@@ -615,6 +652,8 @@ class MainActivity : AppCompatActivity() {
             lastGoogleSignInErrorDetail = errorMsg.take(400)
             recordGoogleStage(requestId, "CALLBACK_SEND", "success=false code=$lastGoogleSignInErrorCode")
         } else if (success) {
+            lastGoogleSignInErrorCode = null
+            lastGoogleSignInErrorDetail = null
             recordGoogleStage(requestId, "CALLBACK_SEND", "success=true")
         }
         webView.post {
@@ -695,7 +734,8 @@ class MainActivity : AppCompatActivity() {
     private suspend fun runLegacyGoogleIdFallback(clientId: String, seq: Long, requestId: String) {
         try {
             recordGoogleStage(requestId, "LEGACY_FALLBACK_START", "flow=GetGoogleIdOption")
-            val result = withTimeout(30_000L) {
+            val remainingMs = (googleRequestDeadlineMs - android.os.SystemClock.elapsedRealtime()).coerceIn(1L, 30000L)
+            val result = withTimeout(remainingMs) {
                 val fallbackOption = GetGoogleIdOption.Builder()
                     .setFilterByAuthorizedAccounts(false)
                     .setServerClientId(clientId)
@@ -716,14 +756,15 @@ class MainActivity : AppCompatActivity() {
             recordGoogleStage(requestId, "LEGACY_TIMEOUT", "afterMs=30000")
             sendGoogleSignInResult(false, null, "SIGN_IN_TIMEOUT: Google Sign-In timed out. Please try again.", requestId)
         } catch (e: GetCredentialCancellationException) {
-            recordGoogleStage(requestId, "LEGACY_CANCELLED", "type=${e.type}")
-            sendGoogleSignInResult(false, null, "USER_CANCELLED: The Google account selection was closed before a credential was returned.", requestId)
+            val code = GoogleCredentialTypes.cancellationErrorCode(e.message)
+            recordGoogleStage(requestId, "LEGACY_$code", credentialFailureDiagnostic(e))
+            sendGoogleSignInResult(false, null, "$code: Google returned no credential (${credentialFailureDiagnostic(e)}).", requestId)
         } catch (e: GetCredentialException) {
             recordGoogleStage(requestId, "LEGACY_ERROR", "class=${e.javaClass.simpleName} type=${e.type}")
             sendGoogleSignInResult(
                 false,
                 null,
-                "CREDENTIAL_ERROR: legacy flow class=${e.javaClass.simpleName}; type=${e.type}; message=${e.message ?: "none"}",
+                "CREDENTIAL_ERROR: legacy flow ${credentialFailureDiagnostic(e)}",
                 requestId
             )
         } catch (t: Throwable) {
@@ -737,6 +778,8 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
 
         credentialManager = CredentialManager.create(this)
+        // Inspect only isolated/debug builds through Chrome DevTools; release stays disabled.
+        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
 
         WindowCompat.setDecorFitsSystemWindows(window, false)
         val insetsController = WindowCompat.getInsetsController(window, window.decorView)
@@ -916,12 +959,14 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (googleSignInInFlight.get()) recordGoogleStage(activeGoogleRequestKey, "ACTIVITY_RESUME", "request_preserved")
         if (::adMobManager.isInitialized) {
             adMobManager.onResume()
         }
     }
 
     override fun onPause() {
+        if (googleSignInInFlight.get()) recordGoogleStage(activeGoogleRequestKey, "ACTIVITY_PAUSE", "request_preserved")
         if (::adMobManager.isInitialized) {
             adMobManager.onPause()
         }
