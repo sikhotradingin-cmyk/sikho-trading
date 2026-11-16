@@ -228,6 +228,10 @@ class AdMobManager(
                 } else {
                     onResult(true, null)
                 }
+                // Consent may have been granted or withdrawn in the privacy form: re-evaluate
+                // ad readiness immediately so banners/preloads follow the new state.
+                consentStatusSnapshot = consentStatusName()
+                onConsentOrSdkReady("privacy_options_result")
             }
         }
     }

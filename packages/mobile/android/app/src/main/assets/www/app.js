@@ -2104,8 +2104,8 @@
     const sub = document.getElementById('oc-spot-subtitle');
     if (sub) {
       const spotTxt = oc.spotLtp ? `Spot ${fmtINR(oc.spotLtp)}` : 'Spot unavailable';
-      const istNow = new Date(Date.now() + serverClockOffsetMs).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
-      sub.textContent = `${spotTxt} • Expiry ${oc.expiry || '—'} • ${istNow} IST`;
+      sub.textContent = `${spotTxt} • Exp ${oc.expiry || '—'}`;
+      sub.title = `${spotTxt} • Expiry ${oc.expiry || '—'} • ${fmtIstClock(serverNowMs())} IST`;
     }
 
     const pillsEl = document.getElementById('oc-expiry-pills');
@@ -2807,7 +2807,7 @@
       );
       if (seq !== state.chartLoadSeq) return; // Discard stale response from earlier switch
 
-      state.candles = data.candles || [];
+      state.candles = sanitizeChartCandles(data.candles || []);
       state.hasMoreHistory = Boolean(data.hasMore);
       state.earliestTime = data.earliestTime;
       state.prevSessionClose = data.prevSessionClose;
@@ -2863,7 +2863,7 @@
       const byTime = new Map();
       for (const c of older) byTime.set(c.time, c);
       for (const c of state.candles) byTime.set(c.time, c);
-      state.candles = Array.from(byTime.values()).sort((a, b) => a.time - b.time);
+      state.candles = sanitizeChartCandles(Array.from(byTime.values()).sort((a, b) => a.time - b.time));
       state.earliestTime = state.candles[0].time;
       state.hasMoreHistory = Boolean(data.hasMore);
 
@@ -2918,7 +2918,7 @@
       }
       const merged = Array.from(byTime.values()).sort((a, b) => a.time - b.time);
       // Guard against a bogus gap: never introduce bars whose spacing exceeds one interval.
-      const bounded = merged.filter((c) => c.time <= lastHistoryTime + intervalSec * 2);
+      const bounded = sanitizeChartCandles(merged.filter((c) => c.time <= lastHistoryTime + intervalSec * 2));
       state.candles = bounded;
       state.earliestTime = bounded[0]?.time || state.earliestTime;
       candleSeries.setData(state.candles);
@@ -3948,6 +3948,32 @@
    * Computes the candle bucket start timestamp (in UTC seconds) for a given epoch ms and timeframe,
    * aligned to the existing historical series anchor or IST market open (09:15 IST = UTC+03:45 = 13500s offset).
    */
+  /**
+   * Defensive candle sanitisation for the chart. Providers can return structurally invalid rows or
+   * pre-listing placeholder bars (e.g. a NIFTY future priced 12.45 while trading near 25,000) which
+   * would compress the entire price scale. Invalid rows and >90% outliers versus the newest close
+   * are removed. Applied after merges so the newest bar is always the reference.
+   */
+  function sanitizeChartCandles(candles) {
+    if (!Array.isArray(candles) || candles.length === 0) return [];
+    const valid = candles.filter((c) => {
+      if (!c || !Number.isFinite(Number(c.time))) return false;
+      const o = Number(c.open);
+      const h = Number(c.high);
+      const l = Number(c.low);
+      const cl = Number(c.close);
+      return [o, h, l, cl].every((v) => Number.isFinite(v) && v > 0) && h >= l;
+    });
+    if (valid.length === 0) return [];
+    const reference = Number(valid[valid.length - 1].close);
+    if (!Number.isFinite(reference) || reference <= 0) return valid;
+    const filtered = valid.filter((c) => {
+      const cl = Number(c.close);
+      return cl >= reference * 0.1 && cl <= reference * 10;
+    });
+    return filtered.length > 0 ? filtered : [valid[valid.length - 1]];
+  }
+
   function computeCandleBucketSec(epochMs, tf, referenceBarTimeSec) {
     const intervalSec = getTimeframeIntervalSec(tf);
     const tickSec = Math.floor(Number(epochMs || Date.now()) / 1000);

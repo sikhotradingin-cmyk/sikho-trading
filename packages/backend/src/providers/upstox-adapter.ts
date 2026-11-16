@@ -32,6 +32,37 @@ export interface UpstoxConfig {
   analyticsToken?: string;
 }
 
+/**
+ * Drops structurally invalid candles and extreme outliers relative to the newest close.
+ * A single pre-listing placeholder bar (e.g. close 12.45 for a ~25,000 NIFTY future) otherwise
+ * compresses the whole chart scale to 0 and makes valid history unreadable.
+ */
+export function sanitizeCandleSeries(candles: Candle[]): Candle[] {
+  if (!Array.isArray(candles) || candles.length === 0) return [];
+  const valid = candles.filter(
+    (c) =>
+      c &&
+      Number.isFinite(c.time) &&
+      Number.isFinite(c.open) &&
+      Number.isFinite(c.high) &&
+      Number.isFinite(c.low) &&
+      Number.isFinite(c.close) &&
+      c.open > 0 &&
+      c.high > 0 &&
+      c.low > 0 &&
+      c.close > 0 &&
+      c.high >= c.low
+  );
+  if (valid.length === 0) return [];
+  const reference = valid[valid.length - 1].close;
+  if (!Number.isFinite(reference) || reference <= 0) return valid;
+  const cleaned = valid.filter(
+    (c) => c.close >= reference * 0.1 && c.close <= reference * 10
+  );
+  // Never return an empty series because of the filter; fall back to the newest bar.
+  return cleaned.length > 0 ? cleaned : [valid[valid.length - 1]];
+}
+
 interface RawUpstoxBodItem {
   segment: string;
   name: string;
@@ -1194,20 +1225,45 @@ export class UpstoxAdapter implements IMarketDataProvider {
       if (!Array.isArray(row) || row.length < 5) continue;
       const tSec = Math.floor(new Date(row[0]).getTime() / 1000);
       if (isNaN(tSec)) continue;
-      byTime.set(tSec, {
+      const candle: Candle = {
         time: tSec,
         open: Number(row[1]),
         high: Number(row[2]),
         low: Number(row[3]),
         close: Number(row[4]),
         volume: Number(row[5] || 0),
-      });
+      };
+      // Reject structurally invalid rows before they can poison the chart scale.
+      if (
+        !Number.isFinite(candle.open) ||
+        !Number.isFinite(candle.high) ||
+        !Number.isFinite(candle.low) ||
+        !Number.isFinite(candle.close) ||
+        candle.open <= 0 ||
+        candle.high <= 0 ||
+        candle.low <= 0 ||
+        candle.close <= 0 ||
+        candle.high < candle.low
+      ) {
+        continue;
+      }
+      byTime.set(tSec, candle);
       if (row[6] !== undefined && latestOi === undefined) {
         latestOi = Number(row[6]);
       }
     }
     const sorted = Array.from(byTime.values()).sort((a, b) => a.time - b.time);
     return { candles: sorted, latestOi };
+  }
+
+  /**
+   * Removes provider junk bars that are wildly inconsistent with the instrument's own recent price.
+   * Upstox daily history for futures contracts can include pre-listing placeholder rows (e.g. a
+   * NIFTY future with close 12.45 while trading near 25,000). A single such row compresses the whole
+   * chart to a 0-based scale, so >90% deviations from the newest bar are dropped.
+   */
+  private sanitizeCandleSeries(candles: Candle[]): Candle[] {
+    return sanitizeCandleSeries(candles);
   }
 
   private async fetchUpstoxHistoricalChunk(
@@ -1333,6 +1389,7 @@ export class UpstoxAdapter implements IMarketDataProvider {
     }
 
     let sorted = Array.from(mergedMap.values()).sort((a, b) => a.time - b.time);
+    sorted = this.sanitizeCandleSeries(sorted);
     let hasMore = cursorEndMs > minAllowedMs && sorted.length > 0;
 
     if (opts.limit && sorted.length > opts.limit) {
