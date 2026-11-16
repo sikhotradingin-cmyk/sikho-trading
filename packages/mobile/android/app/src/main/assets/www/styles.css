@@ -1630,6 +1630,20 @@ html, body {
 .instrument-row-white .inst-left { display:grid; grid-template-columns:40px minmax(0,1fr); gap:10px; }
 .instrument-row-white .inst-right { width:110px; gap:4px; justify-content:flex-end; }
 .instrument-row-white .inst-right:has(.row-action) { flex-direction:column; align-items:flex-end; }
+.search-pill-trigger { min-height:44px; height:auto; padding-top:10px; padding-bottom:10px; }
+.search-pill-trigger svg { flex-shrink:0; }
+.search-pill-trigger span { min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.explore-mode-bar { flex-wrap:wrap; gap:10px; }
+.explore-mode-bar > div:last-child { margin-left:auto; }
+.segmented-pill-group { max-width:100%; }
+.seg-pill-btn { min-height:44px; }
+.section-header-white { flex-wrap:wrap; gap:10px; }
+.section-header-white > div { flex:1 1 190px; min-width:0; }
+.section-header-white > button { min-height:44px; }
+.bottom-nav-bar { height:auto; min-height:60px; grid-template-columns:repeat(5,minmax(0,1fr)); }
+.nav-tab-btn { min-width:0; padding:8px 2px; }
+.nav-tab-btn span { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.idx-chg.val-pos,.idx-chg.val-pos-dark { color:#166534; }
 .instrument-row-white .inst-symbol { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .inst-details-row { display:grid; grid-template-columns:34px minmax(0,1fr); gap:6px; align-items:baseline; }
 .inst-details-row .tag-exch { margin:0; padding:2px 0; text-align:left; font-size:10px; background:transparent; }
@@ -1661,4 +1675,5 @@ button:focus-visible,[role=button]:focus-visible { outline:2px solid #2275c9; ou
 @keyframes sheet-in { from {opacity:0;transform:translateY(14px)} to {opacity:1;transform:translateY(0)} }
 @keyframes screen-in { from {opacity:.6;transform:translateY(3px)} to {opacity:1;transform:translateY(0)} }
 @media(max-width:360px) { .instrument-row-white { padding:12px; grid-template-columns:minmax(0,1fr) 96px; gap:8px; } .instrument-row-white .inst-right { width:96px; } .instrument-row-white .inst-left { gap:8px; } .inst-ltp-val {font-size:13px;} }
+@media(max-width:360px) { .header-row-main {gap:8px;} .nav-tab-btn {font-size:10px;} .seg-pill-btn {padding-left:10px;padding-right:10px;} }
 @media(prefers-reduced-motion:reduce) { *,*::before,*::after { animation:none !important; transition:none !important; scroll-behavior:auto !important; } }
