@@ -6,6 +6,7 @@ export * from './models/position.js';
 export * from './models/account.js';
 export * from './models/ledger.js';
 export * from './models/session.js';
+export * from './models/free-access.js';
 export * from './indicators/sma.js';
 export * from './indicators/ema.js';
 export * from './indicators/rsi.js';

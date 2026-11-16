@@ -34,6 +34,9 @@ import androidx.credentials.GetCredentialRequest
 import androidx.credentials.GetCredentialResponse
 import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.exceptions.GetCredentialException
+import androidx.credentials.exceptions.GetCredentialInterruptedException
+import androidx.credentials.exceptions.GetCredentialProviderConfigurationException
+import androidx.credentials.exceptions.GetCredentialUnsupportedException
 import androidx.credentials.exceptions.NoCredentialException
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
@@ -75,6 +78,35 @@ class MainActivity : AppCompatActivity() {
     private var lastGoogleSignInErrorDetail: String? = null
     @Volatile
     private var lastWebClientIdSuffix: String = ""
+    @Volatile
+    private var lastCredentialType: String? = null
+    // Sanitised, token-free stage trace of the most recent Google sign-in attempt.
+    private val googleAuthTrace: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
+
+    /**
+     * Records one sanitised stage of the Google sign-in flow. Never accepts tokens, passwords or
+     * raw credential bundles; only request ids, stage names, exception types and short details.
+     */
+    private fun recordGoogleStage(requestId: String, stage: String, detail: String = "") {
+        val safeReq = requestId.take(64)
+        val safeDetail = detail.take(160).replace("\n", " ")
+        val entry = JSONObject().apply {
+            put("t", System.currentTimeMillis())
+            put("req", safeReq)
+            put("stage", stage)
+            if (safeDetail.isNotEmpty()) put("detail", safeDetail)
+        }.toString()
+        synchronized(googleAuthTrace) {
+            if (googleAuthTrace.size >= 60) googleAuthTrace.removeAt(0)
+            googleAuthTrace.add(entry)
+        }
+        Log.i("TradingzoneAuth", "STAGE $stage req=$safeReq ${safeDetail}")
+    }
+
+    private fun googleTraceJson(): org.json.JSONArray {
+        val snapshot = synchronized(googleAuthTrace) { googleAuthTrace.toList() }
+        return org.json.JSONArray().apply { snapshot.forEach { put(JSONObject(it)) } }
+    }
 
     // Starts as completely untrusted until verified main-frame navigation completes
     @Volatile
@@ -301,89 +333,73 @@ class MainActivity : AppCompatActivity() {
 
                         lifecycleScope.launch(Dispatchers.Main) {
                             try {
+                                recordGoogleStage(safeReqId, "NATIVE_REQUEST_START", "flow=GetSignInWithGoogleOption")
                                 val result: GetCredentialResponse = withTimeout(45_000L) {
-                                    // 1. Primary explicit button flow: GetSignInWithGoogleOption shows the full Google account picker
-                                    //    for all Google accounts on the device, avoiding One Tap cooldown/authorized-only empty results.
-                                    try {
-                                        val signInWithGoogleOption = GetSignInWithGoogleOption.Builder(clientId).build()
-                                        val primaryRequest = GetCredentialRequest.Builder()
-                                            .addCredentialOption(signInWithGoogleOption)
-                                            .build()
-                                        Log.i("TradingzoneAuth", "Trying CredentialManager GetSignInWithGoogleOption (req=$safeReqId)")
-                                        credentialManager.getCredential(
-                                            request = primaryRequest,
-                                            context = this@MainActivity
-                                        )
-                                    } catch (primaryCancel: GetCredentialCancellationException) {
-                                        throw primaryCancel
-                                    } catch (primaryErr: GetCredentialException) {
-                                        Log.w("TradingzoneAuth", "GetSignInWithGoogleOption fallback (${primaryErr.javaClass.simpleName}: ${primaryErr.message}); trying GetGoogleIdOption(filterByAuthorized=false)")
-                                        // 2. Fallback: GetGoogleIdOption with filterByAuthorizedAccounts = false
-                                        val fallbackOption = GetGoogleIdOption.Builder()
-                                            .setFilterByAuthorizedAccounts(false)
-                                            .setServerClientId(clientId)
-                                            .setAutoSelectEnabled(false)
-                                            .build()
-                                        val fallbackRequest = GetCredentialRequest.Builder()
-                                            .addCredentialOption(fallbackOption)
-                                            .build()
-                                        credentialManager.getCredential(
-                                            request = fallbackRequest,
-                                            context = this@MainActivity
-                                        )
-                                    }
+                                    // Primary explicit button flow: GetSignInWithGoogleOption opens the
+                                    // full Google account picker for all accounts on the device.
+                                    val signInWithGoogleOption = GetSignInWithGoogleOption.Builder(clientId).build()
+                                    val primaryRequest = GetCredentialRequest.Builder()
+                                        .addCredentialOption(signInWithGoogleOption)
+                                        .build()
+                                    credentialManager.getCredential(
+                                        request = primaryRequest,
+                                        context = this@MainActivity
+                                    )
                                 }
-
+                                recordGoogleStage(safeReqId, "PICKER_RESULT", "outcome=credential_returned")
                                 if (activeGoogleSignInRequestId.get() != seq) {
-                                    Log.w("TradingzoneAuth", "Discarding stale Google Sign-In result (req=$safeReqId)")
+                                    recordGoogleStage(safeReqId, "STALE_DISCARD", "sequence_mismatch")
                                     return@launch
                                 }
-
-                                val credential = result.credential
-                                if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
-                                    val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
-                                    val idToken = googleIdTokenCredential.idToken
-                                    val displayName = googleIdTokenCredential.displayName ?: ""
-                                    val email = googleIdTokenCredential.id
-
-                                    val payload = JSONObject().apply {
-                                        put("idToken", idToken)
-                                        put("email", email)
-                                        put("name", displayName)
-                                        put("requestId", safeReqId)
-                                    }
-                                    sendGoogleSignInResult(true, payload.toString(), null, safeReqId)
-                                } else {
-                                    sendGoogleSignInResult(false, null, "Unexpected credential type received.", safeReqId)
-                                }
+                                handleGoogleCredentialResponse(result, safeReqId)
                             } catch (e: TimeoutCancellationException) {
-                                Log.w("TradingzoneAuth", "Google Sign-In timed out after 45s (req=$safeReqId)")
+                                recordGoogleStage(safeReqId, "TIMEOUT", "afterMs=45000")
                                 if (activeGoogleSignInRequestId.get() == seq) {
                                     sendGoogleSignInResult(false, null, "SIGN_IN_TIMEOUT: Google Sign-In timed out. Please try again.", safeReqId)
                                 }
                             } catch (e: GetCredentialCancellationException) {
-                                Log.i("TradingzoneAuth", "Google sign-in was cancelled by user (req=$safeReqId)")
-                                if (activeGoogleSignInRequestId.get() == seq) {
-                                    sendGoogleSignInResult(false, null, "USER_CANCELLED", safeReqId)
-                                }
-                            } catch (e: NoCredentialException) {
-                                Log.w("TradingzoneAuth", "CredentialManager NoCredentialException (req=$safeReqId): type=${e.type} message=${e.message}")
+                                recordGoogleStage(safeReqId, "CANCELLED", "class=${e.javaClass.simpleName} type=${e.type}")
                                 if (activeGoogleSignInRequestId.get() == seq) {
                                     sendGoogleSignInResult(
                                         false,
                                         null,
-                                        "NO_CREDENTIALS: Google Credential Manager returned no eligible Google ID credential (type=${e.type}). The usual cause is a signing-certificate/package mismatch with the registered Android OAuth client, not a missing device Google account. Signing SHA-1 is reported by getGoogleSignInDiagnostics().",
+                                        "USER_CANCELLED: The Google account selection was closed or interrupted before a credential was returned (${e.javaClass.simpleName}).",
                                         safeReqId
                                     )
                                 }
-                            } catch (e: GetCredentialException) {
-                                Log.e("TradingzoneAuth", "Credential Manager error (req=$safeReqId): type=${e.type} message=${e.message}", e)
+                            } catch (e: NoCredentialException) {
+                                recordGoogleStage(safeReqId, "NO_CREDENTIAL", "type=${e.type}")
                                 if (activeGoogleSignInRequestId.get() == seq) {
-                                    val detail = "type=${e.type}; message=${e.message ?: "none"}"
+                                    sendGoogleSignInResult(
+                                        false,
+                                        null,
+                                        "NO_CREDENTIALS: Google Credential Manager returned no eligible Google ID credential (type=${e.type}). The app's signing certificate/package may not match the registered Android OAuth client. Signing SHA-1 is reported by getGoogleSignInDiagnostics().",
+                                        safeReqId
+                                    )
+                                }
+                            } catch (e: GetCredentialProviderConfigurationException) {
+                                recordGoogleStage(safeReqId, "PROVIDER_CONFIG_FALLBACK", "type=${e.type}")
+                                if (activeGoogleSignInRequestId.get() == seq) {
+                                    runLegacyGoogleIdFallback(clientId, seq, safeReqId)
+                                }
+                            } catch (e: GetCredentialUnsupportedException) {
+                                recordGoogleStage(safeReqId, "PROVIDER_UNSUPPORTED_FALLBACK", "type=${e.type}")
+                                if (activeGoogleSignInRequestId.get() == seq) {
+                                    runLegacyGoogleIdFallback(clientId, seq, safeReqId)
+                                }
+                            } catch (e: GetCredentialInterruptedException) {
+                                recordGoogleStage(safeReqId, "INTERRUPTED", "class=${e.javaClass.simpleName} type=${e.type}")
+                                if (activeGoogleSignInRequestId.get() == seq) {
+                                    sendGoogleSignInResult(false, null, "SIGN_IN_INTERRUPTED: The Google sign-in flow was interrupted before a credential was returned. Tap Continue with Google to try again.", safeReqId)
+                                }
+                            } catch (e: GetCredentialException) {
+                                recordGoogleStage(safeReqId, "CREDENTIAL_ERROR", "class=${e.javaClass.simpleName} type=${e.type}")
+                                if (activeGoogleSignInRequestId.get() == seq) {
+                                    val detail = "class=${e.javaClass.simpleName}; type=${e.type}; message=${e.message ?: "none"}"
                                     sendGoogleSignInResult(false, null, "CREDENTIAL_ERROR: $detail", safeReqId)
                                 }
                             } catch (t: Throwable) {
-                                Log.e("TradingzoneAuth", "Google sign-in exception (req=$safeReqId): ${t.message}", t)
+                                recordGoogleStage(safeReqId, "EXCEPTION", "class=${t.javaClass.simpleName}")
                                 if (activeGoogleSignInRequestId.get() == seq) {
                                     sendGoogleSignInResult(false, null, "AUTH_EXCEPTION: ${t.javaClass.simpleName}: ${t.message}", safeReqId)
                                 }
@@ -424,29 +440,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        private fun sendGoogleSignInResult(success: Boolean, dataJson: String?, errorMsg: String?, requestId: String = "") {
-            if (!::webView.isInitialized) return
-            // Exactly one terminal result per request id. A late callback after the WebView has
-            // already timed out must never deliver a credential.
-            if (requestId.isNotBlank() && !completedGoogleRequestIds.add(requestId)) {
-                Log.w("TradingzoneAuth", "Dropping duplicate Google Sign-In result for req=$requestId")
-                return
-            }
-            if (!success && !errorMsg.isNullOrBlank()) {
-                lastGoogleSignInErrorCode = errorMsg.substringBefore(':')
-                lastGoogleSignInErrorDetail = errorMsg.take(400)
-            }
-            webView.post {
-                val safeData = JSONObject.quote(dataJson ?: "")
-                val safeErr = JSONObject.quote(errorMsg ?: "")
-                val safeReq = JSONObject.quote(requestId)
-                webView.evaluateJavascript(
-                    "if (window.onTradingzoneGoogleSignInResult) window.onTradingzoneGoogleSignInResult($success, $safeData, $safeErr, $safeReq);",
-                    null
-                )
-            }
-        }
-
         /**
          * Invalidate an in-flight Google Sign-In request (called by the WebView when it times out).
          * Any late result from Credential Manager is then discarded instead of authenticating.
@@ -457,7 +450,7 @@ class MainActivity : AppCompatActivity() {
             if (safeReqId.isNotEmpty()) completedGoogleRequestIds.add(safeReqId)
             activeGoogleSignInRequestId.incrementAndGet()
             googleSignInInFlight.set(false)
-            Log.i("TradingzoneAuth", "Cancelled native Google Sign-In request (req=$safeReqId)")
+            recordGoogleStage(safeReqId, "CANCELLED_BY_CLIENT", "timeout_or_user_reset")
         }
 
         /**
@@ -484,6 +477,11 @@ class MainActivity : AppCompatActivity() {
                 put("webClientIdSuffix", lastWebClientIdSuffix)
                 put("lastErrorCode", lastGoogleSignInErrorCode ?: "")
                 put("lastErrorDetail", lastGoogleSignInErrorDetail ?: "")
+                put("lastCredentialType", lastCredentialType ?: "")
+                put("activityLifecycleState", lifecycle.currentState.name)
+                put("androidSdkInt", Build.VERSION.SDK_INT)
+                put("playServicesVersion", playServicesVersionName())
+                put("lastTrace", googleTraceJson())
                 put("requiredOAuthRegistration", "Android OAuth client: package=$packageName, SHA-1=${computeSigningSha1()}")
             }.toString()
         }
@@ -590,6 +588,147 @@ class MainActivity : AppCompatActivity() {
                     Log.w("TradingzoneBridge", "Failed to setSystemBarTheme: ${e.message}")
                 }
             }
+        }
+    }
+
+    // =========================================================================
+    // Google Sign-In result handling (outer Activity scope so the suspend flow and the
+    // WebView callback share one implementation)
+    // =========================================================================
+
+    private fun playServicesVersionName(): String = try {
+        packageManager.getPackageInfo("com.google.android.gms", 0).versionName ?: "UNKNOWN"
+    } catch (t: Throwable) {
+        "NOT_INSTALLED"
+    }
+
+    private fun sendGoogleSignInResult(success: Boolean, dataJson: String?, errorMsg: String?, requestId: String = "") {
+        if (!::webView.isInitialized) return
+        // Exactly one terminal result per request id. A late callback after the WebView has
+        // already timed out must never deliver a credential.
+        if (requestId.isNotBlank() && !completedGoogleRequestIds.add(requestId)) {
+            Log.w("TradingzoneAuth", "Dropping duplicate Google Sign-In result for req=$requestId")
+            return
+        }
+        if (!success && !errorMsg.isNullOrBlank()) {
+            lastGoogleSignInErrorCode = errorMsg.substringBefore(':')
+            lastGoogleSignInErrorDetail = errorMsg.take(400)
+            recordGoogleStage(requestId, "CALLBACK_SEND", "success=false code=$lastGoogleSignInErrorCode")
+        } else if (success) {
+            recordGoogleStage(requestId, "CALLBACK_SEND", "success=true")
+        }
+        webView.post {
+            val safeData = JSONObject.quote(dataJson ?: "")
+            val safeErr = JSONObject.quote(errorMsg ?: "")
+            val safeReq = JSONObject.quote(requestId)
+            webView.evaluateJavascript(
+                "if (window.onTradingzoneGoogleSignInResult) window.onTradingzoneGoogleSignInResult($success, $safeData, $safeErr, $safeReq);",
+                null
+            )
+        }
+    }
+
+    /**
+     * Shared parsing of a Credential Manager response. Accepts BOTH Google ID token credential
+     * types: the legacy One Tap type and the Sign-In-With-Google (button picker) type. The v1.0.7
+     * release only accepted the former, which discarded genuinely successful picker selections.
+     */
+    private fun handleGoogleCredentialResponse(result: GetCredentialResponse, requestId: String) {
+        val credential = result.credential
+        lastCredentialType = credential.type
+        val receivedType = GoogleCredentialTypes.describe(credential.type)
+        recordGoogleStage(requestId, "CREDENTIAL_TYPE", "type=$receivedType")
+        if (credential !is CustomCredential || !GoogleCredentialTypes.isGoogleIdTokenCredentialType(credential.type)) {
+            recordGoogleStage(requestId, "CREDENTIAL_TYPE_REJECTED", "type=$receivedType")
+            sendGoogleSignInResult(
+                false,
+                null,
+                "UNEXPECTED_CREDENTIAL_TYPE: received $receivedType; expected a Google ID token credential.",
+                requestId
+            )
+            return
+        }
+        try {
+            val parsed = GoogleIdTokenCredential.createFrom(credential.data)
+            val idToken = parsed.idToken
+            val email = parsed.id
+            if (idToken.isBlank() || email.isBlank()) {
+                recordGoogleStage(requestId, "CREDENTIAL_INCOMPLETE", "idTokenLength=${idToken.length}")
+                sendGoogleSignInResult(
+                    false,
+                    null,
+                    "CREDENTIAL_INCOMPLETE: the Google credential did not contain a usable ID token or email.",
+                    requestId
+                )
+                return
+            }
+            // Never log the token or the full email address.
+            recordGoogleStage(
+                requestId,
+                "CREDENTIAL_PARSED",
+                "emailDomain=${email.substringAfter('@', "unknown")} idTokenLength=${idToken.length}"
+            )
+            val payload = JSONObject().apply {
+                put("idToken", idToken)
+                put("email", email)
+                put("name", parsed.displayName ?: "")
+                put("requestId", requestId)
+                put("credentialType", credential.type)
+            }
+            sendGoogleSignInResult(true, payload.toString(), null, requestId)
+        } catch (t: Throwable) {
+            recordGoogleStage(requestId, "PARSE_ERROR", "class=${t.javaClass.simpleName}")
+            sendGoogleSignInResult(
+                false,
+                null,
+                "CREDENTIAL_PARSE_ERROR: ${t.javaClass.simpleName}: ${t.message}",
+                requestId
+            )
+        }
+    }
+
+    /**
+     * One-time legacy fallback used only when the installed Play Services cannot serve the
+     * Sign-In-With-Google option (provider configuration/unsupported). It is never triggered by a
+     * user cancellation or a generic failure, so the picker cannot be reopened accidentally.
+     */
+    private suspend fun runLegacyGoogleIdFallback(clientId: String, seq: Long, requestId: String) {
+        try {
+            recordGoogleStage(requestId, "LEGACY_FALLBACK_START", "flow=GetGoogleIdOption")
+            val result = withTimeout(30_000L) {
+                val fallbackOption = GetGoogleIdOption.Builder()
+                    .setFilterByAuthorizedAccounts(false)
+                    .setServerClientId(clientId)
+                    .setAutoSelectEnabled(false)
+                    .build()
+                val fallbackRequest = GetCredentialRequest.Builder()
+                    .addCredentialOption(fallbackOption)
+                    .build()
+                credentialManager.getCredential(request = fallbackRequest, context = this@MainActivity)
+            }
+            recordGoogleStage(requestId, "LEGACY_FALLBACK_RESULT", "outcome=credential_returned")
+            if (activeGoogleSignInRequestId.get() != seq) {
+                recordGoogleStage(requestId, "STALE_DISCARD", "sequence_mismatch_legacy")
+                return
+            }
+            handleGoogleCredentialResponse(result, requestId)
+        } catch (e: TimeoutCancellationException) {
+            recordGoogleStage(requestId, "LEGACY_TIMEOUT", "afterMs=30000")
+            sendGoogleSignInResult(false, null, "SIGN_IN_TIMEOUT: Google Sign-In timed out. Please try again.", requestId)
+        } catch (e: GetCredentialCancellationException) {
+            recordGoogleStage(requestId, "LEGACY_CANCELLED", "type=${e.type}")
+            sendGoogleSignInResult(false, null, "USER_CANCELLED: The Google account selection was closed before a credential was returned.", requestId)
+        } catch (e: GetCredentialException) {
+            recordGoogleStage(requestId, "LEGACY_ERROR", "class=${e.javaClass.simpleName} type=${e.type}")
+            sendGoogleSignInResult(
+                false,
+                null,
+                "CREDENTIAL_ERROR: legacy flow class=${e.javaClass.simpleName}; type=${e.type}; message=${e.message ?: "none"}",
+                requestId
+            )
+        } catch (t: Throwable) {
+            recordGoogleStage(requestId, "LEGACY_EXCEPTION", "class=${t.javaClass.simpleName}")
+            sendGoogleSignInResult(false, null, "AUTH_EXCEPTION: ${t.javaClass.simpleName}: ${t.message}", requestId)
         }
     }
 

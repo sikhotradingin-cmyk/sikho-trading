@@ -22,6 +22,7 @@ import {
   InstrumentSearchOptions,
   InstrumentSearchResult,
   OptionChainContractSide,
+  OptionChainQueryOptions,
   OptionChainResult,
   OptionChainRow,
 } from './types.js';
@@ -972,28 +973,36 @@ export class UpstoxAdapter implements IMarketDataProvider {
     };
   }
 
-  public async getOptionChain(underlyingInput: string, requestedExpiry?: string): Promise<OptionChainResult> {
-    const normUnderlying = underlyingInput.trim().toUpperCase() === 'NIFTY 50'
-      ? 'NIFTY'
-      : underlyingInput.trim().toUpperCase() === 'NIFTY BANK'
-        ? 'BANKNIFTY'
-        : underlyingInput.trim().toUpperCase();
+  public async getOptionChain(
+    underlyingInput: string,
+    requestedExpiry?: string,
+    opts: OptionChainQueryOptions = {}
+  ): Promise<OptionChainResult> {
+    const rawUnderlying = underlyingInput.trim().toUpperCase().replace(/\s+/g, ' ');
+    const normUnderlying =
+      rawUnderlying === 'NIFTY 50' || rawUnderlying === 'NIFTY50'
+        ? 'NIFTY'
+        : rawUnderlying === 'NIFTY BANK' || rawUnderlying === 'NIFTYBANK'
+          ? 'BANKNIFTY'
+          : rawUnderlying;
 
-    // Find spot or equity underlying instrument, or near-month futures contract (for commodities)
+    // Find the reference spot instrument (indices/equities) or near-month future (commodities).
     let spotInst = Array.from(this.allInstruments.values()).find(
       (i) =>
         (i.instrumentType === 'INDEX_SPOT' && (i.underlying === normUnderlying || i.symbol === normUnderlying)) ||
         (i.instrumentType === 'EQUITY_STOCK' && i.symbol === normUnderlying)
     );
 
-    // For commodities (MCX), options are on futures! Find the active near-month futures contract:
     if (!spotInst) {
       const nearFut = Array.from(this.allInstruments.values())
-        .filter((i) => (i.instrumentType === 'FUTCOM' || i.instrumentType === 'FUTIDX' || i.instrumentType === 'FUTSTK') && (i.underlying === normUnderlying || i.symbol.startsWith(normUnderlying)) && i.expiry)
+        .filter(
+          (i) =>
+            (i.instrumentType === 'FUTCOM' || i.instrumentType === 'FUTIDX' || i.instrumentType === 'FUTSTK') &&
+            (i.underlying === normUnderlying || i.symbol.startsWith(normUnderlying)) &&
+            i.expiry
+        )
         .sort((a, b) => (a.expiry || '').localeCompare(b.expiry || ''))[0];
-      if (nearFut) {
-        spotInst = nearFut;
-      }
+      if (nearFut) spotInst = nearFut;
     }
 
     let spotLtp: number | null = null;
@@ -1008,7 +1017,7 @@ export class UpstoxAdapter implements IMarketDataProvider {
       }
     }
 
-    // Collect all option contracts for this underlying (equities, indices, commodities)
+    // Collect every option contract for this underlying.
     const options = Array.from(this.allInstruments.values()).filter(
       (i) =>
         (i.instrumentType === 'OPTIDX' || i.instrumentType === 'OPTSTK' || i.instrumentType === 'OPTCOM') &&
@@ -1017,31 +1026,43 @@ export class UpstoxAdapter implements IMarketDataProvider {
         i.strikePrice !== undefined
     );
 
-    const expiries = Array.from(new Set(options.map((o) => o.expiry!))).sort();
+    // Only genuine, not-yet-expired expiries are offered. The BOD master can contain stale
+    // contracts from expiries that have already passed; those must never be selectable.
+    const todayIst = this.formatISTDate(Date.now());
+    const expiries = Array.from(new Set(options.map((o) => o.expiry!)))
+      .filter((e) => e >= todayIst)
+      .sort();
+
     const selectedExpiry =
       requestedExpiry && expiries.includes(requestedExpiry) ? requestedExpiry : expiries[0] || '';
+
+    const expiryInfo = expiries.map((expiry) => {
+      const contracts = options.filter((o) => o.expiry === expiry);
+      const hasCe = contracts.some((o) => o.optionType === 'CE');
+      const hasPe = contracts.some((o) => o.optionType === 'PE');
+      return { expiry, contracts: contracts.length, hasBothSides: hasCe && hasPe };
+    });
 
     const expiryOptions = options.filter((o) => o.expiry === selectedExpiry);
     const strikes = Array.from(new Set(expiryOptions.map((o) => o.strikePrice!))).sort((a, b) => a - b);
 
-    // Select 21 strikes centered around ATM if spotLtp is known
-    let visibleStrikes = strikes;
-    if (spotLtp && strikes.length > 21) {
-      let closestIdx = 0;
-      let minDiff = Infinity;
-      strikes.forEach((s, idx) => {
-        const d = Math.abs(s - spotLtp!);
-        if (d < minDiff) {
-          minDiff = d;
-          closestIdx = idx;
-        }
-      });
-      const start = Math.max(0, closestIdx - 10);
-      visibleStrikes = strikes.slice(start, start + 21);
-    } else if (strikes.length > 25) {
-      const mid = Math.floor(strikes.length / 2);
-      visibleStrikes = strikes.slice(Math.max(0, mid - 12), mid + 13);
-    }
+    const nearestStrikeIndex = spotLtp
+      ? strikes.reduce(
+          (best, strike, idx) =>
+            Math.abs(strike - spotLtp!) < Math.abs(strikes[best] - spotLtp!) ? idx : best,
+          0
+        )
+      : Math.floor(strikes.length / 2);
+
+    // Paginated strike window: the client focuses near ATM first and can load the rest.
+    const windowSize = Math.max(5, Math.min(31, Math.floor(opts.limit || 21)));
+    const maxOffset = Math.max(0, strikes.length - windowSize);
+    const requestedOffset =
+      opts.offset === undefined
+        ? Math.max(0, nearestStrikeIndex - Math.floor(windowSize / 2))
+        : Math.max(0, Math.floor(opts.offset));
+    const offset = Math.max(0, Math.min(maxOffset, requestedOffset));
+    const visibleStrikes = strikes.slice(offset, offset + windowSize);
 
     const byStrike = new Map<number, { ce?: InstrumentMetadata; pe?: InstrumentMetadata }>();
     for (const s of visibleStrikes) byStrike.set(s, {});
@@ -1052,7 +1073,6 @@ export class UpstoxAdapter implements IMarketDataProvider {
       else if (o.optionType === 'PE') entry.pe = o;
     }
 
-    // Hydrate quotes in parallel for ATM neighborhood (up to 15 strikes around ATM for fast response)
     const contractsToHydrate: InstrumentMetadata[] = [];
     for (const s of visibleStrikes) {
       const pair = byStrike.get(s);
@@ -1060,23 +1080,28 @@ export class UpstoxAdapter implements IMarketDataProvider {
       if (pair?.pe) contractsToHydrate.push(pair.pe);
     }
 
+    // Bounded-concurrency hydration: the provider REST quote API rate-limits bursts. Cached
+    // quotes (including genuine WS ticks already received) are reused without a request.
     const hydratedQuotes = new Map<string, QuoteSnapshot>();
-    await Promise.all(
-      contractsToHydrate.slice(0, 30).map(async (inst) => {
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(8, contractsToHydrate.length) }, async () => {
+      while (cursor < contractsToHydrate.length) {
+        const inst = contractsToHydrate[cursor++];
         try {
           const q = await this.getQuote(inst.globalId);
           if (q) hydratedQuotes.set(inst.globalId, q);
         } catch {
-          // ignore individual contract errors
+          // Individual contract failures must not abort the whole chain.
         }
-      })
-    );
+      }
+    });
+    await Promise.all(workers);
 
     let contractsWithQuotesCount = 0;
     const buildSide = (inst?: InstrumentMetadata): OptionChainContractSide | null => {
       if (!inst) return null;
       const q = hydratedQuotes.get(inst.globalId) || this.quotes.get(inst.globalId);
-      const ltp = q ? q.ltp : null;
+      const ltp = q && Number(q.ltp) > 0 ? q.ltp : null;
       if (ltp !== null) contractsWithQuotesCount++;
       const prevClose = q ? q.close : null;
       const changePct =
@@ -1098,14 +1123,11 @@ export class UpstoxAdapter implements IMarketDataProvider {
 
     const rows: OptionChainRow[] = visibleStrikes.map((strikePrice) => {
       const pair = byStrike.get(strikePrice)!;
-      return {
-        strikePrice,
-        call: buildSide(pair.ce),
-        put: buildSide(pair.pe),
-      };
+      return { strikePrice, call: buildSide(pair.ce), put: buildSide(pair.pe) };
     });
 
-    const isWsStreamed = this.isConnected && this.ws?.readyState === WebSocket.OPEN;
+    const subscribeGlobalIds = contractsToHydrate.map((c) => c.globalId);
+    const isWsConnected = this.isConnected && this.ws?.readyState === WebSocket.OPEN;
 
     return {
       underlying: normUnderlying,
@@ -1113,16 +1135,27 @@ export class UpstoxAdapter implements IMarketDataProvider {
       underlyingSpotLtp: spotLtp,
       selectedExpiry,
       availableExpiries: expiries,
+      expiryInfo,
+      strikeWindow: {
+        offset,
+        size: visibleStrikes.length,
+        total: strikes.length,
+        atmIndex: strikes.length > 0 ? nearestStrikeIndex : null,
+        atmStrike: strikes.length > 0 ? strikes[nearestStrikeIndex] : null,
+        hasMoreBelow: offset > 0,
+        hasMoreAbove: offset + visibleStrikes.length < strikes.length,
+      },
+      subscribeGlobalIds,
       rows,
       providerSource: 'UPSTOX',
-      deliveryMode: isWsStreamed ? 'STREAMED' : 'POLLED',
+      deliveryMode: isWsConnected ? 'ON_DEMAND_WS' : 'POLLED',
       provenance: {
         spotSource: spotInst ? 'UPSTOX_BOD_MASTER' : 'UNKNOWN',
         spotTimestamp: spotLtp ? Date.now() : null,
         contractsTotal: contractsToHydrate.length,
         contractsWithRealQuotes: contractsWithQuotesCount,
-        note: isWsStreamed
-          ? 'Streamed in real-time via Upstox MarketDataFeedV3 Protobuf WebSocket.'
+        note: isWsConnected
+          ? 'Quotes are streamed on demand over the app WebSocket after the visible contracts are subscribed; missing values stay unavailable (null), never zero.'
           : 'Polled via Upstox Market Quote V2. Missing open interest is represented as unavailable (null), not zero.',
       },
     };

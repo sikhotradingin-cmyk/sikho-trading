@@ -124,6 +124,55 @@ describe('Monetization, Billing Authorization, Entitlements & Direct Bypass Prot
     assert.equal(sensexOptionChainRes.statusCode, 403);
   });
 
+  it('4F. FREE users CAN access NIFTY 50 and BANKNIFTY option chains (canonical underlying)', async () => {
+    for (const underlying of ['NIFTY', 'NIFTY 50', 'BANKNIFTY', 'NIFTY BANK']) {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/option-chain?underlying=${encodeURIComponent(underlying)}&limit=5`,
+      });
+      assert.equal(res.statusCode, 200, `FREE chain should be allowed for ${underlying}`);
+      const chain = JSON.parse(res.payload);
+      assert.ok(['NIFTY', 'BANKNIFTY'].includes(chain.underlying));
+      assert.ok(Array.isArray(chain.rows));
+      assert.ok(Array.isArray(chain.availableExpiries));
+      // Expired expiries must never be offered.
+      const todayIst = new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+      for (const expiry of chain.availableExpiries) {
+        assert.ok(expiry >= todayIst, `expired expiry ${expiry} must not be listed`);
+      }
+    }
+  });
+
+  it('4G. FREE users can read NIFTY/BANKNIFTY futures and options quotes but not SENSEX/FINNIFTY', async () => {
+    const instruments = await app.inject({ method: 'GET', url: '/api/v1/instruments?segment=FUTIDX&limit=50' });
+    const list = JSON.parse(instruments.payload).instruments as any[];
+    const allowed = list.filter(
+      (i) =>
+        i.underlying === 'NIFTY' ||
+        i.underlying === 'BANKNIFTY' ||
+        i.underlying === 'NIFTY BANK'
+    );
+    const blocked = list.filter((i) => i.underlying === 'FINNIFTY' || i.underlying === 'MIDCPNIFTY');
+    assert.ok(allowed.length >= 2, 'expected NIFTY and BANKNIFTY futures in the master');
+    assert.ok(blocked.length >= 1, 'expected FINNIFTY/MIDCPNIFTY futures in the master');
+
+    for (const inst of allowed) {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/market-data/quote?globalId=${encodeURIComponent(inst.globalId)}`,
+      });
+      // 404 is acceptable when no quote is cached offline; 403 would be a FREE-access bug.
+      assert.notEqual(res.statusCode, 403, `${inst.symbol} must not be Premium-gated`);
+    }
+    for (const inst of blocked) {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/market-data/quote?globalId=${encodeURIComponent(inst.globalId)}`,
+      });
+      assert.equal(res.statusCode, 403, `${inst.symbol} must stay Premium-gated`);
+    }
+  });
+
   it('5. Entitlement auto-downgrade allows viewing and exiting existing restricted positions, but blocks new exposure', async () => {
     const proTraderId = `pro_trader_${Date.now()}`;
     const loginRes = await app.inject({

@@ -286,6 +286,7 @@ export async function buildServer(
     app.get('/styles.css', serveAsset('styles.css', 'text/css; charset=utf-8'));
     app.get('/app.js', serveAsset('app.js', 'application/javascript; charset=utf-8'));
     app.get('/instrument-identity.js', serveAsset('instrument-identity.js', 'application/javascript; charset=utf-8'));
+    app.get('/free-access.js', serveAsset('free-access.js', 'application/javascript; charset=utf-8'));
     app.get('/app-icon.png', serveAsset('app-icon.png', 'image/png'));
     app.get('/lightweight-charts.standalone.production.js', serveAsset('lightweight-charts.standalone.production.js', 'application/javascript; charset=utf-8'));
     app.get('/lightweight-charts.js', serveAsset('lightweight-charts.standalone.production.js', 'application/javascript; charset=utf-8'));
@@ -957,12 +958,24 @@ export async function buildServer(
 
   // 3C. Option Chain Endpoint
   app.get('/api/v1/option-chain', async (req, reply) => {
-    const query = req.query as { underlying?: string; expiry?: string };
+    const query = req.query as {
+      underlying?: string;
+      expiry?: string;
+      offset?: string;
+      limit?: string;
+    };
     const underlying = (query.underlying || 'NIFTY').trim().toUpperCase();
 
     const tier = await resolveUserTierFromReq(req);
     if (tier === 'FREE') {
-      const isAllowed = underlying === 'NIFTY' || underlying === 'BANKNIFTY';
+      // Canonical access matrix: only NIFTY 50 and BANKNIFTY chains are free.
+      const canonicalUnderlying =
+        underlying === 'NIFTY 50' || underlying === 'NIFTY' || underlying === 'NIFTY50'
+          ? 'NIFTY'
+          : underlying === 'NIFTY BANK' || underlying === 'BANKNIFTY' || underlying === 'NIFTYBANK'
+            ? 'BANKNIFTY'
+            : underlying;
+      const isAllowed = canonicalUnderlying === 'NIFTY' || canonicalUnderlying === 'BANKNIFTY';
       if (!isAllowed) {
         return reply.status(403).send({
           error: 'UPGRADE_REQUIRED: Option chains for equities and other indices are exclusive to Premium subscribers.',
@@ -972,7 +985,12 @@ export async function buildServer(
     }
 
     if (activeProvider.getOptionChain) {
-      const chain = await activeProvider.getOptionChain(underlying, query.expiry);
+      const offset = query.offset !== undefined ? parseInt(query.offset, 10) : undefined;
+      const limit = query.limit !== undefined ? parseInt(query.limit, 10) : undefined;
+      const chain = await activeProvider.getOptionChain(underlying, query.expiry, {
+        offset: Number.isFinite(offset) ? offset : undefined,
+        limit: Number.isFinite(limit) ? limit : undefined,
+      });
       return chain;
     }
     return reply.status(400).send({

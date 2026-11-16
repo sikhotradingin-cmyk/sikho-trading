@@ -1238,6 +1238,91 @@ html, body {
   background: #E5E7EB;
 }
 
+/* Option-chain responsive 3-column (CALL | STRIKE | PUT) layout */
+.oc-table th {
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  color: #E5E7EB;
+  background: #111827;
+  padding: 9px 4px;
+}
+
+.oc-table td {
+  padding: 7px 4px;
+  vertical-align: middle;
+}
+
+.oc-ltp-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 4px;
+}
+
+.oc-ltp {
+  font-size: 14.5px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.oc-ltp-ce {
+  color: var(--positive-on-white);
+}
+
+.oc-ltp-pe {
+  color: var(--negative-red);
+}
+
+.oc-meta {
+  margin-top: 2px;
+  font-size: 9.5px;
+  color: var(--text-on-white-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.oc-strike-value {
+  font-size: 13.5px;
+  font-weight: 800;
+  color: var(--text-on-white-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.oc-badge {
+  margin-top: 1px;
+  font-size: 8.5px;
+  font-weight: 700;
+  color: #64748B;
+}
+
+.oc-atm-tag {
+  display: inline-block;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--accent-lime);
+  color: #0B1220;
+  font-size: 8.5px;
+  font-weight: 800;
+}
+
+.oc-atm-row .oc-strike-value {
+  color: #0F172A;
+}
+
+.oc-updated {
+  animation: ocPriceFlash 650ms ease-out;
+}
+
+@keyframes ocPriceFlash {
+  from {
+    background: rgba(16, 185, 129, 0.28);
+  }
+  to {
+    background: transparent;
+  }
+}
+
 /* =========================================================================
    PRE-TRADE RISK PREVIEW & COMMODITIES STYLING
    ========================================================================= */

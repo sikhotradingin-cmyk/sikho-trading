@@ -9,8 +9,8 @@ android {
         applicationId "com.indianpapertrading"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 17
-        versionName "1.0.7"
+        versionCode 18
+        versionName "1.0.8"
     }
 
     buildFeatures {
@@ -68,4 +68,6 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("com.google.android.gms:play-services-ads:23.6.0")
     implementation("com.google.android.ump:user-messaging-platform:3.1.0")
+
+    testImplementation("junit:junit:4.13.2")
 }

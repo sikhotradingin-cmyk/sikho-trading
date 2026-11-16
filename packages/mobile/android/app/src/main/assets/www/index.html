@@ -82,6 +82,11 @@
             <span id="btn-google-signin-text">Continue with Google</span>
           </button>
 
+          <button type="button" id="btn-google-help" class="link-btn" style="width:100%;text-align:center;margin-top:8px;font-size:11px;color:#64748B;"
+                  onclick="window.TZApp.showGoogleDiagnostics()">
+            Google sign-in help / diagnostics
+          </button>
+
           <div class="auth-links-row">
             <button type="button" id="btn-auth-toggle-mode" class="link-btn" onclick="window.TZApp.toggleAuthMode('register')">Create new account</button>
             <button type="button" id="btn-auth-recover" class="link-btn" onclick="window.TZApp.toggleAuthMode('recover')">Trouble logging in?</button>
@@ -390,6 +395,16 @@
           </button>
         </div>
 
+        <div style="padding:10px 16px 0 16px;">
+          <button onclick="window.TZApp.showAdDiagnostics()" style="width:100%;min-height:44px;border-radius:12px;border:1px solid #E2E8F0;background:#FFFFFF;color:#0F172A;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:space-between;padding:0 14px;cursor:pointer;">
+            <span style="display:flex;align-items:center;gap:8px;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+              <span>Ad diagnostics (support)</span>
+            </span>
+            <span style="font-size:12px;color:#64748B;">View ➜</span>
+          </button>
+        </div>
+
         <div style="padding:16px 16px 20px 16px;">
           <button onclick="window.TZApp.signOut()" style="width:100%;min-height:46px;border-radius:12px;border:1.5px solid #EF4444;background:#FFFFFF;color:#EF4444;font-size:14px;font-weight:700;cursor:pointer;">
             Sign Out of Sikho Trading
@@ -454,7 +469,9 @@
             <div style="display:flex;align-items:center;gap:8px;margin-top:2px;flex-wrap:wrap;">
               <span id="chart-ltp-display" class="tabular-nums" style="font-size:14px;font-weight:700;">—</span>
               <span id="chart-chg-display" class="tabular-nums" style="font-size:11.5px;font-weight:600;">—</span>
-              <span id="chart-candle-countdown" class="candle-countdown-pill tabular-nums" title="Time remaining in active candle">⏱ —</span>
+              <span id="chart-ist-clock" class="tabular-nums" title="Current time in India Standard Time (UTC+5:30)" style="font-size:10.5px;font-weight:700;color:#AAB4C2;background:#161C26;border:1px solid #273244;border-radius:999px;padding:2px 8px;">--:--:-- IST</span>
+              <span id="chart-candle-window" class="tabular-nums" title="Running candle interval in IST" style="font-size:10.5px;font-weight:700;color:#AAB4C2;background:#161C26;border:1px solid #273244;border-radius:999px;padding:2px 8px;">—</span>
+              <span id="chart-candle-countdown" class="candle-countdown-pill tabular-nums" title="Time remaining in the running candle">⏱ —</span>
             </div>
           </div>
         </div>
@@ -606,19 +623,19 @@
          ================================================================== -->
     <div id="modal-option-chain" class="chart-overlay-screen" style="background:var(--bg-white);color:var(--text-on-white-primary);">
       <div class="top-dark-header">
-        <div style="display:flex;align-items:center;justify-content:space-between;">
-          <div style="display:flex;align-items:center;gap:10px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+          <div style="display:flex;align-items:center;gap:8px;min-width:0;">
             <button class="chart-back-btn" onclick="window.TZApp.closeOptionChainModal()">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
                 <path d="M19 12H5M12 19l-7-7 7-7"/>
               </svg>
             </button>
-            <div>
-              <div id="oc-title" style="font-size:16px;font-weight:700;color:var(--text-on-black-primary);">NIFTY Option Chain</div>
-              <div id="oc-spot-subtitle" style="font-size:12px;color:var(--accent-lime);">Spot: —</div>
+            <div style="min-width:0;">
+              <div id="oc-title" style="font-size:15px;font-weight:700;color:var(--text-on-black-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">NIFTY 50 Option Chain</div>
+              <div id="oc-spot-subtitle" style="font-size:11.5px;color:var(--accent-lime);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Spot: —</div>
             </div>
           </div>
-          <select id="oc-underlying-select" onchange="window.TZApp.loadOptionChain(this.value)" style="background:var(--surface-dark-raised);color:var(--text-on-black-primary);border:1px solid var(--surface-dark-border);border-radius:8px;padding:6px 10px;font-weight:700;font-size:12.5px;">
+          <select id="oc-underlying-select" onchange="window.TZApp.onOptionChainUnderlyingChange(this.value)" style="max-width:128px;background:var(--surface-dark-raised);color:var(--text-on-black-primary);border:1px solid var(--surface-dark-border);border-radius:8px;padding:6px 8px;font-weight:700;font-size:12px;">
             <option value="NIFTY">NIFTY 50</option>
             <option value="BANKNIFTY">BANKNIFTY</option>
             <option value="SENSEX">SENSEX</option>
@@ -631,26 +648,34 @@
             <option value="ICICIBANK">ICICIBANK</option>
           </select>
         </div>
-        <div id="oc-expiry-pills" class="filter-chips-scroll" style="background:transparent;border:none;padding:10px 0 2px;"></div>
+        <div id="oc-expiry-pills" class="filter-chips-scroll" style="background:transparent;border:none;padding:8px 0 0;gap:6px;"></div>
+        <div style="display:flex;justify-content:space-between;gap:8px;font-size:10.5px;color:var(--text-on-black-secondary);padding-top:5px;">
+          <span id="oc-status-left">—</span>
+          <span id="oc-status-right" style="text-align:right;">—</span>
+        </div>
       </div>
 
-      <div class="white-content-scroll" style="padding-bottom:0;">
-        <div id="oc-provenance-bar" style="padding:6px 16px;background:var(--surface-light-secondary);font-size:11px;color:var(--text-on-white-secondary);border-bottom:1px solid var(--surface-light-border);display:flex;justify-content:space-between;">
-          <span id="oc-provenance-mode">Delivery: POLLED</span>
-          <span id="oc-provenance-note">OI is null when unavailable (never assumed 0)</span>
+      <div id="oc-scroll" class="white-content-scroll" style="padding-bottom:8px;overflow-y:auto;-webkit-overflow-scrolling:touch;">
+        <div id="oc-load-above" style="display:none;padding:6px;text-align:center;">
+          <button class="tool-action-pill" onclick="window.TZApp.loadMoreOptionStrikes('above')">▲ Load strikes above</button>
         </div>
         <table class="oc-table">
           <thead>
             <tr>
-              <th>CALL OI</th>
-              <th>CALL LTP</th>
-              <th>STRIKE</th>
-              <th>PUT LTP</th>
-              <th>PUT OI</th>
+              <th style="width:36%;">CALL (CE)</th>
+              <th style="width:28%;">STRIKE</th>
+              <th style="width:36%;">PUT (PE)</th>
             </tr>
           </thead>
           <tbody id="oc-table-body"></tbody>
         </table>
+        <div id="oc-load-below" style="display:none;padding:6px;text-align:center;">
+          <button class="tool-action-pill" onclick="window.TZApp.loadMoreOptionStrikes('below')">▼ Load strikes below</button>
+        </div>
+        <div style="padding:8px 14px 18px;font-size:10px;color:var(--text-on-white-secondary);">
+          Tap CALL or PUT price to open the exact contract ticket (underlying, expiry, strike, CE/PE, lot size).
+          Prices update from genuine provider ticks; “—” means no verified price is available yet.
+        </div>
       </div>
     </div>
 
@@ -1075,6 +1100,7 @@
   </div>
 
   <script src="instrument-identity.js"></script>
+  <script src="free-access.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

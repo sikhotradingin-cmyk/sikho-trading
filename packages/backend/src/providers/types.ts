@@ -96,15 +96,36 @@ export interface OptionChainRow {
   put: OptionChainContractSide | null;
 }
 
+export interface OptionChainExpiryInfo {
+  expiry: string;
+  contracts: number;
+  hasBothSides: boolean;
+}
+
+export interface OptionChainStrikeWindow {
+  offset: number;
+  size: number;
+  total: number;
+  atmIndex: number | null;
+  atmStrike: number | null;
+  hasMoreBelow: boolean;
+  hasMoreAbove: boolean;
+}
+
 export interface OptionChainResult {
   underlying: string;
   underlyingSpotInstrument?: InstrumentMetadata;
   underlyingSpotLtp: number | null;
   selectedExpiry: string;
+  // Only genuine, not-yet-expired expiries are listed (nearest first).
   availableExpiries: string[];
+  expiryInfo?: OptionChainExpiryInfo[];
+  strikeWindow?: OptionChainStrikeWindow;
+  // Global ids of the window's contracts so the client can stream genuine ticks for visible rows.
+  subscribeGlobalIds?: string[];
   rows: OptionChainRow[];
   providerSource: 'UPSTOX' | 'SMARTAPI' | 'DEMO';
-  deliveryMode: 'POLLED' | 'STREAMED';
+  deliveryMode: 'POLLED' | 'STREAMED' | 'ON_DEMAND_WS';
   provenance: {
     spotSource: string;
     spotTimestamp?: number | null;
@@ -114,6 +135,11 @@ export interface OptionChainResult {
   };
 }
 
+export interface OptionChainQueryOptions {
+  offset?: number;
+  limit?: number;
+}
+
 export interface IMarketDataProvider {
   readonly providerId: 'DEMO' | 'SMARTAPI' | 'UPSTOX';
   init(): Promise<void>;
@@ -121,7 +147,7 @@ export interface IMarketDataProvider {
   getInstrumentById?(globalId: string): Promise<InstrumentMetadata | undefined>;
   searchInstruments?(opts: InstrumentSearchOptions): Promise<InstrumentSearchResult>;
   getIndices?(): Promise<InstrumentMetadata[]>;
-  getOptionChain?(underlying: string, expiry?: string): Promise<OptionChainResult>;
+  getOptionChain?(underlying: string, expiry?: string, opts?: OptionChainQueryOptions): Promise<OptionChainResult>;
   getCandles(globalId: string, timeframe: Timeframe, count?: number): Promise<Candle[]>;
   getCandlesPaginated?(globalId: string, timeframe: Timeframe, opts?: CandleQueryOptions): Promise<CandlePageResult>;
   getQuote(globalId: string): Promise<QuoteSnapshot | null>;

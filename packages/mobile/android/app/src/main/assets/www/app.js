@@ -38,6 +38,8 @@
     account: null,
     subscription: null,
     entitlementResolved: false,
+    isGoogleSignInPending: false,
+    googleTrace: [],
     mainTab: 'explore',
     exploreCategory: 'STOCKS', // 'STOCKS' | 'FNO'
     stocksSectorFilter: 'ALL',
@@ -265,6 +267,8 @@
     if (!res.ok) {
       const err = new Error(data.error || data.message || `Request failed (${res.status})`);
       err.code = data.code;
+      // Preserve the HTTP status so callers (e.g. Google sign-in) can report backend response codes.
+      err.status = res.status;
       throw err;
     }
     return data;
@@ -363,24 +367,17 @@
 
   function isGlobalIdRestrictedForFree(globalId) {
     if (!globalId) return false;
-    const gid = String(globalId).toUpperCase();
-    if (gid === 'NSE:NIFTY:INDEX' || gid === 'NSE:BANKNIFTY:INDEX') return false;
-    if (gid.startsWith('NSE:NIFTY') || gid.startsWith('NSE:BANKNIFTY')) return false;
-    return true;
+    const access = window.TzFreeAccess;
+    if (!access) return true; // fail closed if the access-matrix asset is missing
+    return !access.isFreeTierAllowedGlobalId(globalId);
   }
 
   function isInstrumentRestrictedForFree(inst) {
     if (!inst) return false;
     if (isProUser()) return false;
-    const gid = inst.globalId || inst.globalInstrumentId || '';
-    if (gid) {
-      return isGlobalIdRestrictedForFree(gid);
-    }
-    const sym = (inst.symbol || inst.tradingsymbol || '').toUpperCase();
-    if (sym.includes('NIFTY 50') || sym === 'NIFTY' || sym.includes('BANK NIFTY') || sym.includes('NIFTY BANK') || sym === 'BANKNIFTY') {
-      return false;
-    }
-    return true;
+    const access = window.TzFreeAccess;
+    if (!access) return true; // fail closed if the access-matrix asset is missing
+    return !access.isFreeTierAllowedInstrument(inst);
   }
 
   function showSubscriptionUpgradePrompt(symbol) {
@@ -403,6 +400,52 @@
     } else {
       alert('Ad consent and privacy choices are managed on the native Android device via Google UMP.');
     }
+  }
+
+  /**
+   * Support surface for ads: entitlement, consent, SDK init, load errors (code/domain/message/
+   * response id), banner attachment/dimensions and the exact eligibility block reason.
+   */
+  function showAdDiagnostics() {
+    let diag = {};
+    try {
+      if (window.TradingzoneNative && typeof window.TradingzoneNative.getAdDiagnostics === 'function') {
+        const raw = window.TradingzoneNative.getAdDiagnostics();
+        diag = typeof raw === 'string' ? JSON.parse(raw || '{}') : raw;
+      }
+    } catch (e) {
+      diag = { error: String(e && e.message || e) };
+    }
+    console.log('[AdDiagnostics]', diag);
+    const lines = [
+      `Tier: ${diag.tier || '?'} • User: ${diag.userId || '(none)'}`,
+      `Screen: ${diag.currentScreen || '?'} • Trading workspace: ${diag.isTradingWorkspaceOpen} • Open positions: ${diag.hasOpenPositions} • Pending orders: ${diag.hasPendingOrders}`,
+      `AdMob App ID: ${diag.admobAppId || '?'}`,
+      `Banner unit: ${diag.bannerAdUnitId || '?'}`,
+      `Interstitial unit: ${diag.interstitialAdUnitId || '?'}`,
+      `Test ad units: ${diag.usingOfficialTestAdUnits} • Debug build: ${diag.isDebugBuild}`,
+      '',
+      `SDK initialized: ${diag.sdkInitialized} (${diag.sdkInitStatus})`,
+      `SDK detail: ${diag.sdkInitDetail || '—'}`,
+      `Consent status: ${diag.consentStatus} • canRequestAds: ${diag.canRequestAds}`,
+      `Consent callback: ${diag.consentCallbackAgoSec >= 0 ? diag.consentCallbackAgoSec + 's ago' : 'not received'}`,
+      `Consent form error: ${diag.consentFormError || 'none'}`,
+      `Consent request error: ${diag.consentRequestError || 'none'}`,
+      '',
+      `Banner: requests=${diag.bannerRequestCount} loaded=${diag.bannerLoaded} visible=${diag.bannerVisible} attached=${diag.bannerAttached}`,
+      `Banner size: ${diag.bannerMeasuredWidthPx}x${diag.bannerMeasuredHeightPx}px (container ${diag.bannerContainerWidthPx}x${diag.bannerContainerHeightPx}px)`,
+      `Banner last error: ${diag.lastBannerLoadError || 'none'}`,
+      `Interstitial: requests=${diag.interstitialRequestCount} loaded=${diag.interstitialLoaded} loading=${diag.isInterstitialLoading} shown=${diag.interstitialShownCount}`,
+      `Interstitial last error: ${diag.lastInterstitialLoadError || 'none'}`,
+      '',
+      `Actions: ${diag.eligibleActionCounter}/${diag.actionsRequired} • Foreground: ${diag.foregroundSec}s of ${diag.minForegroundSec}s required`,
+      `Caps: session ${diag.sessionInterstitialCount}/${diag.maxSessionInterstitials} • 24h ${diag.recent24hCount}/${diag.max24hInterstitials}`,
+      `Blocked reason: ${diag.lastEligibilityCheckReason || '—'}`,
+      `Preload/display reason: ${diag.lastPreloadBlockedReason || '—'}`,
+      '',
+      'Ads are test/dev units in debug builds. Production serving additionally requires the AdMob account/app to be approved and linked.',
+    ].join('\n');
+    showBrandedAlert('Ad diagnostics', lines);
   }
 
   window.onAdBannerStateChanged = function (isVisible, heightDp) {
@@ -621,17 +664,20 @@
   window.onTradingzoneGoogleSignInResult = async function (success, dataJsonStr, errorMsg, requestId) {
     const reqId = typeof requestId === 'string' ? requestId : '';
     if (reqId && expiredGoogleRequestIds.has(reqId)) {
-      console.warn('Ignoring stale Google Sign-In callback for expired request:', reqId);
+      recordGoogleStage('JS_CALLBACK_REJECTED_STALE', reqId, 'expired_request');
       return;
     }
     if (reqId && handledGoogleRequestIds.has(reqId)) {
+      recordGoogleStage('JS_CALLBACK_REJECTED_DUPLICATE', reqId, '');
       return; // Duplicate native callback for the same request
     }
     if (reqId && activeGoogleSignInRequestId && reqId !== activeGoogleSignInRequestId) {
+      recordGoogleStage('JS_CALLBACK_REJECTED_STALE', reqId, 'superseded');
       return; // Ignore callback from a superseded sign-in attempt
     }
     if (reqId) handledGoogleRequestIds.add(reqId);
     activeGoogleSignInRequestId = null;
+    recordGoogleStage('JS_CALLBACK_RECEIVED', reqId, 'success=' + Boolean(success));
 
     if (googleSignInTimeoutId) {
       clearTimeout(googleSignInTimeoutId);
@@ -650,27 +696,32 @@
     if (!success) {
       resetGoogleBtn();
       const err = String(errorMsg || '');
+      recordGoogleStage('JS_ERROR', reqId, err.substring(0, 120));
       if (err.includes('USER_CANCELLED')) {
-        showAuthError('Google sign-in was cancelled. Tap "Continue with Google" to try again.');
+        showAuthError('Google sign-in was cancelled or the account picker was closed before a credential was returned. Tap "Continue with Google" to try again, or use email/password sign-in.');
       } else if (err.includes('PLAY_SERVICES_UNAVAILABLE')) {
         showAuthError('Google Play Services is unavailable on this device. Update Google Play Services from the Play Store, then retry — or use email/password sign-in.');
       } else if (err.includes('SIGN_IN_TIMEOUT')) {
         showAuthError('Google sign-in timed out waiting for the account picker. Check your connection and retry, or use email/password sign-in.');
+      } else if (err.includes('SIGN_IN_INTERRUPTED')) {
+        showAuthError('The Google sign-in flow was interrupted before it finished. Bring the app to the front and tap "Continue with Google" again.');
+      } else if (err.includes('UNEXPECTED_CREDENTIAL_TYPE')) {
+        showAuthError('Google returned a credential type this build does not support (' + err.replace('UNEXPECTED_CREDENTIAL_TYPE:', '').trim() + '). Update the app and retry.');
+      } else if (err.includes('CREDENTIAL_PARSE_ERROR') || err.includes('CREDENTIAL_INCOMPLETE')) {
+        showAuthError('Google returned a credential that could not be read on this device. Update Google Play Services and the app, then retry.');
       } else if (err.includes('NO_CREDENTIALS')) {
-        // Honest diagnosis: accounts may exist on the phone and still produce this error when the
-        // app build's package + signing certificate is not registered as an Android OAuth client.
         showAuthError(
-          'Google sign-in could not obtain a credential for this build. Google accounts on the phone are not the cause: the usual cause is that this APK\'s signing certificate (SHA-1) + package name is not registered as an Android OAuth client in the same Google Cloud project as GOOGLE_CLIENT_ID. Use email/password sign-in for now; the diagnostics details below identify the exact fingerprint.'
+          'Google sign-in could not obtain a credential for this build. The app\'s package + signing certificate may not match the registered Android OAuth client. Tap "Sign-in help" to see the exact fingerprint and stage trace, or use email/password sign-in.'
         );
         logGoogleSignInDiagnostics();
       } else if (err.includes('CONFIGURATION_ERROR')) {
         showAuthError('Google sign-in is not configured correctly: the server OAuth client ID is missing. Contact the app owner.');
       } else if (err.includes('ACTIVITY_NOT_ACTIVE')) {
-        showAuthError('Google sign-in was interrupted because the app was closing. Reopen the app and retry.');
+        showAuthError('Google sign-in was interrupted because the app was not in the foreground. Reopen the app and retry.');
       } else if (err.includes('SIGN_IN_IN_PROGRESS')) {
-        showAuthError('A Google sign-in request is already open. Finish or cancel it before starting another.');
-      } else if (err.includes('CREDENTIAL_ERROR') || err.includes('CREDENTIAL_PROVIDER_CONFIGURATION') || err.includes('DEVELOPER_ERROR') || err.includes('10:')) {
-        showAuthError('Google sign-in configuration error. The package/signing-certificate fingerprint may not match the registered Android OAuth client. Details: ' + (err || 'unknown'));
+        showAuthError('A Google sign-in request is already open. Wait for it to finish before starting another.');
+      } else if (err.includes('CREDENTIAL_ERROR') || err.includes('CREDENTIAL_PROVIDER_CONFIGURATION') || err.includes('DEVELOPER_ERROR')) {
+        showAuthError('Google sign-in configuration error: ' + (err.replace('CREDENTIAL_ERROR:', '').trim() || 'unknown') + '. Tap "Sign-in help" for details, or use email/password sign-in.');
         logGoogleSignInDiagnostics();
       } else if (err.includes('UNTRUSTED_ORIGIN')) {
         showAuthError('Google sign-in was blocked for security reasons. Restart the app and retry.');
@@ -686,35 +737,73 @@
         try {
           parsed = JSON.parse(dataJsonStr);
         } catch (parseErr) {
-          console.error('Failed to parse Google credential JSON:', parseErr);
+          recordGoogleStage('JS_PARSE_ERROR', reqId, 'invalid_json');
         }
       } else if (typeof dataJsonStr === 'object' && dataJsonStr !== null) {
         parsed = dataJsonStr;
       }
 
       if (!parsed || !parsed.idToken) {
+        recordGoogleStage('JS_PARSE_MISSING_TOKEN', reqId, '');
         resetGoogleBtn();
         return showAuthError('Invalid Google credential response: missing ID token.');
       }
+      // Never log the token itself; length + credential type are enough for support.
+      recordGoogleStage('JS_PARSE_OK', reqId, 'idTokenLength=' + String(parsed.idToken).length + ' credentialType=' + String(parsed.credentialType || 'unknown').split('.').pop());
+      if (parsed.requestId && reqId && parsed.requestId !== reqId) {
+        recordGoogleStage('JS_CALLBACK_REJECTED_STALE', reqId, 'payload_request_id_mismatch');
+        resetGoogleBtn();
+        return showAuthError('Google sign-in response did not match the active request. Please retry.');
+      }
 
       if (googleBtnText) googleBtnText.textContent = 'Verifying with Sikho Trading...';
-      const res = await apiFetch('/api/v1/auth/google', {
-        method: 'POST',
-        body: JSON.stringify({ idToken: parsed.idToken }),
-      });
+      recordGoogleStage('JS_BACKEND_REQUEST', reqId, 'POST /api/v1/auth/google');
+      let res;
+      try {
+        res = await apiFetch('/api/v1/auth/google', {
+          method: 'POST',
+          body: JSON.stringify({ idToken: parsed.idToken }),
+        });
+      } catch (backendErr) {
+        recordGoogleStage('JS_BACKEND_ERROR', reqId, 'status=' + (backendErr.status || 'n/a') + ' code=' + (backendErr.code || 'n/a'));
+        const statusText = backendErr.status ? ` (HTTP ${backendErr.status}${backendErr.code ? ', ' + backendErr.code : ''})` : '';
+        showAuthError('The app could not complete Google sign-in on the server' + statusText + ': ' + (backendErr.message || 'verification failed') + ' You can retry or use email/password sign-in.');
+        if (backendErr.status === 401) logGoogleSignInDiagnostics();
+        return;
+      }
 
+      recordGoogleStage('JS_BACKEND_RESPONSE', reqId, 'status=200 tier=' + String(res.user?.tier || 'unknown'));
       if (res && res.token) {
         document.getElementById('auth-error-msg').style.display = 'none';
-        completeAuthenticatedSession(res.token, res.user, res.account, true, res.entitlement);
+        const saved = completeAuthenticatedSession(res.token, res.user, res.account, true, res.entitlement);
+        recordGoogleStage('JS_SESSION_SAVED', reqId, 'secureSessionWrite=' + Boolean(saved) + ' tier=' + String(res.user?.tier || 'unknown'));
       } else {
-        showAuthError('Authentication succeeded but failed to issue session.');
+        recordGoogleStage('JS_SESSION_MISSING_TOKEN', reqId, '');
+        showAuthError('Google authentication succeeded but the app did not receive a session. Please retry.');
       }
     } catch (err) {
+      recordGoogleStage('JS_UNEXPECTED_ERROR', reqId, String(err && err.message || err).substring(0, 120));
       showAuthError(err.message || 'Google verification failed on backend.');
     } finally {
       resetGoogleBtn();
+      recordGoogleStage('JS_DONE', reqId, '');
     }
   };
+
+  /** Sanitised, token-free JS stage trace for Google sign-in (max 60 entries). */
+  function recordGoogleStage(stage, reqId, detail) {
+    try {
+      state.googleTrace = state.googleTrace || [];
+      state.googleTrace.push({
+        t: Date.now(),
+        stage: String(stage || ''),
+        req: String(reqId || '').slice(0, 64),
+        detail: String(detail || '').slice(0, 160),
+      });
+      if (state.googleTrace.length > 60) state.googleTrace.shift();
+      console.log('[GoogleAuthTrace] ' + stage + (detail ? ' ' + detail : ''));
+    } catch { }
+  }
 
   async function handleGoogleSignIn() {
     if (state.isGoogleSignInPending) return;
@@ -728,6 +817,7 @@
         state.isGoogleSignInPending = true;
         const reqId = `g_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         activeGoogleSignInRequestId = reqId;
+        recordGoogleStage('JS_TAP', reqId, 'button_pressed');
         if (googleBtn) googleBtn.disabled = true;
         if (googleBtnText) googleBtnText.textContent = 'Opening Google Sign-In...';
 
@@ -737,6 +827,7 @@
           if (state.isGoogleSignInPending && activeGoogleSignInRequestId === reqId) {
             // Mark the request dead on BOTH sides so a late native callback can never authenticate.
             expiredGoogleRequestIds.add(reqId);
+            recordGoogleStage('JS_TIMEOUT', reqId, 'afterMs=45000');
             if (window.TradingzoneNative && typeof window.TradingzoneNative.cancelNativeGoogleSignIn === 'function') {
               try { window.TradingzoneNative.cancelNativeGoogleSignIn(reqId); } catch { }
             }
@@ -749,6 +840,7 @@
         }, 45000);
 
         // Immediately invoke native Credential Manager prompt with request ID
+        recordGoogleStage('JS_NATIVE_CALL', reqId, 'startNativeGoogleSignIn');
         window.TradingzoneNative.startNativeGoogleSignIn(GOOGLE_WEB_CLIENT_ID, reqId);
         return;
       }
@@ -782,13 +874,48 @@
         if (document.getElementById('auth-error-msg')) {
           showAuthError(
             'Google Sign-In diagnostics —' + pkg + fingerprint + last +
-            '. Register this exact package + SHA-1 as an Android OAuth client in the same Google Cloud project as the Web client ID, then reinstall this build. Email/password sign-in works meanwhile.'
+            '. Tap "Sign-in help" for the full stage trace. Email/password sign-in works meanwhile.'
           );
         }
       }
     } catch (e) {
       console.warn('Could not read Google sign-in diagnostics:', e);
     }
+  }
+
+  /** Owner-facing support surface: compact text report of the last Google sign-in attempt. */
+  function showGoogleDiagnostics() {
+    let native = {};
+    try {
+      if (window.TradingzoneNative && typeof window.TradingzoneNative.getGoogleSignInDiagnostics === 'function') {
+        const raw = window.TradingzoneNative.getGoogleSignInDiagnostics();
+        native = typeof raw === 'string' ? JSON.parse(raw || '{}') : raw;
+      }
+    } catch (e) {
+      native = { error: String(e && e.message || e) };
+    }
+    const jsTrace = (state.googleTrace || []).slice(-14).map((e) => `${new Date(e.t).toISOString().slice(11, 23)} ${e.stage}${e.detail ? ' — ' + e.detail : ''}`);
+    const nativeTrace = Array.isArray(native.lastTrace)
+      ? native.lastTrace.slice(-14).map((e) => `${new Date(Number(e.t) || Date.now()).toISOString().slice(11, 23)} ${e.stage}${e.detail ? ' — ' + e.detail : ''}`)
+      : [];
+    const lines = [
+      `App: ${native.versionName || '?'} (${native.versionCode || '?'})`,
+      `Package: ${native.packageName || '?'}`,
+      `Signing SHA-1: ${native.signingSha1 || '?'}`,
+      `Play Services: ${native.playServicesVersion || '?'} (status ${native.playServicesStatus})`,
+      `Android SDK: ${native.androidSdkInt || '?'} • Activity: ${native.activityLifecycleState || '?'}`,
+      `Web client: …${native.webClientIdSuffix || '?'}`,
+      `Last credential type: ${native.lastCredentialType || 'none'}`,
+      `Last error: ${native.lastErrorCode || 'none'}`,
+      '',
+      'JS stages:',
+      ...(jsTrace.length ? jsTrace : ['(none)']),
+      '',
+      'Native stages:',
+      ...(nativeTrace.length ? nativeTrace : ['(none)']),
+    ].join('\n');
+    console.log('[GoogleSignInDiagnosticsReport]\n' + lines);
+    showBrandedAlert('Google Sign-In help', lines);
   }
 
   // =========================================================================
@@ -1878,88 +2005,434 @@
     container.innerHTML = filtered.map((inst) => renderInstrumentRowHTML(inst, Boolean(inst.hasDerivatives))).join('');
   }
 
+  // =========================================================================
+  // OPTION CHAIN: paginated strike window, ATM focus, genuine live CE/PE ticks
+  // =========================================================================
+  const OC_WINDOW_SIZE = 21;
+  const OC_MAX_SUBSCRIPTIONS = 62;
+
+  function optionChainCanonicalUnderlying(value) {
+    const u = String(value || '').trim().toUpperCase().replace(/\s+/g, ' ');
+    if (u === 'NIFTY' || u === 'NIFTY 50' || u === 'NIFTY50') return 'NIFTY';
+    if (u === 'BANKNIFTY' || u === 'NIFTY BANK' || u === 'NIFTYBANK') return 'BANKNIFTY';
+    return u;
+  }
+
+  function optionChainFreeAllowed(underlying) {
+    const u = optionChainCanonicalUnderlying(underlying);
+    return u === 'NIFTY' || u === 'BANKNIFTY';
+  }
+
+  function ensureOptionChainState() {
+    state.optionChain = state.optionChain || {
+      underlying: 'NIFTY',
+      expiry: null,
+      seq: 0,
+      rows: [],
+      contracts: new Map(),
+      subscribed: new Set(),
+      expiryInfo: [],
+      window: null,
+      spotLtp: null,
+      loading: false,
+      error: null,
+      lastFocusedKey: null,
+      coverage: null,
+      deliveryMode: null,
+    };
+    return state.optionChain;
+  }
+
+  function ocIsOpen() {
+    return Boolean(document.getElementById('modal-option-chain')?.classList.contains('active'));
+  }
+
+  function ocKey() {
+    const oc = state.optionChain;
+    return oc ? `${oc.underlying}:${oc.expiry || ''}` : '';
+  }
+
+  function setOptionChainStatus(left, right) {
+    const l = document.getElementById('oc-status-left');
+    const r = document.getElementById('oc-status-right');
+    if (l) l.textContent = left || '—';
+    if (r) r.textContent = right || '';
+  }
+
+  function ocFmtCompact(num) {
+    const n = Number(num);
+    if (!Number.isFinite(n) || n <= 0) return '—';
+    if (n >= 10000000) return (n / 10000000).toFixed(2) + 'Cr';
+    if (n >= 100000) return (n / 100000).toFixed(2) + 'L';
+    if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+    return String(Math.round(n));
+  }
+
+  function ocLtpText(side, gid) {
+    const cached = gid ? state.quotesMap?.get(gid) : null;
+    const live = cached && Number(cached.ltp) > 0 ? Number(cached.ltp) : null;
+    const base = side && Number(side.ltp) > 0 ? Number(side.ltp) : null;
+    const value = live !== null ? live : base;
+    return value !== null ? fmtNum(value) : '—';
+  }
+
+  function ocMetaText(side, gid) {
+    const cached = gid ? state.quotesMap?.get(gid) : null;
+    const oi = cached && cached.openInterest !== undefined ? cached.openInterest : side?.openInterest;
+    const vol = cached && cached.volume !== undefined ? cached.volume : side?.volume;
+    const parts = [];
+    parts.push('OI ' + ocFmtCompact(oi));
+    if (vol !== undefined && vol !== null) parts.push('Vol ' + ocFmtCompact(vol));
+    return parts.join(' • ');
+  }
+
+  function ocQuoteAgeText(gid) {
+    const cached = gid ? state.quotesMap?.get(gid) : null;
+    const ts = Number(cached?.providerTimestamp || cached?.receiveTimestamp || 0);
+    if (!ts) return '';
+    const ageMs = Date.now() - ts;
+    if (ageMs < 0) return '';
+    if (ageMs < 5000) return 'live';
+    if (ageMs < 60000) return Math.round(ageMs / 1000) + 's ago';
+    return Math.round(ageMs / 60000) + 'm ago';
+  }
+
+  function renderOptionChainHeader(meta) {
+    const oc = ensureOptionChainState();
+    const title = document.getElementById('oc-title');
+    if (title) title.textContent = `${oc.underlying === 'NIFTY' ? 'NIFTY 50' : oc.underlying} Option Chain`;
+    const sub = document.getElementById('oc-spot-subtitle');
+    if (sub) {
+      const spotTxt = oc.spotLtp ? `Spot ${fmtINR(oc.spotLtp)}` : 'Spot unavailable';
+      const istNow = new Date(Date.now() + serverClockOffsetMs).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+      sub.textContent = `${spotTxt} • Expiry ${oc.expiry || '—'} • ${istNow} IST`;
+    }
+
+    const pillsEl = document.getElementById('oc-expiry-pills');
+    if (pillsEl) {
+      const infos = Array.isArray(oc.expiryInfo) && oc.expiryInfo.length
+        ? oc.expiryInfo
+        : (meta?.availableExpiries || []).map((e) => ({ expiry: e, contracts: 0, hasBothSides: true }));
+      pillsEl.innerHTML = infos
+        .map((info) => {
+          const exp = typeof info === 'string' ? info : info.expiry;
+          const active = exp === oc.expiry;
+          const thin = typeof info === 'object' && info && info.contracts !== undefined && info.contracts < 2;
+          return `<button class="filter-chip ${active ? 'active' : ''}" style="${thin ? 'opacity:0.55;' : ''}"
+                  title="${thin ? 'Few contracts listed for this expiry' : 'Select expiry ' + exp}"
+                  onclick="window.TZApp.loadOptionChain('${oc.underlying}', '${exp}')">${exp}</button>`;
+        })
+        .join('');
+    }
+
+    const total = oc.window?.total || oc.rows.length;
+    const above = oc.window ? oc.window.hasMoreAbove : false;
+    const below = oc.window ? oc.window.hasMoreBelow : false;
+    const coverage = oc.coverage
+      ? `${oc.coverage.withQuotes}/${oc.coverage.total} contracts quoted`
+      : '';
+    setOptionChainStatus(
+      `${oc.rows.length} of ${total} strikes${above || below ? ' (tap load buttons for more)' : ''}`,
+      coverage + (oc.deliveryMode ? ` • ${oc.deliveryMode}` : '')
+    );
+
+    const aboveBtn = document.getElementById('oc-load-above');
+    const belowBtn = document.getElementById('oc-load-below');
+    if (aboveBtn) aboveBtn.style.display = above ? 'block' : 'none';
+    if (belowBtn) belowBtn.style.display = below ? 'block' : 'none';
+  }
+
+  function renderOptionChainTable(opts = {}) {
+    const oc = ensureOptionChainState();
+    const tbody = document.getElementById('oc-table-body');
+    if (!tbody) return;
+    if (oc.error) {
+      tbody.innerHTML = `<tr><td colspan="3" style="padding:22px;color:var(--negative-red);text-align:center;">${oc.error}</td></tr>`;
+      return;
+    }
+    if (!oc.rows.length) {
+      tbody.innerHTML = `<tr><td colspan="3" style="padding:22px;color:var(--text-on-white-secondary);text-align:center;">${oc.loading ? 'Loading live option chain…' : 'No strikes available for this expiry.'}</td></tr>`;
+      return;
+    }
+    const atmStrike = oc.window?.atmStrike ?? null;
+    const focusedKey = ocKey();
+    const shouldFocus = opts.focusAtm && oc.lastFocusedKey !== focusedKey;
+
+    tbody.innerHTML = oc.rows
+      .map((row) => {
+        const isAtm = atmStrike !== null && row.strikePrice === atmStrike;
+        const ce = row.call;
+        const pe = row.put;
+        const ceGid = ce?.instrument?.globalId || '';
+        const peGid = pe?.instrument?.globalId || '';
+        const ceLtp = ce ? ocLtpText(ce, ceGid) : '—';
+        const peLtp = pe ? ocLtpText(pe, peGid) : '—';
+        const ceMeta = ce ? ocMetaText(ce, ceGid) : '—';
+        const peMeta = pe ? ocMetaText(pe, peGid) : '—';
+        const ceClick = ceGid ? `onclick="window.TZApp.openOrderTicketByGlobalId('${ceGid}','BUY')"` : '';
+        const peClick = peGid ? `onclick="window.TZApp.openOrderTicketByGlobalId('${peGid}','BUY')"` : '';
+        return `
+          <tr data-oc-strike="${row.strikePrice}" class="${isAtm ? 'oc-atm-row' : ''}">
+            <td class="oc-side-cell oc-ce-cell" data-oc-side="CE" ${ceClick}>
+              <div class="oc-ltp-row"><span class="oc-ltp oc-ltp-ce" data-oc-ltp="${ceGid}">${ceLtp}</span></div>
+              <div class="oc-meta" data-oc-meta="${ceGid}">${ceMeta}</div>
+            </td>
+            <td class="oc-strike-cell" data-oc-strike-cell="${row.strikePrice}">
+              <div class="oc-strike-value">${fmtNum(row.strikePrice, 0)}</div>
+              <div class="oc-badge">${isAtm ? '<span class="oc-atm-tag">ATM</span>' : 'STRIKE'}</div>
+            </td>
+            <td class="oc-side-cell oc-pe-cell" data-oc-side="PE" ${peClick}>
+              <div class="oc-ltp-row"><span class="oc-ltp oc-ltp-pe" data-oc-ltp="${peGid}">${peLtp}</span></div>
+              <div class="oc-meta" data-oc-meta="${peGid}">${peMeta}</div>
+            </td>
+          </tr>`;
+      })
+      .join('');
+
+    if (shouldFocus) {
+      oc.lastFocusedKey = focusedKey;
+      const scrollBox = document.getElementById('oc-scroll');
+      const atmRow = tbody.querySelector('.oc-atm-row');
+      if (scrollBox && atmRow) {
+        requestAnimationFrame(() => {
+          const target = atmRow.offsetTop - scrollBox.clientHeight / 2 + atmRow.clientHeight / 2;
+          scrollBox.scrollTop = Math.max(0, target);
+        });
+      }
+    }
+  }
+
+  function ocRegisterContracts(rows) {
+    const oc = ensureOptionChainState();
+    for (const row of rows) {
+      for (const side of [row.call, row.put]) {
+        const gid = side?.instrument?.globalId;
+        if (gid) {
+          oc.contracts.set(gid, { side: row.call === side ? 'CE' : 'PE', row });
+        }
+      }
+    }
+  }
+
+  function ocIsSymbolUsedElsewhere(gid) {
+    if (gid === state.activeChartSubId) return true;
+    if ((state.selectedIndices || []).includes(gid)) return true;
+    if ((state.watchlists?.[0]?.instruments || []).includes(gid)) return true;
+    if ((state.positionsData?.positions || []).some((p) => p.globalInstrumentId === gid && Math.abs(p.quantity || 0) > 0)) return true;
+    return false;
+  }
+
+  function syncOptionChainSubscriptions(subscribeGids) {
+    const oc = ensureOptionChainState();
+    if (!wsConn || wsConn.readyState !== WebSocket.OPEN) return;
+    const desired = new Set();
+    const source = Array.isArray(subscribeGids) ? subscribeGids : Array.from(oc.contracts.keys());
+    for (const gid of source) {
+      if (!gid) continue;
+      if (desired.size >= OC_MAX_SUBSCRIPTIONS) break;
+      desired.add(gid);
+    }
+    const toAdd = Array.from(desired).filter((g) => !oc.subscribed.has(g));
+    const toRemove = Array.from(oc.subscribed).filter((g) => !desired.has(g) && !ocIsSymbolUsedElsewhere(g));
+    if (toAdd.length) sendWsSubscribe(toAdd);
+    if (toRemove.length) {
+      try {
+        wsConn.send(JSON.stringify({ action: 'UNSUBSCRIBE', type: 'UNSUBSCRIBE', symbols: toRemove }));
+      } catch { }
+    }
+    oc.subscribed = new Set(Array.from(desired).concat(Array.from(oc.subscribed).filter((g) => ocIsSymbolUsedElsewhere(g))));
+  }
+
+  function unsubscribableOptionChainContracts() {
+    const oc = state.optionChain;
+    if (!oc || !oc.subscribed.size) return;
+    const toRemove = Array.from(oc.subscribed).filter((g) => !ocIsSymbolUsedElsewhere(g));
+    if (toRemove.length && wsConn && wsConn.readyState === WebSocket.OPEN) {
+      try {
+        wsConn.send(JSON.stringify({ action: 'UNSUBSCRIBE', type: 'UNSUBSCRIBE', symbols: toRemove }));
+      } catch { }
+    }
+    oc.subscribed = new Set();
+  }
+
   async function openOptionChainModal(underlying = 'NIFTY', expiry) {
+    const requested = optionChainCanonicalUnderlying(underlying || 'NIFTY');
+    // FREE entitlement: NIFTY 50 and BANKNIFTY chains only. SENSEX/other chains stay Premium.
+    if (!isProUser() && !optionChainFreeAllowed(requested)) {
+      showSubscriptionUpgradePrompt(requested);
+      return;
+    }
+    const oc = ensureOptionChainState();
     document.getElementById('modal-option-chain').classList.add('active');
     notifyNativeScreenState();
     const sel = document.getElementById('oc-underlying-select');
-    if (sel) sel.value = underlying;
-    await loadOptionChain(underlying, expiry);
+    if (sel) sel.value = requested;
+    oc.underlying = requested;
+    oc.expiry = expiry || null;
+    oc.window = null;
+    oc.rows = [];
+    oc.contracts.clear();
+    oc.lastFocusedKey = null;
+    unsubscribableOptionChainContracts();
+    await loadOptionChain(oc.underlying, expiry, { reset: true });
   }
 
   function closeOptionChainModal() {
+    const oc = state.optionChain;
+    if (oc) {
+      oc.seq += 1; // invalidate in-flight responses
+      oc.loading = false;
+      oc.error = null;
+      unsubscribableOptionChainContracts();
+    }
     document.getElementById('modal-option-chain').classList.remove('active');
     notifyNativeScreenState();
   }
 
-  async function loadOptionChain(underlying = 'NIFTY', expiry) {
-    document.getElementById('oc-title').textContent = `${underlying} Option Chain`;
-    document.getElementById('oc-table-body').innerHTML =
-      '<tr><td colspan="5" style="padding:24px;color:var(--text-on-white-secondary);">Loading live option chain strikes from Upstox V3 master...</td></tr>';
+  async function onOptionChainUnderlyingChange(value) {
+    const requested = optionChainCanonicalUnderlying(value);
+    if (!isProUser() && !optionChainFreeAllowed(requested)) {
+      showSubscriptionUpgradePrompt(requested);
+      const sel = document.getElementById('oc-underlying-select');
+      const oc = ensureOptionChainState();
+      if (sel) sel.value = oc.underlying;
+      return;
+    }
+    await openOptionChainModal(requested);
+  }
+
+  function mergeOptionChainRows(existing, incoming) {
+    const byStrike = new Map();
+    for (const row of existing || []) byStrike.set(row.strikePrice, row);
+    for (const row of incoming || []) byStrike.set(row.strikePrice, row);
+    return Array.from(byStrike.values()).sort((a, b) => a.strikePrice - b.strikePrice);
+  }
+
+  async function loadOptionChain(underlying, expiry, opts = {}) {
+    const oc = ensureOptionChainState();
+    const requested = optionChainCanonicalUnderlying(underlying || oc.underlying || 'NIFTY');
+    if (!isProUser() && !optionChainFreeAllowed(requested)) {
+      showSubscriptionUpgradePrompt(requested);
+      return;
+    }
+    const seq = ++oc.seq;
+    const isReset = Boolean(opts.reset);
+    if (isReset) {
+      oc.rows = [];
+      oc.contracts.clear();
+      oc.expiryInfo = [];
+      oc.window = null;
+      oc.error = null;
+      oc.lastFocusedKey = null;
+      oc.coverage = null;
+      setOptionChainStatus('Loading live option chain…', '');
+      document.getElementById('oc-table-body').innerHTML =
+        '<tr><td colspan="3" style="padding:22px;color:var(--text-on-white-secondary);text-align:center;">Loading live option chain…</td></tr>';
+      unsubscribableOptionChainContracts();
+    }
+    oc.loading = true;
+    oc.error = null;
+    const offset = Number.isFinite(opts.offset) ? opts.offset : undefined;
     try {
-      const url = `/api/v1/option-chain?underlying=${encodeURIComponent(underlying)}${expiry ? `&expiry=${encodeURIComponent(expiry)}` : ''
-        }`;
-      const chain = await apiFetch(url);
-      document.getElementById('oc-spot-subtitle').textContent = chain.underlyingSpotLtp
-        ? `Underlying Spot: ${fmtINR(chain.underlyingSpotLtp)} • Expiry: ${chain.selectedExpiry}`
-        : `Expiry: ${chain.selectedExpiry}`;
+      const url =
+        `/api/v1/option-chain?underlying=${encodeURIComponent(requested)}` +
+        (expiry ? `&expiry=${encodeURIComponent(expiry)}` : '') +
+        (offset !== undefined ? `&offset=${offset}` : '') +
+        `&limit=${OC_WINDOW_SIZE}`;
+      const chain = await apiFetch(url, { timeoutMs: 25000 });
+      if (seq !== oc.seq) return; // stale response for a previously selected underlying/expiry
+      const rows = Array.isArray(chain.rows) ? chain.rows : [];
+      const scrollBox = document.getElementById('oc-scroll');
+      const prevScrollTop = scrollBox ? scrollBox.scrollTop : 0;
+      const prevScrollHeight = scrollBox ? scrollBox.scrollHeight : 0;
 
-      // Update provenance banner
-      const provMode = document.getElementById('oc-provenance-mode');
-      const provNote = document.getElementById('oc-provenance-note');
-      if (provMode) provMode.textContent = `Delivery: ${chain.deliveryMode || 'POLLED'}`;
-      if (provNote && chain.provenance?.note) provNote.textContent = chain.provenance.note;
-
-      // Render expiry pills
-      const pillsEl = document.getElementById('oc-expiry-pills');
-      pillsEl.innerHTML = (chain.availableExpiries || [])
-        .slice(0, 8)
-        .map(
-          (exp) => `
-          <button class="filter-chip ${exp === chain.selectedExpiry ? 'active' : ''}"
-                  onclick="window.TZApp.loadOptionChain('${chain.underlying}', '${exp}')">
-            ${exp}
-          </button>
-        `
-        )
-        .join('');
-
-      // Find ATM strike
-      let atmStrike = null;
-      if (chain.underlyingSpotLtp && chain.rows.length > 0) {
-        let minD = Infinity;
-        for (const r of chain.rows) {
-          const d = Math.abs(r.strikePrice - chain.underlyingSpotLtp);
-          if (d < minD) {
-            minD = d;
-            atmStrike = r.strikePrice;
-          }
-        }
+      oc.underlying = requested;
+      oc.expiry = chain.selectedExpiry || expiry || null;
+      oc.spotLtp = chain.underlyingSpotLtp ?? null;
+      oc.window = chain.strikeWindow || null;
+      oc.expiryInfo = Array.isArray(chain.expiryInfo) && chain.expiryInfo.length
+        ? chain.expiryInfo
+        : (chain.availableExpiries || []).map((e) => ({ expiry: e, contracts: 0, hasBothSides: true }));
+      oc.coverage = chain.provenance
+        ? { withQuotes: chain.provenance.contractsWithRealQuotes, total: chain.provenance.contractsTotal }
+        : null;
+      oc.deliveryMode = chain.deliveryMode || null;
+      oc.rows = isReset || !oc.rows.length ? rows : mergeOptionChainRows(oc.rows, rows);
+      ocRegisterContracts(oc.rows);
+      renderOptionChainHeader(chain);
+      renderOptionChainTable({ focusAtm: isReset });
+      syncOptionChainSubscriptions(chain.subscribeGlobalIds);
+      if (!isReset && rows.length && scrollBox && opts.appendAbove) {
+        // Keep the user's visual position when prepending older strikes.
+        requestAnimationFrame(() => {
+          scrollBox.scrollTop = prevScrollTop + Math.max(0, scrollBox.scrollHeight - prevScrollHeight);
+        });
       }
-
-      const tbody = document.getElementById('oc-table-body');
-      tbody.innerHTML = chain.rows
-        .map((row) => {
-          const isAtm = row.strikePrice === atmStrike;
-          const ce = row.call;
-          const pe = row.put;
-          const ceLtp = ce && ce.ltp !== null ? fmtNum(ce.ltp) : '—';
-          const peLtp = pe && pe.ltp !== null ? fmtNum(pe.ltp) : '—';
-          const ceOi = ce && ce.openInterest ? (ce.openInterest / 1000).toFixed(1) + 'K' : '—';
-          const peOi = pe && pe.openInterest ? (pe.openInterest / 1000).toFixed(1) + 'K' : '—';
-
-          return `
-            <tr class="${isAtm ? 'oc-atm-row' : ''}">
-              <td class="oc-side-cell" onclick="${ce ? `window.TZApp.openChartByGlobalId('${ce.instrument.globalId}')` : ''}">${ceOi}</td>
-              <td class="oc-side-cell" style="font-weight:700;color:var(--positive-on-white);" onclick="${ce ? `window.TZApp.openOrderTicketByGlobalId('${ce.instrument.globalId}', 'BUY')` : ''}">${ceLtp}</td>
-              <td class="oc-strike-cell">${row.strikePrice}${isAtm ? ' <span style="font-size:9px;color:#566170;">ATM</span>' : ''}</td>
-              <td class="oc-side-cell" style="font-weight:700;color:var(--negative-red);" onclick="${pe ? `window.TZApp.openOrderTicketByGlobalId('${pe.instrument.globalId}', 'BUY')` : ''}">${peLtp}</td>
-              <td class="oc-side-cell" onclick="${pe ? `window.TZApp.openChartByGlobalId('${pe.instrument.globalId}')` : ''}">${peOi}</td>
-            </tr>
-          `;
-        })
-        .join('');
+      if (!rows.length) {
+        setOptionChainStatus(`No strikes returned for ${oc.expiry || requested}`, '');
+      } else {
+        const missing = rows.reduce((n, r) => n + (!r.call?.ltp ? 1 : 0) + (!r.put?.ltp ? 1 : 0), 0);
+        const age = ocQuoteAgeText(rows[0]?.call?.instrument?.globalId || '');
+        setOptionChainStatus(
+          `${oc.rows.length} of ${oc.window?.total || oc.rows.length} strikes${age ? ' • ' + age : ''}`,
+          oc.coverage ? `${oc.coverage.withQuotes}/${oc.coverage.total} quoted${missing ? ' • ' + missing + ' awaiting' : ''}` : ''
+        );
+      }
     } catch (err) {
-      document.getElementById('oc-table-body').innerHTML = `<tr><td colspan="5" style="padding:20px;color:var(--negative-red);">${err.message}</td></tr>`;
+      if (seq !== oc.seq) return;
+      if (err && err.status === 403) {
+        showSubscriptionUpgradePrompt(requested);
+        closeOptionChainModal();
+        return;
+      }
+      oc.error = err && err.message ? err.message : 'Option chain unavailable';
+      setOptionChainStatus('Option chain unavailable', '');
+      renderOptionChainTable();
+    } finally {
+      if (seq === oc.seq) oc.loading = false;
+    }
+  }
+
+  function nowarnRemoved() { }
+
+  async function loadMoreOptionStrikes(direction) {
+    const oc = ensureOptionChainState();
+    if (!oc.window || oc.loading) return;
+    const step = OC_WINDOW_SIZE;
+    const nextOffset = direction === 'above'
+      ? Math.max(0, oc.window.offset - step)
+      : Math.min(Math.max(0, oc.window.total - oc.window.size), oc.window.offset + step);
+    if (nextOffset === oc.window.offset) return;
+    await loadOptionChain(oc.underlying, oc.expiry, {
+      offset: nextOffset,
+      appendAbove: direction === 'above',
+    });
+  }
+
+  /** Live CE/PE cell updates from genuine provider ticks (no full table re-render). */
+  function updateOptionChainQuote(quote) {
+    if (!quote || !quote.globalId) return;
+    const oc = state.optionChain;
+    if (!oc || !oc.contracts.has(quote.globalId) || !ocIsOpen()) return;
+    if (!(Number(quote.ltp) > 0)) return; // never blank a valid price with a partial tick
+    const gid = quote.globalId;
+    const ltpEl = document.querySelector(`[data-oc-ltp="${CSS.escape(gid)}"]`);
+    if (ltpEl) {
+      const txt = fmtNum(quote.ltp);
+      if (ltpEl.textContent !== txt) {
+        ltpEl.textContent = txt;
+        ltpEl.classList.remove('oc-updated');
+        void ltpEl.offsetWidth;
+        ltpEl.classList.add('oc-updated');
+      }
+    }
+    const metaEl = document.querySelector(`[data-oc-meta="${CSS.escape(gid)}"]`);
+    if (metaEl) {
+      const cached = state.quotesMap?.get(gid) || quote;
+      const parts = ['OI ' + ocFmtCompact(cached.openInterest)];
+      if (cached.volume !== undefined && cached.volume !== null) parts.push('Vol ' + ocFmtCompact(cached.volume));
+      const txt = parts.join(' • ');
+      if (metaEl.textContent !== txt) metaEl.textContent = txt;
     }
   }
 
@@ -2072,30 +2545,17 @@
   // =========================================================================
   // 6. FULL-SCREEN CHART WORKSPACE, WINDOWED HISTORY & TOUCH DRAWINGS
   // =========================================================================
-  async function openChartByGlobalId(globalId) {
-    if (!globalId) return;
-    const hasOpenPos = (state.positionsData?.positions || []).some(
-      (p) => p.globalInstrumentId === globalId && Math.abs(p.quantity || 0) > 0
-    );
-    if (!isProUser() && isGlobalIdRestrictedForFree(globalId) && !hasOpenPos) {
-      showSubscriptionUpgradePrompt(globalId.split(':')[1] || globalId);
-      return;
-    }
-    closeAllIndicesModal();
-    closeOptionChainModal();
-    state.chartOpen = true;
-    document.getElementById('screen-chart').classList.add('active');
-    if (window.TradingzoneNative && typeof window.TradingzoneNative.setSystemBarTheme === 'function') {
-      window.TradingzoneNative.setSystemBarTheme(false, '#0D1117');
-    }
-    notifyNativeScreenState();
-
+  /**
+   * Resolves the full instrument metadata for a global id BEFORE any entitlement decision, so the
+   * canonical access matrix (underlying + instrument type) decides instead of string prefixes.
+   * Option/futures contracts are not always in the cached lists, so the provider search is used.
+   */
+  async function resolveInstrumentForChart(globalId) {
     const commList = [
       ...(state.commodities?.metals || []),
       ...(state.commodities?.energy || []),
       ...(state.commodities?.agriculture || []),
     ];
-
     let inst =
       state.indices.find((i) => i.globalId === globalId) ||
       state.exploreStocks.find((i) => i.globalId === globalId) ||
@@ -2105,22 +2565,61 @@
 
     if (!inst) {
       try {
-        const searchRes = await apiFetch(`/api/v1/instruments?q=${encodeURIComponent(globalId.split(':')[1] || globalId)}&limit=10`);
-        inst = (searchRes.instruments || []).find((i) => i.globalId === globalId) || searchRes.instruments?.[0];
+        const symbolHint = (globalId.split(':')[1] || globalId).trim();
+        const searchRes = await apiFetch(
+          `/api/v1/instruments?q=${encodeURIComponent(symbolHint)}&limit=25`
+        );
+        inst = (searchRes.instruments || []).find((i) => i.globalId === globalId) || null;
       } catch { }
     }
 
     if (!inst) {
+      // Last-resort descriptor: type is inferred from the segment/symbol so the access matrix can
+      // still fail closed for restricted products.
+      const exchange = (globalId.split(':')[0] || 'NSE').toUpperCase();
+      const symbol = globalId.split(':')[1] || globalId;
+      const isOption = /\b(CE|PE)\b/.test(symbol.toUpperCase());
       inst = {
         globalId,
-        symbol: globalId.split(':')[1] || globalId,
-        exchange: globalId.split(':')[0] || 'NSE',
-        instrumentType: globalId.startsWith('NFO') || globalId.startsWith('BFO') ? 'FUTIDX' : 'EQUITY_STOCK',
+        symbol,
+        exchange,
+        instrumentType:
+          exchange === 'NFO' || exchange === 'BFO'
+            ? isOption
+              ? 'OPTIDX'
+              : 'FUTIDX'
+            : globalId.includes('999')
+              ? 'INDEX_SPOT'
+              : 'EQUITY_STOCK',
         isTradable: !globalId.includes('999'),
         lotSize: 1,
         tickSize: 0.05,
       };
     }
+    return inst;
+  }
+
+  async function openChartByGlobalId(globalId) {
+    if (!globalId) return;
+    const inst = await resolveInstrumentForChart(globalId);
+    const hasOpenPos = (state.positionsData?.positions || []).some(
+      (p) => p.globalInstrumentId === globalId && Math.abs(p.quantity || 0) > 0
+    );
+    // NIFTY 50 / BANKNIFTY spot, futures and options are FREE. SENSEX, other NIFTY-family indices,
+    // equities, stock F&O and MCX remain Premium-only.
+    if (!isProUser() && isInstrumentRestrictedForFree(inst) && !hasOpenPos) {
+      showSubscriptionUpgradePrompt(inst.symbol || globalId.split(':')[1] || globalId);
+      return;
+    }
+
+    closeAllIndicesModal();
+    closeOptionChainModal();
+    state.chartOpen = true;
+    document.getElementById('screen-chart').classList.add('active');
+    if (window.TradingzoneNative && typeof window.TradingzoneNative.setSystemBarTheme === 'function') {
+      window.TradingzoneNative.setSystemBarTheme(false, '#0D1117');
+    }
+    notifyNativeScreenState();
 
     state.activeInstrument = inst;
     document.getElementById('chart-sym-title').textContent = inst.symbol;
@@ -2167,11 +2666,11 @@
         <button class="btn-trade-sell" style="background:#1E293B;border:1px solid #334155;color:#F8FAFC;font-size:12px;font-weight:700;flex:1.2;" onclick="window.TZApp.openOptionChainModal('${und}')">
           Option Chain
         </button>
-        <button class="btn-trade-sell" style="flex:1;" onclick="window.TZApp.tradeIndexFutureDirect('${und}', 'SELL')">
-          SELL FUT
+        <button class="btn-trade-sell" style="flex:1;" title="Trade the nearest ${und} index future" onclick="window.TZApp.tradeIndexFutureDirect('${und}', 'SELL')">
+          SELL
         </button>
-        <button class="btn-trade-buy" style="flex:1;" onclick="window.TZApp.tradeIndexFutureDirect('${und}', 'BUY')">
-          BUY FUT
+        <button class="btn-trade-buy" style="flex:1;" title="Trade the nearest ${und} index future" onclick="window.TZApp.tradeIndexFutureDirect('${und}', 'BUY')">
+          BUY
         </button>
       `;
     } else {
@@ -2218,7 +2717,11 @@
 
   function openOptionChainFromChart() {
     const inst = state.activeInstrument;
-    const und = inst?.underlying || (inst?.symbol?.includes('BANK') ? 'BANKNIFTY' : inst?.symbol?.includes('SENSEX') ? 'SENSEX' : 'NIFTY');
+    let und = String(inst?.underlying || '').trim().toUpperCase();
+    if (!und) {
+      const resolved = window.TzFreeAccess?.resolveUnderlyingFromSymbol(inst?.symbol || '');
+      und = resolved || (String(inst?.symbol || '').toUpperCase().includes('BANK') ? 'BANKNIFTY' : 'NIFTY');
+    }
     openOptionChainModal(und);
   }
 
@@ -3502,36 +4005,94 @@
     return `${pad(mins)}:${pad(secs)}`;
   }
 
+  function fmtIstClock(epochMs) {
+    try {
+      return new Date(epochMs).toLocaleTimeString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        hour12: false,
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      });
+    } catch {
+      return '--:--:--';
+    }
+  }
+
+  function fmtIstHhMm(epochMs) {
+    try {
+      return new Date(epochMs).toLocaleTimeString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        hour12: false,
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      return '--:--';
+    }
+  }
+
+  /**
+   * Computes the running candle's session-aligned window. Intraday windows honour the exchange
+   * session open (NSE/BSE 09:15 IST, MCX 09:00 IST) via computeCandleBucketSec; the daily window
+   * is the IST trading day 00:00 → 15:30 IST.
+   */
+  function computeRunningCandleWindow(tf, referenceBarTimeSec) {
+    const intervalSec = getTimeframeIntervalSec(tf);
+    const nowMs = serverNowMs();
+    if (tf === '1D') {
+      const istOffsetSec = 19800;
+      const nowSec = Math.floor(nowMs / 1000);
+      const dayStartSec = Math.floor((nowSec + istOffsetSec) / 86400) * 86400 - istOffsetSec;
+      const closeOffsetSec = 15 * 3600 + 30 * 60;
+      const sessionEndSec = dayStartSec + closeOffsetSec;
+      return {
+        startSec: dayStartSec,
+        // After the session close, count down to the next IST day boundary instead of going negative.
+        endSec: nowSec < sessionEndSec ? sessionEndSec : dayStartSec + 86400,
+        label: `${fmtIstHhMm(dayStartSec * 1000)}–15:30 IST`,
+      };
+    }
+    const bucketStartSec = computeCandleBucketSec(nowMs, tf, referenceBarTimeSec);
+    return {
+      startSec: bucketStartSec,
+      endSec: bucketStartSec + intervalSec,
+      label: `${fmtIstHhMm(bucketStartSec * 1000)}–${fmtIstHhMm((bucketStartSec + intervalSec) * 1000)} IST`,
+    };
+  }
+
+  /** Current IST clock and running-candle window: independent of feed state and countdown. */
+  function updateChartTimeStrip() {
+    const clockEl = document.getElementById('chart-ist-clock');
+    if (clockEl) {
+      clockEl.textContent = `${fmtIstClock(serverNowMs())} IST`;
+    }
+    const windowEl = document.getElementById('chart-candle-window');
+    if (windowEl) {
+      const tf = state.activeTimeframe || '5m';
+      const refTime = state.candles.length > 0 ? state.candles[state.candles.length - 1].time : null;
+      const win = computeRunningCandleWindow(tf, refTime);
+      windowEl.textContent = `${tf} ${win.label}`;
+      windowEl.title = `Running ${tf} candle: ${win.label}`;
+    }
+  }
+
   function updateChartCountdownUI() {
     if (!state.chartOpen) return;
+    // Current IST clock + running-candle window are always refreshed, independent of feed state.
+    updateChartTimeStrip();
     const pill = document.getElementById('chart-candle-countdown');
     if (!pill) return;
 
     const inst = state.activeInstrument;
     const exch = inst?.exchange || 'NSE';
     const tf = state.activeTimeframe || '5m';
-    const intervalSec = getTimeframeIntervalSec(tf);
-    // Countdown is derived from the corrected server clock against the real interval boundary,
-    // never from candle movement. It ticks once per second independently of incoming data.
-    const nowMs = serverNowMs();
-    const nowSec = Math.floor(nowMs / 1000);
+    // Countdown is derived from the corrected server clock against the session-aligned interval
+    // boundary, never from candle movement. It ticks once per second independently of data.
+    const nowSec = Math.floor(serverNowMs() / 1000);
     const refTime = state.candles.length > 0 ? state.candles[state.candles.length - 1].time : null;
-
-    let nextBoundarySec;
-    if (tf === '1D') {
-      // Next market close (15:30 IST for NSE/BSE, 23:55 IST for MCX) or next day boundary
-      const istOffsetSec = 19800;
-      const istNowSec = nowSec + istOffsetSec;
-      const startOfIstDaySec = Math.floor(istNowSec / 86400) * 86400 - istOffsetSec;
-      const closeOffsetSec = exch === 'MCX' ? (23 * 3600 + 55 * 60) : (15 * 3600 + 30 * 60);
-      const todayCloseSec = startOfIstDaySec + closeOffsetSec;
-      nextBoundarySec = nowSec < todayCloseSec ? todayCloseSec : startOfIstDaySec + 86400;
-    } else {
-      const currentBucketSec = computeCandleBucketSec(nowMs, tf, refTime);
-      nextBoundarySec = currentBucketSec + intervalSec;
-    }
-
-    const remSec = Math.max(0, nextBoundarySec - nowSec);
+    const win = computeRunningCandleWindow(tf, refTime);
+    const remSec = Math.max(0, win.endSec - nowSec);
     const timeStr = formatCountdownRemaining(remSec);
 
     const isLiveOrDemo = Boolean(
@@ -3619,6 +4180,12 @@
     }
     if (state.watchlists?.[0]?.instruments) {
       for (const gid of state.watchlists[0].instruments) {
+        if (gid) subs.add(gid);
+      }
+    }
+    // Keep the visible option-chain contracts streaming across reconnects.
+    if (state.optionChain?.subscribed) {
+      for (const gid of state.optionChain.subscribed) {
         if (gid) subs.add(gid);
       }
     }
@@ -3968,6 +4535,9 @@
       reconcileCandleWithTick(quote, false);
       updateChartCountdownUI();
     }
+
+    // Update visible CE/PE cells from genuine ticks without re-rendering or jumping scroll.
+    updateOptionChainQuote(quote);
   }
 
   // =========================================================================
@@ -4172,6 +4742,7 @@
     toggleAuthMode,
     submitAuthForm,
     handleGoogleSignIn,
+    showGoogleDiagnostics,
     signOut,
     switchMainTab,
     setExploreCategory,
@@ -4207,6 +4778,8 @@
     openOptionChainModal,
     closeOptionChainModal,
     loadOptionChain,
+    loadMoreOptionStrikes,
+    onOptionChainUnderlyingChange,
     openSearchModal,
     closeSearchModal,
     setSearchSegment,
@@ -4253,6 +4826,8 @@
     closeConfirmSheet,
     loadAndShowLedger,
     openAdPrivacyOptions,
+    showAdDiagnostics,
+    showGoogleDiagnostics,
     togglePasswordVisibility,
     openServerConfigModal,
     closeServerConfigModal,

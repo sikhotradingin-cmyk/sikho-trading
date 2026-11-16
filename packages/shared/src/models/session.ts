@@ -124,72 +124,13 @@ export const SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
 ];
 
 /**
- * Strict canonical matching for Free Tier allowed instruments:
- * Only NIFTY 50 and BANKNIFTY (NIFTY BANK) reference spot indices and their supported futures/options.
- * Strictly excludes FINNIFTY, MIDCPNIFTY, NIFTYIT, commodities, equities, and any other symbols.
+ * Canonical FREE-tier access matrix lives in ./free-access.ts so that the same rules power
+ * REST, REST/WS entitlement checks and UI gating. It is re-exported from the package index.
  */
-export function isFreeTierAllowedInstrument(inst: {
-  symbol?: string;
-  underlying?: string;
-  exchange?: string;
-  instrumentType?: string;
-}): boolean {
-  if (!inst) return false;
-  if (inst.exchange === 'MCX') return false;
-
-  const sym = (inst.symbol || '').trim().toUpperCase();
-  const und = (inst.underlying || '').trim().toUpperCase();
-
-  // Explicitly reject NIFTY variants that are NOT NIFTY 50 or BANKNIFTY
-  if (
-    sym.startsWith('FINNIFTY') ||
-    sym.startsWith('MIDCPNIFTY') ||
-    sym.startsWith('NIFTYIT') ||
-    sym.startsWith('NIFTYNXT50') ||
-    sym.startsWith('SENSEX') ||
-    sym.startsWith('BANKEX') ||
-    und === 'FINNIFTY' ||
-    und === 'MIDCPNIFTY' ||
-    und === 'NIFTYIT' ||
-    und === 'NIFTYNXT50' ||
-    und === 'SENSEX' ||
-    und === 'BANKEX'
-  ) {
-    return false;
-  }
-
-  // Canonical NIFTY 50
-  const isNifty50 =
-    und === 'NIFTY' ||
-    und === 'NIFTY 50' ||
-    sym === 'NIFTY 50' ||
-    sym === 'NIFTY' ||
-    sym.startsWith('NIFTY ') ||
-    (sym.startsWith('NIFTY') && /^[0-9]/.test(sym.slice(5)));
-
-  // Canonical BANKNIFTY
-  const isBankNifty =
-    und === 'BANKNIFTY' ||
-    und === 'NIFTY BANK' ||
-    sym === 'NIFTY BANK' ||
-    sym === 'BANKNIFTY' ||
-    sym.startsWith('BANKNIFTY ') ||
-    (sym.startsWith('BANKNIFTY') && /^[0-9]/.test(sym.slice(9)));
-
-  if (!isNifty50 && !isBankNifty) {
-    return false;
-  }
-
-  // Spot indices (for reference charts)
-  if (inst.instrumentType === 'INDEX_SPOT') {
-    return true;
-  }
-
-  // Derivatives on NIFTY or BANKNIFTY
-  if (inst.instrumentType === 'FUTIDX' || inst.instrumentType === 'OPTIDX') {
-    return true;
-  }
-
-  return false;
-}
+export {
+  isFreeTierAllowedInstrument,
+  isFreeTierAllowedGlobalId,
+  resolveUnderlyingFromSymbol,
+  type FreeAccessUnderlying,
+} from './free-access.js';
 

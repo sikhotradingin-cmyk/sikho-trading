@@ -3,6 +3,7 @@ package com.indianpapertrading
 import android.app.Activity
 import android.content.Context
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.util.Log
 import android.view.Gravity
 import android.view.View
@@ -23,23 +24,29 @@ import com.google.android.ump.ConsentInformation
 import com.google.android.ump.ConsentRequestParameters
 import com.google.android.ump.UserMessagingPlatform
 import org.json.JSONArray
+import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.roundToInt
 
 /**
  * AdMobManager
- * Coordinates Native Google Mobile Ads SDK (v23+) and UMP Consent handling.
+ * Coordinates the Google Mobile Ads SDK (v23+) and UMP consent for Free-tier users.
  *
- * Rules:
- * 1. Native Kotlin integration, separate test IDs (debug) and production IDs (release).
- * 2. Anchored adaptive banner reserved above bottom nav for Free users on Explore, Watchlists,
- *    Portfolio, closed-order history, and Profile. Never overlays interactive content.
- * 3. Banners hidden on auth/PIN, full-screen chart, option-chain, and order sheet.
- *    Pro users get ZERO ads and ZERO ad requests.
- * 4. Interstitials: after 5 completed eligible browsing/review actions, >= 5 min from session start
- *    and last interstitial, max 3/session, max 6/24h. Never during trading, chart interaction,
- *    or when open positions/pending orders exist.
- * 5. Preloaded asynchronously; no waiting screen on failure; no catch-up ads.
+ * Ordering (important):
+ *  1. MobileAds.initialize() is called immediately at construction. SDK initialization is NOT an ad
+ *     request and is allowed before consent; gating it behind the consent callback previously left
+ *     the SDK permanently uninitialised on devices where the UMP callback was slow or absent.
+ *  2. UMP consent information is refreshed automatically; the consent form is shown when required.
+ *  3. Banner/interstitial ad *requests* remain strictly gated on canRequestAds().
+ *
+ * Rules preserved:
+ *  - PRO and unresolved (UNKNOWN) users make zero ad requests/preloads/displays.
+ *  - Banners never cover auth, full-screen chart, option chain, order ticket or trading flows.
+ *  - Interstitials never interrupt authentication, charts, option chains, order entry, purchases or
+ *    position management, and never show while positions/pending orders exist.
+ *  - Session cap 6 and rolling device-wide 24h cap 12 are preserved.
+ *  - Free-user eligibility: 3 completed browsing actions AND >= 60s of *foreground* use since the
+ *    session start / last impression, at a natural transition.
  */
 class AdMobManager(
     private val activity: Activity,
@@ -51,11 +58,14 @@ class AdMobManager(
         private const val PREFS_NAME = "tradingzone_admob_stats"
         private const val KEY_24H_IMPRESSIONS = "interstitial_impressions_24h"
 
-        private const val ACTIONS_REQUIRED_FOR_INTERSTITIAL = 4
-        private const val SIXTY_SECONDS_MS = 60 * 1000L
+        // 3 completed browsing actions + 60s foreground use (owner-requested cadence).
+        private const val ACTIONS_REQUIRED_FOR_INTERSTITIAL = 3
+        private const val MIN_FOREGROUND_MS = 60 * 1000L
         private const val TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000L
         private const val MAX_INTERSTITIALS_PER_SESSION = 6
         private const val MAX_INTERSTITIALS_PER_24H = 12
+        private val BANNER_RETRY_DELAYS_MS = longArrayOf(15000L, 30000L, 60000L)
+        private val INTERSTITIAL_RETRY_DELAYS_MS = longArrayOf(15000L, 30000L, 60000L)
 
         private val ALLOWED_BANNER_SCREENS = setOf("explore", "watchlists", "portfolio", "orders", "profile")
     }
@@ -69,18 +79,36 @@ class AdMobManager(
         activity.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
 
-    // Session State
+    private val retryHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    // ---- Consent / SDK diagnostics -------------------------------------------------
+    private var mobileAdsInitStatus: String = "NOT_STARTED"
+    private var mobileAdsInitDetail: String = ""
+    private var mobileAdsInitializedAt: Long = 0L
+    private var consentRequestStartedAt: Long = 0L
+    private var consentCallbackAt: Long = 0L
+    private var consentFormError: String? = null
+    private var consentRequestError: String? = null
+    private var consentStatusSnapshot: String = "NOT_REQUESTED"
+    private var canRequestAdsSnapshot: Boolean = false
+    private var lastPreloadBlockedReason: String = "INITIALIZING"
+
+    // ---- Session / eligibility -----------------------------------------------------
     private val sessionStartTime = System.currentTimeMillis()
+    private var foregroundAccumulatedMs: Long = 0L
+    private var foregroundStartedAt: Long = System.currentTimeMillis()
+    private var foregroundAtLastImpressionMs: Long = 0L
     private var lastInterstitialTime = 0L
     private var sessionInterstitialCount = 0
     private var eligibleActionCounter = 0
     private var lastEligibilityCheckReason = "INITIALIZING"
+    private val recentEligibleActions = mutableListOf<String>()
 
-    // Retry and Backoff State
-    private var retryAttempt = 0
-    private val retryHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    // ---- Retry / backoff -----------------------------------------------------------
+    private var bannerRetryAttempt = 0
+    private var interstitialRetryAttempt = 0
 
-    // User & Screen State
+    // ---- User & screen state -------------------------------------------------------
     var currentUserTier: String = "UNKNOWN"
         private set
     var currentUserId: String = ""
@@ -90,60 +118,107 @@ class AdMobManager(
     private var hasOpenPositions: Boolean = false
     private var hasPendingOrders: Boolean = false
 
-    // Ad Instances & Telemetry
+    // ---- Ad instances & telemetry --------------------------------------------------
     private var bannerAdView: AdView? = null
     private var bannerLoaded: Boolean = false
     private var bannerRequestCount: Int = 0
     private var lastBannerLoadError: String? = null
+    private var lastBannerResponseId: String? = null
+    private var lastBannerMeasuredWidth: Int = 0
+    private var lastBannerMeasuredHeight: Int = 0
     private var interstitialAd: InterstitialAd? = null
     private var isInterstitialLoading = false
     private var interstitialRequestCount: Int = 0
     private var lastInterstitialLoadError: String? = null
+    private var lastInterstitialResponseId: String? = null
+    private var lastInterstitialShownAt: Long = 0L
+    private var interstitialShownCount = 0
 
     init {
+        // Initialise the SDK immediately (not an ad request), then run the consent flow.
+        initMobileAdsSdk()
         initializeUmpConsent()
     }
 
-    /**
-     * Step 1: User Messaging Platform (UMP) Consent Flow
-     */
-    fun initializeUmpConsent() {
-        val paramsBuilder = ConsentRequestParameters.Builder()
+    // =============================================================================
+    // Consent
+    // =============================================================================
 
+    fun initializeUmpConsent() {
+        consentRequestStartedAt = System.currentTimeMillis()
+        val paramsBuilder = ConsentRequestParameters.Builder()
         if (BuildConfig.DEBUG) {
             val debugSettings = ConsentDebugSettings.Builder(activity)
                 .setDebugGeography(ConsentDebugSettings.DebugGeography.DEBUG_GEOGRAPHY_EEA)
                 .build()
             paramsBuilder.setConsentDebugSettings(debugSettings)
         }
-
         val params = paramsBuilder.build()
-
-        consentInformation.requestConsentInfoUpdate(
-            activity,
-            params,
-            {
-                UserMessagingPlatform.loadAndShowConsentFormIfRequired(activity) { formError ->
-                    if (formError != null) {
-                        Log.w(TAG, "Consent form error: ${formError.errorCode}: ${formError.message}")
+        try {
+            consentInformation.requestConsentInfoUpdate(
+                activity,
+                params,
+                {
+                    consentCallbackAt = System.currentTimeMillis()
+                    consentRequestError = null
+                    consentStatusSnapshot = consentStatusName()
+                    Log.i(TAG, "Consent info updated. status=$consentStatusSnapshot canRequestAds=${consentInformation.canRequestAds()}")
+                    UserMessagingPlatform.loadAndShowConsentFormIfRequired(activity) { formError ->
+                        consentCallbackAt = System.currentTimeMillis()
+                        if (formError != null) {
+                            consentFormError = "${formError.errorCode}: ${formError.message}"
+                            Log.w(TAG, "Consent form error: $consentFormError")
+                        } else {
+                            consentFormError = null
+                        }
+                        consentStatusSnapshot = consentStatusName()
+                        onConsentOrSdkReady("consent_flow_complete")
                     }
-                    if (consentInformation.canRequestAds()) {
-                        initMobileAdsSdk()
-                    }
+                },
+                { requestConsentError ->
+                    consentCallbackAt = System.currentTimeMillis()
+                    consentRequestError = "${requestConsentError.errorCode}: ${requestConsentError.message}"
+                    consentStatusSnapshot = consentStatusName()
+                    Log.w(TAG, "Consent request failed: $consentRequestError")
+                    // Do NOT bypass consent: only proceed when the SDK itself reports ads are allowed.
+                    onConsentOrSdkReady("consent_request_failed")
                 }
-            },
-            { requestConsentError ->
-                Log.w(TAG, "Consent request failed: ${requestConsentError.errorCode}: ${requestConsentError.message}")
-                if (consentInformation.canRequestAds()) {
-                    initMobileAdsSdk()
-                }
-            }
-        )
+            )
+        } catch (t: Throwable) {
+            consentRequestError = "exception: ${t.javaClass.simpleName}: ${t.message}"
+            Log.e(TAG, "UMP request threw: ${t.message}", t)
+            onConsentOrSdkReady("consent_exception")
+        }
     }
 
-    /**
-     * Privacy Options entry point for Google UMP compliance (e.g. from Profile tab)
-     */
+    private fun consentStatusName(): String {
+        return try {
+            when (consentInformation.consentStatus) {
+                ConsentInformation.ConsentStatus.NOT_REQUIRED -> "NOT_REQUIRED"
+                ConsentInformation.ConsentStatus.OBTAINED -> "OBTAINED"
+                ConsentInformation.ConsentStatus.REQUIRED -> "REQUIRED"
+                ConsentInformation.ConsentStatus.UNKNOWN -> "UNKNOWN"
+                else -> "UNRECOGNISED"
+            }
+        } catch (t: Throwable) {
+            "ERROR:${t.javaClass.simpleName}"
+        }
+    }
+
+    /** Called when consent and/or SDK state changes; re-evaluates banner + preload eligibility. */
+    private fun onConsentOrSdkReady(reason: String) {
+        canRequestAdsSnapshot = try {
+            consentInformation.canRequestAds()
+        } catch (t: Throwable) {
+            false
+        }
+        Log.i(TAG, "Ad readiness evaluated ($reason): sdkInit=${isMobileAdsInitialized.get()} canRequestAds=$canRequestAdsSnapshot consent=$consentStatusSnapshot")
+        activity.runOnUiThread {
+            updateBannerVisibility()
+            preloadInterstitialIfEligible()
+        }
+    }
+
     fun showPrivacyOptionsForm(onResult: (Boolean, String?) -> Unit) {
         activity.runOnUiThread {
             UserMessagingPlatform.showPrivacyOptionsForm(activity) { formError ->
@@ -157,75 +232,81 @@ class AdMobManager(
         }
     }
 
-    /**
-     * Initialize Mobile Ads SDK once consent allows ad requests
-     */
-    private fun initMobileAdsSdk() {
-        if (isMobileAdsInitialized.getAndSet(true)) return
+    // =============================================================================
+    // SDK init
+    // =============================================================================
 
+    private fun initMobileAdsSdk() {
+        if (isMobileAdsInitialized.get()) return
+        mobileAdsInitStatus = "INITIALIZING"
         activity.runOnUiThread {
-            // Debug builds request official Google test ads; register the emulator as a test device
-            // so rendering can be verified without risking policy violations on real inventory.
-            if (BuildConfig.DEBUG) {
-                val testConfig = RequestConfiguration.Builder()
-                    .setTestDeviceIds(listOf(AdRequest.DEVICE_ID_EMULATOR))
-                    .build()
-                MobileAds.setRequestConfiguration(testConfig)
-            }
-            MobileAds.initialize(activity) { status ->
-                Log.i(TAG, "Google Mobile Ads SDK Initialized: $status")
-                // Once initialized, evaluate if banner or interstitial preload is needed
-                updateBannerVisibility()
-                preloadInterstitialIfEligible()
+            try {
+                if (BuildConfig.DEBUG) {
+                    val testConfig = RequestConfiguration.Builder()
+                        .setTestDeviceIds(listOf(AdRequest.DEVICE_ID_EMULATOR))
+                        .build()
+                    MobileAds.setRequestConfiguration(testConfig)
+                }
+                MobileAds.initialize(activity) { status ->
+                    isMobileAdsInitialized.set(true)
+                    mobileAdsInitializedAt = System.currentTimeMillis()
+                    val adapters = status.adapterStatusMap.entries.joinToString("; ") { (name, state) ->
+                        "$name=${state.initializationState}/${state.description}"
+                    }
+                    mobileAdsInitStatus = "INITIALIZED"
+                    mobileAdsInitDetail = "adapters=[$adapters]"
+                    Log.i(TAG, "Google Mobile Ads SDK initialized: $mobileAdsInitDetail")
+                    onConsentOrSdkReady("sdk_initialized")
+                }
+            } catch (t: Throwable) {
+                mobileAdsInitStatus = "INIT_FAILED"
+                mobileAdsInitDetail = "${t.javaClass.simpleName}: ${t.message}"
+                Log.e(TAG, "MobileAds.initialize failed: ${t.message}", t)
             }
         }
     }
 
-    /**
-     * Update user tier. Pro users get ZERO ads and ZERO ad requests.
-     * Unresolved ("UNKNOWN") users also do not request ads until entitlement is confirmed.
-     */
+    // =============================================================================
+    // Tier / screen state
+    // =============================================================================
+
     fun updateUserTier(tier: String, userId: String) {
         val cleanTier = tier.uppercase().trim().ifEmpty { "UNKNOWN" }
         val cleanUserId = userId.trim()
         if (cleanUserId != currentUserId) {
             eligibleActionCounter = 0
-            retryAttempt = 0
+            recentEligibleActions.clear()
+            bannerRetryAttempt = 0
+            interstitialRetryAttempt = 0
             lastEligibilityCheckReason = "USER_SWITCHED"
+            foregroundAtLastImpressionMs = 0L
+            lastInterstitialTime = 0L
         }
         currentUserTier = cleanTier
         currentUserId = cleanUserId
         Log.i(TAG, "Updated user tier to $currentUserTier for user $currentUserId")
 
         activity.runOnUiThread {
-            if (currentUserTier == "PRO") {
-                retryHandler.removeCallbacksAndMessages(null)
-                destroyBanner()
-                interstitialAd = null
-                isInterstitialLoading = false
-                bannerContainer.visibility = View.GONE
-                onBannerHeightChange(false, 0)
-                lastEligibilityCheckReason = "REASON_PRO_TIER"
-            } else if (currentUserTier != "FREE") {
-                // Unresolved entitlement: cancel queued work and discard any loaded/in-flight ad so
-                // a stale FREE state can never leak an impression after logout/account switch.
-                retryHandler.removeCallbacksAndMessages(null)
-                destroyBanner()
-                interstitialAd = null
-                isInterstitialLoading = false
-                bannerContainer.visibility = View.GONE
-                onBannerHeightChange(false, 0)
-                lastEligibilityCheckReason = "REASON_TIER_UNKNOWN"
-            } else {
-                updateBannerVisibility()
-                preloadInterstitialIfEligible()
+            when (currentUserTier) {
+                "PRO", "UNKNOWN" -> {
+                    // PRO → zero ads. UNKNOWN → unresolved entitlement: no false premium, no ads.
+                    retryHandler.removeCallbacksAndMessages(null)
+                    destroyBanner()
+                    interstitialAd = null
+                    isInterstitialLoading = false
+                    bannerContainer.visibility = View.GONE
+                    onBannerHeightChange(false, 0)
+                    lastEligibilityCheckReason =
+                        if (currentUserTier == "PRO") "REASON_PRO_TIER" else "REASON_TIER_UNKNOWN"
+                }
+                else -> {
+                    updateBannerVisibility()
+                    preloadInterstitialIfEligible()
+                }
             }
         }
     }
 
-    /**
-     * Update app screen and trading state
-     */
     fun updateScreenState(
         screen: String,
         tradingWorkspaceOpen: Boolean,
@@ -236,34 +317,40 @@ class AdMobManager(
         isTradingWorkspaceOpen = tradingWorkspaceOpen
         hasOpenPositions = openPositions
         hasPendingOrders = pendingOrders
-
-        activity.runOnUiThread {
-            updateBannerVisibility()
-        }
+        activity.runOnUiThread { updateBannerVisibility() }
     }
 
-    /**
-     * Evaluates whether the adaptive banner should be displayed.
-     */
+    // =============================================================================
+    // Banner
+    // =============================================================================
+
+    private fun canShowAdsNow(): Boolean {
+        canRequestAdsSnapshot = try {
+            consentInformation.canRequestAds()
+        } catch (t: Throwable) {
+            false
+        }
+        return isMobileAdsInitialized.get() && canRequestAdsSnapshot
+    }
+
     private fun updateBannerVisibility() {
         if (currentUserTier != "FREE") {
             hideBanner()
+            if (currentUserTier == "PRO") lastPreloadBlockedReason = "REASON_PRO_TIER"
             return
         }
-
-        if (!consentInformation.canRequestAds() || !isMobileAdsInitialized.get()) {
+        if (!canShowAdsNow()) {
             hideBanner()
+            lastPreloadBlockedReason = "REASON_SDK_OR_CONSENT_NOT_READY"
             return
         }
-
-        // Banners hidden on authentication/PIN screens, full-screen chart, option-chain, and order sheet
         val isScreenEligible = ALLOWED_BANNER_SCREENS.contains(currentScreen)
         val shouldShowBanner = isScreenEligible && !isTradingWorkspaceOpen
-
         if (shouldShowBanner) {
             showOrLoadBanner()
         } else {
             hideBanner()
+            lastPreloadBlockedReason = if (!isScreenEligible) "REASON_SCREEN_NOT_ELIGIBLE($currentScreen)" else "REASON_TRADING_WORKSPACE_OPEN"
         }
     }
 
@@ -294,18 +381,16 @@ class AdMobManager(
         bannerContainer.removeAllViews()
     }
 
-    /**
-     * Loads an anchored adaptive banner matching screen width
-     */
     private fun loadAnchoredAdaptiveBanner() {
         if (currentUserTier != "FREE") return
-        if (!consentInformation.canRequestAds()) return
-
+        if (!canShowAdsNow()) {
+            lastPreloadBlockedReason = "REASON_BANNER_SDK_OR_CONSENT_NOT_READY"
+            return
+        }
         val displayMetrics = activity.resources.displayMetrics
         val density = displayMetrics.density
         val adWidthPixels = displayMetrics.widthPixels
         val adWidthDp = (adWidthPixels / density).toInt()
-
         val adSize = AdSize.getCurrentOrientationAnchoredAdaptiveBannerAdSize(activity, adWidthDp)
         val heightPixels = adSize.getHeightInPixels(activity)
         val heightDp = adSize.height
@@ -316,45 +401,61 @@ class AdMobManager(
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 heightPixels
-            ).apply {
-                gravity = Gravity.CENTER
-            }
+            ).apply { gravity = Gravity.CENTER }
         }
 
         adView.adListener = object : AdListener() {
             override fun onAdLoaded() {
                 if (currentUserTier != "FREE") {
-                    // Entitlement changed to PRO/UNKNOWN while the banner was loading: discard it.
                     Log.i(TAG, "Discarding banner load because tier is now $currentUserTier")
                     destroyBanner()
                     return
                 }
                 bannerLoaded = true
                 lastBannerLoadError = null
-                Log.i(TAG, "Anchored Adaptive Banner loaded successfully ($adSize)")
+                lastBannerResponseId = null
+                lastBannerMeasuredWidth = adView.width
+                lastBannerMeasuredHeight = adView.height
+                bannerRetryAttempt = 0
+                Log.i(TAG, "Anchored adaptive banner loaded ($adSize, ${adView.width}x${adView.height}px)")
                 onBannerHeightChange(true, heightDp)
             }
 
             override fun onAdFailedToLoad(loadAdError: LoadAdError) {
                 bannerLoaded = false
-                lastBannerLoadError = "${loadAdError.code}: ${loadAdError.message}"
-                Log.w(TAG, "Banner failed to load: ${loadAdError.code} - ${loadAdError.message}")
+                lastBannerResponseId = loadAdError.responseInfo?.responseId
+                lastBannerLoadError =
+                    "code=${loadAdError.code}; domain=${loadAdError.domain}; message=${loadAdError.message}; responseId=${lastBannerResponseId ?: "n/a"}"
+                Log.w(TAG, "Banner failed to load: $lastBannerLoadError")
                 onBannerHeightChange(false, 0)
+                scheduleBannerRetry()
             }
         }
 
         bannerContainer.removeAllViews()
         bannerContainer.addView(adView)
         bannerAdView = adView
-
         bannerRequestCount++
-        val adRequest = AdRequest.Builder().build()
-        adView.loadAd(adRequest)
+        adView.loadAd(AdRequest.Builder().build())
     }
 
-    /**
-     * Record an eligible browsing / review action from the web frontend
-     */
+    private fun scheduleBannerRetry() {
+        if (currentUserTier != "FREE") return
+        if (bannerRetryAttempt >= BANNER_RETRY_DELAYS_MS.size) return
+        val delay = BANNER_RETRY_DELAYS_MS[bannerRetryAttempt]
+        bannerRetryAttempt++
+        Log.i(TAG, "Scheduling banner retry #$bannerRetryAttempt in ${delay / 1000}s")
+        retryHandler.postDelayed({
+            if (bannerAdView == null && currentUserTier == "FREE" && !isTradingWorkspaceOpen) {
+                loadAnchoredAdaptiveBanner()
+            }
+        }, delay)
+    }
+
+    // =============================================================================
+    // Interstitial eligibility
+    // =============================================================================
+
     fun recordEligibleAction(actionName: String) {
         if (currentUserTier == "PRO") {
             lastEligibilityCheckReason = "REASON_PRO_TIER"
@@ -364,59 +465,58 @@ class AdMobManager(
             lastEligibilityCheckReason = "REASON_TIER_UNKNOWN"
             return
         }
-
         eligibleActionCounter++
-        Log.i(TAG, "Recorded eligible action: $actionName (Total count: $eligibleActionCounter/$ACTIONS_REQUIRED_FOR_INTERSTITIAL)")
+        recentEligibleActions.add(actionName)
+        if (recentEligibleActions.size > 12) recentEligibleActions.removeAt(0)
+        Log.i(TAG, "Recorded completed action: $actionName (${eligibleActionCounter}/$ACTIONS_REQUIRED_FOR_INTERSTITIAL)")
 
         preloadInterstitialIfEligible()
 
         if (eligibleActionCounter >= ACTIONS_REQUIRED_FOR_INTERSTITIAL) {
             checkAndTriggerInterstitial(actionName)
         } else {
-            lastEligibilityCheckReason = "REASON_INSUFFICIENT_ACTIONS ($eligibleActionCounter/$ACTIONS_REQUIRED_FOR_INTERSTITIAL)"
+            lastEligibilityCheckReason = "REASON_INSUFFICIENT_ACTIONS($eligibleActionCounter/$ACTIONS_REQUIRED_FOR_INTERSTITIAL)"
         }
     }
 
-    /**
-     * Preload interstitial asynchronously in the background.
-     * No waiting screen on failure, no catch-up ads.
-     */
+    private fun currentForegroundMs(): Long {
+        val live = if (foregroundStartedAt > 0) System.currentTimeMillis() - foregroundStartedAt else 0L
+        return foregroundAccumulatedMs + live
+    }
+
     private fun preloadInterstitialIfEligible() {
         if (currentUserTier != "FREE") return
-        if (!consentInformation.canRequestAds() || !isMobileAdsInitialized.get()) return
+        if (!canShowAdsNow()) {
+            lastPreloadBlockedReason = "REASON_PRELOAD_SDK_OR_CONSENT_NOT_READY"
+            return
+        }
         if (interstitialAd != null || isInterstitialLoading) return
-
-        // Check if frequency limits have already been exhausted
         if (sessionInterstitialCount >= MAX_INTERSTITIALS_PER_SESSION) return
         if (getRecent24hImpressionsCount() >= MAX_INTERSTITIALS_PER_24H) return
 
         isInterstitialLoading = true
         interstitialRequestCount++
-        val adRequest = AdRequest.Builder().build()
-
         InterstitialAd.load(
             activity,
             BuildConfig.INTERSTITIAL_AD_UNIT_ID,
-            adRequest,
+            AdRequest.Builder().build(),
             object : InterstitialAdLoadCallback() {
                 override fun onAdLoaded(ad: InterstitialAd) {
                     isInterstitialLoading = false
                     if (currentUserTier != "FREE") {
-                        // PRO/UNKNOWN: never retain or show an ad that was requested while FREE.
                         Log.i(TAG, "Discarding preloaded interstitial because tier is now $currentUserTier")
                         interstitialAd = null
                         return
                     }
                     interstitialAd = ad
                     lastInterstitialLoadError = null
-                    retryAttempt = 0
-                    Log.i(TAG, "Interstitial ad preloaded successfully.")
-
+                    lastInterstitialResponseId = null
+                    interstitialRetryAttempt = 0
+                    Log.i(TAG, "Interstitial preloaded successfully.")
                     ad.fullScreenContentCallback = object : FullScreenContentCallback() {
                         override fun onAdDismissedFullScreenContent() {
                             Log.i(TAG, "Interstitial dismissed by user.")
                             interstitialAd = null
-                            // Preload next interstitial asynchronously
                             preloadInterstitialIfEligible()
                         }
 
@@ -436,108 +536,73 @@ class AdMobManager(
                 override fun onAdFailedToLoad(loadAdError: LoadAdError) {
                     isInterstitialLoading = false
                     interstitialAd = null
-                    lastInterstitialLoadError = "${loadAdError.code}: ${loadAdError.message}"
-                    Log.w(TAG, "Interstitial failed to preload: ${loadAdError.code} - ${loadAdError.message}")
-                    if (currentUserTier == "FREE" && retryAttempt < 3) {
-                        val delays = listOf(15000L, 30000L, 60000L)
-                        val delay = delays.getOrElse(retryAttempt) { 60000L }
-                        retryAttempt++
-                        Log.i(TAG, "Scheduling interstitial preload retry #$retryAttempt in ${delay / 1000}s")
-                        retryHandler.postDelayed({
-                            preloadInterstitialIfEligible()
-                        }, delay)
+                    lastInterstitialResponseId = loadAdError.responseInfo?.responseId
+                    lastInterstitialLoadError =
+                        "code=${loadAdError.code}; domain=${loadAdError.domain}; message=${loadAdError.message}; responseId=${lastInterstitialResponseId ?: "n/a"}"
+                    Log.w(TAG, "Interstitial failed to preload: $lastInterstitialLoadError")
+                    if (currentUserTier == "FREE" && interstitialRetryAttempt < INTERSTITIAL_RETRY_DELAYS_MS.size) {
+                        val delay = INTERSTITIAL_RETRY_DELAYS_MS[interstitialRetryAttempt]
+                        interstitialRetryAttempt++
+                        Log.i(TAG, "Scheduling interstitial preload retry #$interstitialRetryAttempt in ${delay / 1000}s")
+                        retryHandler.postDelayed({ preloadInterstitialIfEligible() }, delay)
                     }
                 }
             }
         )
     }
 
-    /**
-     * Check timing, session, rolling 24h, and trading-safety constraints before presenting interstitial.
-     */
     private fun checkAndTriggerInterstitial(triggerReason: String) {
         val now = System.currentTimeMillis()
-
-        // 1. Pro users get ZERO ads
         if (currentUserTier == "PRO") {
-            lastEligibilityCheckReason = "REASON_PRO_TIER"
-            return
+            lastEligibilityCheckReason = "REASON_PRO_TIER"; return
         }
         if (currentUserTier != "FREE") {
-            lastEligibilityCheckReason = "REASON_TIER_UNKNOWN"
-            return
+            lastEligibilityCheckReason = "REASON_TIER_UNKNOWN"; return
         }
-
-        // 2. Strict trading safety checks: Never during chart interaction, auth,
-        // or while open positions / pending orders exist
+        // Trading safety exclusions (never interrupt trading workspaces or open exposure).
         if (isTradingWorkspaceOpen) {
-            lastEligibilityCheckReason = "REASON_TRADING_WORKSPACE_OPEN"
-            Log.d(TAG, "Interstitial blocked: trading workspace is open.")
-            return
+            lastEligibilityCheckReason = "REASON_TRADING_WORKSPACE_OPEN"; return
         }
-        if (currentScreen == "screen-auth" || currentScreen == "screen-pin") {
-            lastEligibilityCheckReason = "REASON_AUTH_OR_PIN_SCREEN"
-            Log.d(TAG, "Interstitial blocked: on auth/PIN screen.")
-            return
+        if (currentScreen == "screen-auth") {
+            lastEligibilityCheckReason = "REASON_AUTH_SCREEN"; return
         }
         if (hasOpenPositions) {
-            lastEligibilityCheckReason = "REASON_OPEN_POSITIONS"
-            Log.d(TAG, "Interstitial blocked: active open positions exist.")
-            return
+            lastEligibilityCheckReason = "REASON_OPEN_POSITIONS"; return
         }
         if (hasPendingOrders) {
-            lastEligibilityCheckReason = "REASON_PENDING_ORDERS"
-            Log.d(TAG, "Interstitial blocked: active pending orders exist.")
+            lastEligibilityCheckReason = "REASON_PENDING_ORDERS"; return
+        }
+        // Foreground-time eligibility (not wall clock: backgrounded time does not count).
+        val foregroundMs = currentForegroundMs()
+        if (foregroundMs < MIN_FOREGROUND_MS) {
+            lastEligibilityCheckReason = "REASON_FOREGROUND_COOLDOWN(${foregroundMs / 1000}s/${MIN_FOREGROUND_MS / 1000}s)"
             return
         }
-
-        // 3. Time elapsed >= 60s since session start
-        val timeSinceSessionStart = now - sessionStartTime
-        if (timeSinceSessionStart < SIXTY_SECONDS_MS) {
-            val remSec = (SIXTY_SECONDS_MS - timeSinceSessionStart) / 1000
-            lastEligibilityCheckReason = "REASON_SESSION_COOLDOWN ($remSec s remaining)"
-            Log.d(TAG, "Interstitial blocked: session start cooldown active ($remSec s remaining).")
+        if (foregroundMs - foregroundAtLastImpressionMs < MIN_FOREGROUND_MS) {
+            val remaining = MIN_FOREGROUND_MS - (foregroundMs - foregroundAtLastImpressionMs)
+            lastEligibilityCheckReason = "REASON_INTERVAL_COOLDOWN(${remaining / 1000}s remaining)"
             return
         }
-
-        // 4. Time elapsed >= 60s since last interstitial
-        val timeSinceLastAd = now - lastInterstitialTime
-        if (lastInterstitialTime > 0 && timeSinceLastAd < SIXTY_SECONDS_MS) {
-            val remSec = (SIXTY_SECONDS_MS - timeSinceLastAd) / 1000
-            lastEligibilityCheckReason = "REASON_INTERVAL_COOLDOWN ($remSec s remaining)"
-            Log.d(TAG, "Interstitial blocked: interval cooldown active ($remSec s remaining).")
-            return
-        }
-
-        // 5. Max 6 per session
         if (sessionInterstitialCount >= MAX_INTERSTITIALS_PER_SESSION) {
-            lastEligibilityCheckReason = "REASON_SESSION_CAP_REACHED ($MAX_INTERSTITIALS_PER_SESSION)"
-            Log.d(TAG, "Interstitial blocked: session cap of $MAX_INTERSTITIALS_PER_SESSION reached.")
-            return
+            lastEligibilityCheckReason = "REASON_SESSION_CAP_REACHED($MAX_INTERSTITIALS_PER_SESSION)"; return
         }
-
-        // 6. Max 12 per rolling 24 hours
-        val recent24hCount = getRecent24hImpressionsCount()
-        if (recent24hCount >= MAX_INTERSTITIALS_PER_24H) {
-            lastEligibilityCheckReason = "REASON_24H_CAP_REACHED ($MAX_INTERSTITIALS_PER_24H)"
-            Log.d(TAG, "Interstitial blocked: rolling 24h cap of $MAX_INTERSTITIALS_PER_24H reached ($recent24hCount shown).")
-            return
+        val recent24h = getRecent24hImpressionsCount()
+        if (recent24h >= MAX_INTERSTITIALS_PER_24H) {
+            lastEligibilityCheckReason = "REASON_24H_CAP_REACHED($recent24h/$MAX_INTERSTITIALS_PER_24H)"; return
         }
-
-        // 7. Verify preloaded ad is ready
         val adToShow = interstitialAd
         if (adToShow == null) {
             lastEligibilityCheckReason = "REASON_AD_NOT_LOADED"
-            Log.d(TAG, "Interstitial not ready yet. Preload in progress.")
             preloadInterstitialIfEligible()
             return
         }
-
-        // All constraints passed! Reset action counter and display interstitial at genuine break
         eligibleActionCounter = 0
+        recentEligibleActions.clear()
         lastEligibilityCheckReason = "REASON_ELIGIBLE"
+        lastInterstitialShownAt = now
+        val shownAt = foregroundMs
         activity.runOnUiThread {
-            Log.i(TAG, "Showing Interstitial Ad triggered by: $triggerReason")
+            Log.i(TAG, "Showing interstitial (trigger=$triggerReason foreground=${shownAt / 1000}s)")
             adToShow.show(activity)
         }
     }
@@ -545,18 +610,24 @@ class AdMobManager(
     private fun recordInterstitialImpression() {
         val now = System.currentTimeMillis()
         lastInterstitialTime = now
+        foregroundAtLastImpressionMs = currentForegroundMs()
         sessionInterstitialCount++
-
-        val cleanTimestamps = getValid24hTimestamps()
-        cleanTimestamps.add(now)
-        save24hTimestamps(cleanTimestamps)
-
-        Log.i(TAG, "Recorded interstitial impression. Session: $sessionInterstitialCount/$MAX_INTERSTITIALS_PER_SESSION, 24h: ${cleanTimestamps.size}/$MAX_INTERSTITIALS_PER_24H")
+        interstitialShownCount++
+        val timestamps = getValid24hTimestamps()
+        timestamps.add(now)
+        save24hTimestamps(timestamps)
+        Log.i(
+            TAG,
+            "Interstitial impression recorded. session=$sessionInterstitialCount/$MAX_INTERSTITIALS_PER_SESSION " +
+                "24h=${timestamps.size}/$MAX_INTERSTITIALS_PER_24H foreground=${foregroundAtLastImpressionMs / 1000}s"
+        )
     }
 
-    private fun getRecent24hImpressionsCount(): Int {
-        return getValid24hTimestamps().size
-    }
+    // =============================================================================
+    // 24h device-wide cap
+    // =============================================================================
+
+    private fun getRecent24hImpressionsCount(): Int = getValid24hTimestamps().size
 
     private fun getValid24hTimestamps(): MutableList<Long> {
         val raw = prefs.getString(KEY_24H_IMPRESSIONS, "[]") ?: "[]"
@@ -566,9 +637,7 @@ class AdMobManager(
             val arr = JSONArray(raw)
             for (i in 0 until arr.length()) {
                 val ts = arr.getLong(i)
-                if (now - ts < TWENTY_FOUR_HOURS_MS) {
-                    list.add(ts)
-                }
+                if (now - ts < TWENTY_FOUR_HOURS_MS) list.add(ts)
             }
         } catch (e: Exception) {
             Log.w(TAG, "Error parsing 24h ad impressions: ${e.message}")
@@ -582,52 +651,97 @@ class AdMobManager(
         prefs.edit().putString(KEY_24H_IMPRESSIONS, arr.toString()).apply()
     }
 
-    fun getAdDiagnostics(): org.json.JSONObject {
+    // =============================================================================
+    // Diagnostics
+    // =============================================================================
+
+    private fun manifestAdMobAppId(): String = try {
+        val info = activity.packageManager.getApplicationInfo(
+            activity.packageName,
+            PackageManager.GET_META_DATA
+        )
+        info.metaData?.getString("com.google.android.gms.ads.APPLICATION_ID") ?: "UNKNOWN"
+    } catch (t: Throwable) {
+        "UNAVAILABLE"
+    }
+
+    fun getAdDiagnostics(): JSONObject {
         val now = System.currentTimeMillis()
-        val timeSinceSessionStart = (now - sessionStartTime) / 1000
-        val timeSinceLastAd = if (lastInterstitialTime > 0) (now - lastInterstitialTime) / 1000 else -1
-        val recent24hCount = getRecent24hImpressionsCount()
-        return org.json.JSONObject().apply {
+        return JSONObject().apply {
             put("tier", currentUserTier)
             put("userId", currentUserId)
-            // Non-secret ad identity so the console-side "Publisher data not found" cause can be
-            // separated from SDK/response issues.
             put("isDebugBuild", BuildConfig.DEBUG)
+            put("admobAppId", manifestAdMobAppId())
             put("bannerAdUnitId", BuildConfig.BANNER_AD_UNIT_ID)
             put("interstitialAdUnitId", BuildConfig.INTERSTITIAL_AD_UNIT_ID)
             put("usingOfficialTestAdUnits", BuildConfig.DEBUG)
-            put("canRequestAds", consentInformation.canRequestAds())
-            put("isMobileAdsInitialized", isMobileAdsInitialized.get())
+            // Consent / SDK
+            put("sdkInitialized", isMobileAdsInitialized.get())
+            put("sdkInitStatus", mobileAdsInitStatus)
+            put("sdkInitDetail", mobileAdsInitDetail)
+            put("sdkInitializedAgeSec", if (mobileAdsInitializedAt > 0) (now - mobileAdsInitializedAt) / 1000 else -1)
+            put("consentStatus", consentStatusSnapshot)
+            put("canRequestAds", canRequestAdsSnapshot)
+            put("consentRequestStartedAgoSec", if (consentRequestStartedAt > 0) (now - consentRequestStartedAt) / 1000 else -1)
+            put("consentCallbackAgoSec", if (consentCallbackAt > 0) (now - consentCallbackAt) / 1000 else -1)
+            put("consentFormError", consentFormError ?: JSONObject.NULL)
+            put("consentRequestError", consentRequestError ?: JSONObject.NULL)
+            // Banner
             put("bannerRequestCount", bannerRequestCount)
             put("bannerLoaded", bannerLoaded)
+            put("bannerAttached", bannerAdView != null)
             put("bannerVisible", bannerContainer.visibility == View.VISIBLE)
-            put("lastBannerLoadError", lastBannerLoadError ?: org.json.JSONObject.NULL)
+            put("bannerContainerWidthPx", bannerContainer.width)
+            put("bannerContainerHeightPx", bannerContainer.height)
+            put("bannerMeasuredWidthPx", lastBannerMeasuredWidth)
+            put("bannerMeasuredHeightPx", lastBannerMeasuredHeight)
+            put("lastBannerLoadError", lastBannerLoadError ?: JSONObject.NULL)
+            put("lastBannerResponseId", lastBannerResponseId ?: JSONObject.NULL)
+            put("bannerRetryAttempt", bannerRetryAttempt)
+            // Interstitial
             put("interstitialRequestCount", interstitialRequestCount)
             put("interstitialLoaded", interstitialAd != null)
             put("isInterstitialLoading", isInterstitialLoading)
-            put("lastInterstitialLoadError", lastInterstitialLoadError ?: org.json.JSONObject.NULL)
+            put("lastInterstitialLoadError", lastInterstitialLoadError ?: JSONObject.NULL)
+            put("lastInterstitialResponseId", lastInterstitialResponseId ?: JSONObject.NULL)
+            put("interstitialShownCount", interstitialShownCount)
             put("sessionInterstitialCount", sessionInterstitialCount)
             put("maxSessionInterstitials", MAX_INTERSTITIALS_PER_SESSION)
-            put("recent24hCount", recent24hCount)
+            put("recent24hCount", getRecent24hImpressionsCount())
             put("max24hInterstitials", MAX_INTERSTITIALS_PER_24H)
+            put("lastInterstitialShownAgoSec", if (lastInterstitialShownAt > 0) (now - lastInterstitialShownAt) / 1000 else -1)
+            // Eligibility
             put("eligibleActionCounter", eligibleActionCounter)
             put("actionsRequired", ACTIONS_REQUIRED_FOR_INTERSTITIAL)
-            put("sessionDurationSec", timeSinceSessionStart)
-            put("secondsSinceLastInterstitial", timeSinceLastAd)
+            put("recentActions", JSONArray(recentEligibleActions))
+            put("foregroundSec", currentForegroundMs() / 1000)
+            put("foregroundAtLastImpressionSec", foregroundAtLastImpressionMs / 1000)
+            put("minForegroundSec", MIN_FOREGROUND_MS / 1000)
+            put("sessionDurationSec", (now - sessionStartTime) / 1000)
             put("isTradingWorkspaceOpen", isTradingWorkspaceOpen)
             put("hasOpenPositions", hasOpenPositions)
             put("hasPendingOrders", hasPendingOrders)
             put("currentScreen", currentScreen)
             put("lastEligibilityCheckReason", lastEligibilityCheckReason)
+            put("lastPreloadBlockedReason", lastPreloadBlockedReason)
         }
     }
 
+    // =============================================================================
+    // Lifecycle
+    // =============================================================================
+
     fun onResume() {
+        if (foregroundStartedAt == 0L) foregroundStartedAt = System.currentTimeMillis()
         bannerAdView?.resume()
         updateBannerVisibility()
     }
 
     fun onPause() {
+        if (foregroundStartedAt > 0) {
+            foregroundAccumulatedMs += System.currentTimeMillis() - foregroundStartedAt
+            foregroundStartedAt = 0L
+        }
         bannerAdView?.pause()
     }
 
@@ -637,4 +751,3 @@ class AdMobManager(
         interstitialAd = null
     }
 }
-
