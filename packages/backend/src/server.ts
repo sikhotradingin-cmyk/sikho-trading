@@ -43,7 +43,7 @@ if (!(BigInt.prototype as any).toJSON) {
 }
 
 /** Application version advertised by /health (kept in sync with the Android versionName). */
-export const SERVICE_VERSION = '1.0.9';
+export const SERVICE_VERSION = '1.0.10';
 const SERVICE_STARTED_AT = new Date().toISOString();
 
 /** Browser/WebSocket clients must be told the server clock so countdowns can be corrected. */

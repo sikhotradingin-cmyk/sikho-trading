@@ -112,6 +112,12 @@
     },
   };
 
+  let chartLibraryPromise=null;
+  function ensureChartLibrary(){
+   if(window.LightweightCharts)return Promise.resolve();
+   if(!chartLibraryPromise)chartLibraryPromise=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='lightweight-charts.standalone.production.js';script.onload=resolve;script.onerror=()=>{chartLibraryPromise=null;reject(Error('Chart engine unavailable. Reopen the chart to retry.'));};document.head.appendChild(script);});
+   return chartLibraryPromise;
+  }
   let tvChart = null;
   let candleSeries = null;
   let volumeSeries = null;
@@ -230,6 +236,7 @@
   }
 
   async function apiFetch(path, opts = {}) {
+    const requestToken=state.token;
     const headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
     if (state.token) {
       headers['Authorization'] = `Bearer ${state.token}`;
@@ -237,6 +244,9 @@
 
     const timeoutMs = opts.timeoutMs || 10000;
     const controller = new AbortController();
+    const onExternalAbort=()=>controller.abort();
+    if(opts.signal?.aborted)controller.abort();
+    opts.signal?.addEventListener('abort',onExternalAbort,{once:true});
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     let res;
@@ -247,6 +257,7 @@
       }));
     } catch (err) {
       clearTimeout(timer);
+      if (opts.signal?.aborted) throw new DOMException('Request superseded','AbortError');
       if (err.name === 'AbortError') {
         const timeoutErr = new Error(`Connection timed out (${timeoutMs / 1000}s) connecting to ${API_BASE}. Ensure PC backend is running and phone is on the same Wi-Fi.`);
         timeoutErr.code = 'ERR_SERVER_TIMEOUT';
@@ -256,11 +267,12 @@
       netErr.code = 'ERR_SERVER_UNREACHABLE';
       throw netErr;
     } finally {
+      opts.signal?.removeEventListener('abort',onExternalAbort);
       clearTimeout(timer);
     }
 
     const data = await res.json().catch(() => ({}));
-    if (res.status === 401 && state.token && !path.startsWith('/api/v1/auth/')) {
+    if (res.status === 401 && state.token && state.token===requestToken && !path.startsWith('/api/v1/auth/')) {
       signOut('Your session has expired. Please sign in again.');
       throw new Error(data.error || 'Session expired');
     }
@@ -1113,6 +1125,7 @@
   // =========================================================================
   async function enterMainWorkspace() {
     showTopScreen('screen-main');
+    (window.requestIdleCallback||((fn)=>setTimeout(fn,150)))(()=>ensureChartLibrary().catch(()=>{}));
     notifyNativeUserTier();
     notifyNativeScreenState();
     updateProfileHeaderUI();
@@ -1186,13 +1199,14 @@
 
   async function refreshAccountAndPortfolio() {
     try {
-      const [acc, posRes, ordRes, perfRes, subRes] = await Promise.all([
+      const sessionToken=state.token;
+      const [acc, posRes, ordRes, perfRes] = await Promise.all([
         apiFetch('/api/v1/account').catch(() => null),
         apiFetch('/api/v1/positions').catch(() => null),
         apiFetch('/api/v1/orders').catch(() => null),
         apiFetch('/api/v1/account/performance').catch(() => null),
-        apiFetch('/api/v1/billing/status').catch(() => null),
       ]);
+      if(state.token!==sessionToken)return;
       if (acc && !acc.error) {
         state.account = acc;
       }
@@ -1206,7 +1220,7 @@
         state.performance = perfRes;
       }
 
-      const resolvedSub = subRes || acc?.entitlement || null;
+      const resolvedSub = acc?.entitlement || null;
       if (resolvedSub && (resolvedSub.tier === 'PRO' || resolvedSub.tier === 'FREE')) {
         state.subscription = resolvedSub;
         state.entitlementResolved = true;
@@ -1364,72 +1378,33 @@
   // =========================================================================
   // 3. MARKETS TAB: BENCHMARK STRIP, STOCKS, F&O & MCX COMMODITIES DISCOVERY
   // =========================================================================
-  async function loadExploreData() {
-    try {
-      const [idxRes, eqRes, futIdxRes, futStkRes, commRes, specsRes] = await Promise.all([
-        apiFetch('/api/v1/indices?limit=50'),
-        apiFetch('/api/v1/instruments?segment=EQUITY_STOCK&limit=30'),
-        apiFetch('/api/v1/instruments?segment=FUTIDX&limit=12'),
-        apiFetch('/api/v1/instruments?segment=FUTSTK&limit=16'),
-        apiFetch('/api/v1/commodities'),
-        apiFetch('/api/v1/commodities/specs'),
-      ]);
-      state.indices = idxRes.indices || [];
-      state.quotesMap = state.quotesMap || new Map();
-      seedQuotesFromInstruments(state.indices);
-
-      // Canonical index sorting: NIFTY 50 -> BANKNIFTY -> SENSEX -> FINNIFTY -> MIDCPNIFTY -> NIFTY IT...
-      const INDEX_ORDER = ['NIFTY 50', 'BANKNIFTY', 'SENSEX', 'FINNIFTY', 'MIDCPNIFTY', 'NIFTY IT', 'NIFTY PHARMA', 'NIFTY METAL', 'BANKEX'];
-      state.indices.sort((a, b) => {
-        const keyA = getIndexCanonicalKey(a);
-        const keyB = getIndexCanonicalKey(b);
-        const idxA = INDEX_ORDER.indexOf(keyA);
-        const idxB = INDEX_ORDER.indexOf(keyB);
-        if (idxA !== -1 && idxB !== -1) return idxA - idxB;
-        if (idxA !== -1) return -1;
-        if (idxB !== -1) return 1;
-        return keyA.localeCompare(keyB);
-      });
-
-      // Load user preferences for benchmark strip
-      await loadUserIndexPreferences();
-
-      state.exploreStocks = eqRes.instruments || [];
-      const PROMINENT_ORDER = [
-        'RELIANCE', 'TCS', 'TTML', 'HDFCBANK', 'INFY', 'ICICIBANK',
-        'SBIN', 'BHARTIARTL', 'ITC', 'KOTAKBANK', 'TATAMOTORS', 'WIPRO',
-        'MARUTI', 'SUNPHARMA', 'BAJFINANCE', 'HINDUNILVR'
-      ];
-      state.exploreStocks.sort((a, b) => {
-        const symA = (a.tradingSymbol || a.symbol || '').toUpperCase().split('-')[0].trim();
-        const symB = (b.tradingSymbol || b.symbol || '').toUpperCase().split('-')[0].trim();
-        const idxA = PROMINENT_ORDER.indexOf(symA);
-        const idxB = PROMINENT_ORDER.indexOf(symB);
-        if (idxA !== -1 && idxB !== -1) return idxA - idxB;
-        if (idxA !== -1) return -1;
-        if (idxB !== -1) return 1;
-        return (a.tradingSymbol || a.symbol || '').localeCompare(b.tradingSymbol || b.symbol || '');
-      });
-      state.exploreFnoIndices = futIdxRes.instruments || [];
-      state.exploreFnoStocks = futStkRes.instruments || [];
-      state.commodities = commRes || { metals: [], energy: [], agriculture: [] };
-      state.commoditySpecs = specsRes?.specs || {};
-
-      // Seed the live quote cache from every REST list so a later refresh returning a
-      // null/partial latestQuote cannot blank an already-streaming price.
-      seedQuotesFromInstruments(state.exploreStocks);
-      seedQuotesFromInstruments(state.exploreFnoIndices);
-      seedQuotesFromInstruments(state.exploreFnoStocks);
-      seedQuotesFromInstruments(state.commodities?.metals);
-      seedQuotesFromInstruments(state.commodities?.energy);
-      seedQuotesFromInstruments(state.commodities?.agriculture);
-
-      renderBenchmarkIndexStrip();
-      renderExploreStocksList();
-      renderExploreFnoLists();
-      renderCommoditiesList();
-    } catch { }
+  let searchDebounceTimer=null,searchRequestSeq=0,searchRequestController=null;
+  let secondaryCataloguePromise=null, secondaryCatalogueLoadedFor=null;
+  const prominentSymbols=['RELIANCE','TCS','TTML','HDFCBANK','INFY','ICICIBANK','SBIN','BHARTIARTL','ITC','KOTAKBANK','TATAMOTORS','WIPRO','MARUTI','SUNPHARMA','BAJFINANCE','HINDUNILVR'];
+  const sortStocks=(a,b)=>{const rank=x=>{const p=prominentSymbols.indexOf(x.symbol);return p<0?999:p;};return rank(a)-rank(b)||a.symbol.localeCompare(b.symbol);};
+  async function loadSecondaryCatalogue(){
+   if(secondaryCatalogueLoadedFor===state.token)return;
+   if(secondaryCataloguePromise){await secondaryCataloguePromise;return;}
+   const sessionToken=state.token;
+   secondaryCataloguePromise=Promise.allSettled([
+    ['/api/v1/instruments?segment=FUTIDX&limit=12',r=>{state.exploreFnoIndices=r.instruments||[];seedQuotesFromInstruments(state.exploreFnoIndices);renderExploreFnoLists();}],
+    ['/api/v1/instruments?segment=FUTSTK&limit=16',r=>{state.exploreFnoStocks=r.instruments||[];seedQuotesFromInstruments(state.exploreFnoStocks);renderExploreFnoLists();}],
+    ['/api/v1/commodities',r=>{state.commodities=r;renderCommoditiesList();}],
+    ['/api/v1/commodities/specs',r=>{state.commoditySpecs=r.specs||{};}]
+   ].map(async([path,apply])=>{const r=await apiFetch(path);if(state.token===sessionToken)apply(r);}));
+   try{const results=await secondaryCataloguePromise;if(results.every(r=>r.status==='fulfilled'))secondaryCatalogueLoadedFor=sessionToken;
+    else if(state.token===sessionToken){window.SikhoUX.listState('explore-fno-indices-list','Some instruments are unavailable. Retry when connected.',true);}
+   }finally{secondaryCataloguePromise=null;}
   }
+  async function loadExploreData() {
+ const sessionToken=state.token;
+ for(const id of ['explore-stocks-list','explore-fno-indices-list','explore-fno-stocks-list'])window.SikhoUX.listState(id,'Loading instruments…');
+ await Promise.allSettled([
+  (async()=>{try{const r=await apiFetch('/api/v1/indices?limit=50');if(state.token!==sessionToken)return;state.indices=(r.indices||[]).sort((a,b)=>{const order=['NIFTY 50','BANKNIFTY','SENSEX','FINNIFTY','MIDCPNIFTY','NIFTY IT','NIFTY PHARMA','NIFTY METAL','BANKEX'];const rank=x=>{const i=order.indexOf(getIndexCanonicalKey(x));return i<0?999:i;};return rank(a)-rank(b)||a.symbol.localeCompare(b.symbol);});seedQuotesFromInstruments(state.indices);renderBenchmarkIndexStrip();loadUserIndexPreferences().catch(()=>{});}catch{}})(),
+  (async()=>{try{const r=await apiFetch('/api/v1/instruments?segment=EQUITY_STOCK&limit=30');if(state.token!==sessionToken)return;state.exploreStocks=(r.instruments||[]).sort(sortStocks);seedQuotesFromInstruments(state.exploreStocks);renderExploreStocksList();}catch{window.SikhoUX.listState('explore-stocks-list','Instruments could not load. Check your connection.',true);}})()
+ ]);
+ setTimeout(()=>{if(state.token===sessionToken)loadSecondaryCatalogue();},350);
+}
 
   function getIndexCanonicalKey(inst) {
     const sym = (inst.symbol || '').toUpperCase().replace(/\s+/g, '');
@@ -1715,6 +1690,7 @@
   function setExploreCategory(cat) {
     if (state.exploreCategory === cat) return;
     state.exploreCategory = cat;
+    if(cat!=='STOCKS')loadSecondaryCatalogue();
     const sBtn = document.getElementById('btn-explore-stocks') || document.getElementById('btn-market-stocks');
     const fBtn = document.getElementById('btn-explore-fno') || document.getElementById('btn-market-fno');
     const cBtn = document.getElementById('btn-explore-commodities') || document.getElementById('btn-market-commodities');
@@ -1893,86 +1869,11 @@
     recordEligibleAction('filter_stocks_sector_' + sector);
   }
 
-  function renderInstrumentRowHTML(inst, showChainBtn = false) {
-    const isRestricted = !isProUser() && isInstrumentRestrictedForFree(inst);
-    const avatarHtml = window.InstrumentIdentity
-      ? window.InstrumentIdentity.renderInstrumentAvatar(inst, 38)
-      : `<div class="inst-badge-icon">${(inst.symbol || 'EQ').slice(0, 3)}</div>`;
-
-    if (isRestricted) {
-      return `
-        <div class="instrument-row-white" onclick="window.TZApp.showSubscriptionUpgradePrompt('${inst.symbol}')" style="opacity:0.92;">
-          <div class="inst-left">
-            ${avatarHtml}
-            <div class="inst-meta">
-              <div class="inst-symbol-row">
-                <span class="inst-symbol">${inst.symbol}</span>
-                <span class="tag-exch">${inst.exchange || 'NSE'}</span>
-                <span class="expiry-e-badge" style="background:#f59e0b;color:#000;font-weight:700;">PRO</span>
-              </div>
-              <div class="inst-name-sub">${inst.name || 'Pro Tier Instrument'}</div>
-            </div>
-          </div>
-          <div class="inst-right">
-            <div class="inst-price-col" style="text-align:right;">
-              <span class="inst-ltp-val" style="color:#f59e0b;font-weight:700;font-size:12.5px;">🔒 PRO ONLY</span>
-              <span class="inst-chg-val" style="color:#0ea5e9;font-size:11px;font-weight:600;">Upgrade to view</span>
-            </div>
-          </div>
-        </div>
-      `;
-    }
-
-    const q = pickQuote(inst);
-    const { diff, pct, sign } = calcChange(q);
-    const cls = diff >= 0 ? 'val-pos' : 'val-neg';
-    const chainUnderlying = inst.underlying || inst.symbol;
-
-    const isDerivative = inst.instrumentType === 'FUTIDX' || inst.instrumentType === 'FUTSTK' ||
-                         inst.instrumentType === 'OPTIDX' || inst.instrumentType === 'OPTSTK' ||
-                         inst.instrumentType === 'FUTCOM' || inst.instrumentType === 'OPTCOM';
-
-    let metaSub = inst.name || inst.symbol;
-    if (isDerivative && inst.expiry) {
-      metaSub = `${inst.expiry}${inst.strikePrice ? ' • ' + inst.strikePrice : ''}${inst.optionType ? ' ' + inst.optionType : ''}`;
-    }
-
-    const priceText = q && q.ltp !== undefined && q.ltp !== null ? fmtINR(q.ltp) : '—';
-    const chgText = q && q.ltp !== undefined && q.ltp !== null ? `${sign}${pct.toFixed(2)}%` : '';
-
-    return `
-      <div class="instrument-row-white" onclick="window.TZApp.openChartByGlobalId('${inst.globalId}')">
-        <div class="inst-left">
-          ${avatarHtml}
-          <div class="inst-meta">
-            <div class="inst-symbol-row">
-              <span class="inst-symbol">${inst.symbol}</span>
-              <span class="tag-exch">${inst.exchange}</span>
-              ${inst.lotSize > 1 ? `<span class="tag-exch">Lot ${inst.lotSize}</span>` : ''}
-            </div>
-            <div class="inst-name-sub">${metaSub}</div>
-          </div>
-        </div>
-        <div class="inst-right">
-          <div class="inst-price-col">
-            <span class="inst-ltp-val" data-ltp-id="${inst.globalId}">${priceText}</span>
-            <span class="inst-chg-val ${cls}" data-chg-id="${inst.globalId}">
-              ${chgText}
-            </span>
-          </div>
-          ${showChainBtn
-        ? `<button class="chain-icon-btn" title="Option Chain" onclick="event.stopPropagation(); window.TZApp.openOptionChainModal('${chainUnderlying}')">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-                    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-                    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-                  </svg>
-                </button>`
-        : ''
-      }
-        </div>
-      </div>
-    `;
-  }
+  function renderInstrumentRowHTML(inst, showChainBtn = false, options = {}) {
+ const isRestricted = !isProUser() && isInstrumentRestrictedForFree(inst);
+ const q = pickQuote(inst); const {diff,pct,sign}=calcChange(q);
+ return window.SikhoUX.row(inst, {restricted:isRestricted,avatar:window.InstrumentIdentity.renderInstrumentAvatar(inst,40),price:q?.ltp>0?fmtINR(q.ltp):'—',change:q?.ltp>0?sign+pct.toFixed(2)+'%':'',changeClass:diff>=0?'val-pos-dark':'val-neg',showChain:showChainBtn,search:options.search});
+}
 
   function renderExploreStocksList() {
     const container = document.getElementById('explore-stocks-list');
@@ -2514,43 +2415,22 @@
     runGlobalSearch();
   }
 
-  async function runGlobalSearch() {
-    const q = document.getElementById('global-search-input').value.trim();
-    try {
-      const res = await apiFetch(
-        `/api/v1/instruments?q=${encodeURIComponent(q)}&segment=${encodeURIComponent(state.searchSegment)}&limit=35`
-      );
-      const list = res.instruments || [];
-      const container = document.getElementById('search-results-container');
-      container.innerHTML = list
-        .map(
-          (inst) => {
-            const avatarHtml = window.InstrumentIdentity
-              ? window.InstrumentIdentity.renderInstrumentAvatar(inst, 38)
-              : `<div class="inst-badge-icon">${inst.exchange}</div>`;
-            return `
-              <div class="instrument-row-white" onclick="window.TZApp.closeSearchModal(); window.TZApp.openChartByGlobalId('${inst.globalId}')">
-                <div class="inst-left">
-                  ${avatarHtml}
-                  <div class="inst-meta">
-                    <div class="inst-symbol-row">
-                      <span class="inst-symbol">${inst.symbol}</span>
-                      <span class="tag-exch">${inst.exchange || 'NSE'}</span>
-                      ${inst.lotSize > 1 ? `<span class="tag-exch">Lot ${inst.lotSize}</span>` : ''}
-                    </div>
-                    <div class="inst-name-sub">${inst.name}</div>
-                  </div>
-                </div>
-                <div class="inst-right">
-                  <button class="chain-icon-btn" title="Add to Watchlist" onclick="event.stopPropagation(); window.TZApp.addSymbolToWatchlist('${inst.globalId}')">+</button>
-                </div>
-              </div>
-            `;
-          }
-        )
-        .join('');
-    } catch { }
-  }
+  function runGlobalSearch() {
+ clearTimeout(searchDebounceTimer);
+ searchRequestController?.abort();
+ const seq=++searchRequestSeq;
+ searchDebounceTimer=setTimeout(async()=>{
+  searchRequestController=new AbortController();
+  const q=(document.getElementById('global-search-input').value||'').trim();
+  window.SikhoUX.listState('search-results-container','Searching instruments…');
+  try {
+   const res=await apiFetch('/api/v1/instruments?q='+encodeURIComponent(q)+'&segment='+encodeURIComponent(state.searchSegment)+'&limit=35',{signal:searchRequestController.signal});
+   if(seq!==searchRequestSeq)return;
+   const list=res.instruments||[];
+   document.getElementById('search-results-container').innerHTML=list.length?list.map(i=>renderInstrumentRowHTML(i,false,{search:true})).join(''):'<div class="list-state" role="status">No matching instruments. Try a symbol or company name.</div>';
+  } catch(err) {if(seq===searchRequestSeq&&err.name!=='AbortError')window.SikhoUX.listState('search-results-container','Search unavailable. Check your connection.');}
+ },180);
+}
 
   async function loadWatchlists() {
     try {
@@ -2664,7 +2544,10 @@
 
   async function openChartByGlobalId(globalId) {
     if (!globalId) return;
+    const navigationSeq=++chartNavigationSeq, sessionToken=state.token;
+    rememberChartViewport();
     const inst = await resolveInstrumentForChart(globalId);
+    if(navigationSeq!==chartNavigationSeq||sessionToken!==state.token)return;
     const hasOpenPos = (state.positionsData?.positions || []).some(
       (p) => p.globalInstrumentId === globalId && Math.abs(p.quantity || 0) > 0
     );
@@ -2685,6 +2568,8 @@
     notifyNativeScreenState();
 
     state.activeInstrument = inst;
+    document.getElementById('chart-ltp-display').textContent='—';
+    document.getElementById('chart-chg-display').textContent='';
     document.getElementById('chart-sym-title').textContent = inst.symbol;
     document.getElementById('chart-seg-badge').textContent = `${inst.exchange} • ${inst.instrumentType}`;
 
@@ -2707,11 +2592,20 @@
     startChartCountdownTimer();
 
     renderChartBottomTradeBar(inst);
+    try { await ensureChartLibrary(); } catch {
+      document.getElementById('chart-ohlc-legend').textContent='Chart engine unavailable. Reopen to retry.';
+      return;
+    }
+    if(navigationSeq!==chartNavigationSeq||sessionToken!==state.token)return;
     initLightweightChartInstance();
     await Promise.all([loadChartCandlesInitial(), loadUserDrawingsForActiveInstrument()]);
   }
 
   function closeChartWorkspace() {
+    rememberChartViewport();
+    chartNavigationSeq++;
+    chartRequestController?.abort();
+    state.chartLoadSeq++;
     state.chartOpen = false;
     stopChartCountdownTimer();
     document.getElementById('screen-chart').classList.remove('active');
@@ -2795,9 +2689,11 @@
   function initLightweightChartInstance() {
     const container = document.getElementById('tv-main-chart');
     if (tvChart) {
-      tvChart.remove();
-      tvChart = null;
-      indicatorSeriesMap = {};
+      state.candles=[]; candleSeries.setData([]);
+      Object.values(indicatorSeriesMap).forEach(series=>series.setData([]));
+      document.getElementById('drawing-svg-layer').innerHTML='';
+      tvChart.applyOptions({width:container.clientWidth||380,height:container.clientHeight||420});
+      return;
     }
 
     tvChart = LightweightCharts.createChart(container, {
@@ -2855,14 +2751,27 @@
     });
 
     setupTouchArbitratedDrawingEvents();
+    new ResizeObserver(()=>{if(tvChart&&container.clientWidth>0)tvChart.applyOptions({width:container.clientWidth,height:container.clientHeight});}).observe(container);
   }
 
+  let chartRequestController=null;
+  const chartViewportCache=new Map();
+  let chartNavigationSeq=0;
+  function rememberChartViewport(){
+    if(!tvChart||!state.activeInstrument||!state.candles.length)return;
+    const range=tvChart.timeScale().getVisibleRange();
+    if(range){const key=state.activeInstrument.globalId+':'+state.activeTimeframe;chartViewportCache.delete(key);chartViewportCache.set(key,range);if(chartViewportCache.size>12)chartViewportCache.delete(chartViewportCache.keys().next().value);}
+  }
   async function loadChartCandlesInitial() {
     if (!state.activeInstrument) return;
+    chartRequestController?.abort();
+    chartRequestController=new AbortController();
     const seq = ++state.chartLoadSeq;
     state.isFetchingOlder = false;
     state.isUserScrolledBack = false;
     document.getElementById('btn-go-latest').style.display = 'none';
+    document.getElementById('chart-ohlc-legend').textContent='Loading price history…';
+    document.getElementById('chart-candle-stats').textContent='Loading current data…';
 
     const gid = state.activeInstrument.globalId;
     const tf = state.activeTimeframe;
@@ -2870,7 +2779,7 @@
 
     try {
       const data = await apiFetch(
-        `/api/v1/market-data/candles?globalId=${encodeURIComponent(gid)}&timeframe=${encodeURIComponent(tf)}${rangeParam}`
+        `/api/v1/market-data/candles?globalId=${encodeURIComponent(gid)}&timeframe=${encodeURIComponent(tf)}${rangeParam}&limit=200`, {signal:chartRequestController.signal}
       );
       if (seq !== state.chartLoadSeq) return; // Discard stale response from earlier switch
 
@@ -2878,6 +2787,12 @@
       state.hasMoreHistory = Boolean(data.hasMore);
       state.earliestTime = data.earliestTime;
       state.prevSessionClose = data.prevSessionClose;
+
+      if (!state.candles.length) {
+        candleSeries?.setData([]);
+        document.getElementById('chart-ohlc-legend').textContent = 'No history available for this interval.';
+        document.getElementById('chart-candle-stats').textContent = 'Choose another interval or retry later';
+      }
 
       if (candleSeries && state.candles.length > 0) {
         candleSeries.setData(state.candles);
@@ -2887,6 +2802,8 @@
           from: totalBars - barsToShow,
           to: totalBars + 4,
         });
+        const savedViewport=chartViewportCache.get(gid+':'+tf);
+        if(savedViewport&&savedViewport.from>=state.candles[0].time&&savedViewport.to<=state.candles[totalBars-1].time)tvChart.timeScale().setVisibleRange(savedViewport);
         const last = state.candles[state.candles.length - 1];
         document.getElementById('chart-ohlc-legend').textContent =
           `O ${fmtNum(last.open)}  H ${fmtNum(last.high)}  L ${fmtNum(last.low)}  C ${fmtNum(last.close)}`;
@@ -2903,7 +2820,12 @@
       updateChartCountdownUI();
       recalculateAndRenderIndicators();
       renderDrawingsSvgOverlay();
-    } catch { }
+    } catch (err) {
+      if(seq===state.chartLoadSeq&&err.name!=='AbortError'){
+        document.getElementById('chart-ohlc-legend').textContent='History unavailable. Tap an interval to retry.';
+        document.getElementById('chart-candle-stats').textContent='Waiting for verified data';
+      }
+    }
   }
 
   async function fetchOlderCandlePage() {
@@ -3017,6 +2939,7 @@
   }
 
   function selectTimeframe(tf) {
+    rememberChartViewport();
     state.activeTimeframe = tf;
     document.querySelectorAll('.chart-controls-strip .tf-pill').forEach((b) => {
       b.classList.toggle('active', b.getAttribute('data-tf') === tf);
@@ -3284,8 +3207,10 @@
 
   async function loadUserDrawingsForActiveInstrument() {
     if (!state.activeInstrument || !state.token) return;
+    const gid=state.activeInstrument.globalId, sessionToken=state.token;
     try {
-      const res = await apiFetch(`/api/v1/drawings?instrumentId=${encodeURIComponent(state.activeInstrument.globalId)}`);
+      const res = await apiFetch(`/api/v1/drawings?instrumentId=${encodeURIComponent(gid)}`);
+      if(state.activeInstrument?.globalId!==gid||state.token!==sessionToken)return;
       state.drawings = res.drawings || [];
       renderDrawingsSvgOverlay();
     } catch { }
@@ -3520,6 +3445,7 @@
   }
 
   async function submitPaperOrder() {
+    if(state.orderSubmitting)return;
     const inst = state.orderTicket.instrument;
     if (!inst) return;
     const errBox = document.getElementById('ticket-error-box');
@@ -3544,11 +3470,16 @@
     if (!isNaN(slVal) && slVal > 0) payload.stopLossPrice = slVal;
     if (!isNaN(tpVal) && tpVal > 0) payload.targetPrice = tpVal;
 
+    state.orderSubmitting=true;
+    const submittingButton=document.getElementById('ticket-submit-btn');
+    submittingButton.disabled=true; submittingButton.setAttribute('aria-busy','true');
+    const previousLabel=submittingButton.textContent; submittingButton.textContent='Placing simulated order…';
     try {
       await apiFetch('/api/v1/orders/place', {
         method: 'POST',
         body: JSON.stringify(payload),
       });
+      window.SikhoUX.notify('Simulated order placed.');
       closeOrderTicket();
       closeChartWorkspace();
       await refreshAccountAndPortfolio();
@@ -3556,6 +3487,8 @@
     } catch (err) {
       errBox.textContent = err.message;
       errBox.style.display = 'block';
+    } finally {
+      state.orderSubmitting=false; submittingButton.disabled=false; submittingButton.removeAttribute('aria-busy'); submittingButton.textContent=previousLabel;
     }
   }
 
@@ -4871,6 +4804,7 @@
     submitAuthForm,
     handleGoogleSignIn,
     showGoogleDiagnostics,
+    retryExploreData:loadExploreData,
     signOut,
     switchMainTab,
     setExploreCategory,

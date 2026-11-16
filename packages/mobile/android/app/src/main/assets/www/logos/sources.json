@@ -1,0 +1,183 @@
+[
+  {
+    "symbol": "AADHARHFC",
+    "file": "AADHARHFC.png",
+    "isin": "INE883F01010",
+    "sourcePage": "https://www.aadharhousing.com/",
+    "assetUrl": "https://www.aadharhousing.com/assets/navbar/logo/aadhar-logo.png",
+    "downloadedAt": "2026-11-16T11:48:37.090Z",
+    "sha256": "74af7b994c1c2a3a4c1d9ad302dc5bb459ea497254adc626db177eda9339cd17",
+    "bytes": 339081
+  },
+  {
+    "symbol": "HDFCBANK",
+    "file": "HDFCBANK.png",
+    "isin": "INE040A01034",
+    "sourcePage": "https://www.hdfc.bank.in/news-room",
+    "assetUrl": "https://s7ap1.scene7.com/is/image/hdfcbankPWS/HDFC-logo?fmt=png-alpha&wid=192",
+    "downloadedAt": "2026-11-16T11:48:37.175Z",
+    "sha256": "3bd3e86245dd3bbf5e84b584e8a81970a1d620b5c9de51769bed5ce8e1b02f0b",
+    "bytes": 6606
+  },
+  {
+    "symbol": "ICICIBANK",
+    "file": "ICICIBANK.png",
+    "isin": "INE090A01021",
+    "sourcePage": "https://www.icici.bank.in/",
+    "assetUrl": "https://www.icici.bank.in/content/dam/icicibank-revamp/images/icici-logo/icici-header-logo.png",
+    "downloadedAt": "2026-11-16T11:48:37.240Z",
+    "sha256": "ae64de2a70fb445f52baf48a76cfd0c2c3c0a53ef7725d14b61821243e2da03b",
+    "bytes": 4033
+  },
+  {
+    "symbol": "SBIN",
+    "file": "SBIN.ico",
+    "isin": "INE062A01020",
+    "sourcePage": "https://sbi.bank.in/",
+    "assetUrl": "https://sbi.bank.in/o/SBI-Theme/images/favicon.ico",
+    "downloadedAt": "2026-11-16T11:48:37.321Z",
+    "sha256": "9f2389af436d7be66a1c7ee19eed648888258b908adbef81b89871b66b028fcc",
+    "bytes": 1150
+  },
+  {
+    "symbol": "ITC",
+    "file": "ITC.png",
+    "isin": "INE154A01025",
+    "sourcePage": "https://www.itcportal.com/",
+    "assetUrl": "https://s7ap1.scene7.com/is/image/itcportalprod/ITC-Logo-Updated?fmt=png-alpha&wid=128",
+    "downloadedAt": "2026-11-16T11:48:37.628Z",
+    "sha256": "fb662897eaec278ab8409db5e396957eb4f92cc59deebb32432d6901dc0d2c6e",
+    "bytes": 6155
+  },
+  {
+    "symbol": "BAJFINANCE",
+    "file": "BAJFINANCE.svg",
+    "isin": "INE296A01032",
+    "sourcePage": "https://www.bajajfinserv.in/finance-digital-annual-report-fy26/index.html",
+    "assetUrl": "https://www.bajajfinserv.in/finance-digital-annual-report-fy26/bajaj-finance-ltd-ar-2025-26-assets/images/logo-bajaj-finance-limited.svg",
+    "downloadedAt": "2026-11-16T11:48:38.305Z",
+    "sha256": "af6d1554f2deaea4b842f0ee54d192db86c1ad11f33800a47d3db18b0ec25f44",
+    "bytes": 17532
+  },
+  {
+    "symbol": "RELIANCE",
+    "file": "RELIANCE.ico",
+    "isin": "INE002A01018",
+    "sourcePage": "https://www.ril.com/",
+    "assetUrl": "https://www.ril.com/sites/default/files/favicon_0.ico",
+    "downloadedAt": "2026-11-16T11:58:04.718Z",
+    "sha256": "e991cf01efb030abf83a0d74d1a838928e782adc39a6aa906186be33d1ed22bc",
+    "bytes": 1150,
+    "usage": "Official website favicon for issuer identification"
+  },
+  {
+    "symbol": "TCS",
+    "file": "TCS.png",
+    "isin": "INE467B01029",
+    "sourcePage": "https://www.tcs.com/",
+    "assetUrl": "https://www.tcs.com/etc.clientlibs/tcs/clientlibs/clientlib-resources/resources/images/tcs_favicon_16.png",
+    "downloadedAt": "2026-11-16T11:58:04.837Z",
+    "sha256": "2b90a2c07624e0cfd19cbf5c3d2e2e1e82b1d3682260fdd4b77c3ae1fb4e54c7",
+    "bytes": 388,
+    "usage": "Official website favicon for issuer identification"
+  },
+  {
+    "symbol": "INFY",
+    "file": "INFY.png",
+    "isin": "INE009A01021",
+    "sourcePage": "https://www.infosys.com/",
+    "assetUrl": "https://www.infosys.com/content/dam/infosys-web/en/global-resource/icons/apple-touch-icon.png",
+    "downloadedAt": "2026-11-16T11:58:04.969Z",
+    "sha256": "e324e55d79040dacf31870f168df9c70737fec7937567747215ffa6d81f54361",
+    "bytes": 2457,
+    "usage": "Official website favicon for issuer identification"
+  },
+  {
+    "symbol": "BHARTIARTL",
+    "file": "BHARTIARTL.png",
+    "isin": "INE397D01024",
+    "sourcePage": "https://www.airtel.in/",
+    "assetUrl": "https://assets.airtel.in/static-assets/new-home/img/favicon-16x16.png",
+    "downloadedAt": "2026-11-16T11:58:05.128Z",
+    "sha256": "b9fbbf1d1869548c32bbd9251ff3c63ce660a596b0f878b184dd0b77709ec7b5",
+    "bytes": 487,
+    "usage": "Official website favicon for issuer identification"
+  },
+  {
+    "symbol": "KOTAKBANK",
+    "file": "KOTAKBANK.ico",
+    "isin": "INE237A01036",
+    "sourcePage": "https://www.kotak.bank.in/en/home.html",
+    "assetUrl": "https://www.kotak.bank.in/etc/designs/kotak/clientlib-site/images/favicon.ico",
+    "downloadedAt": "2026-11-16T11:58:05.419Z",
+    "sha256": "b89c2039545626b4c0c622c9e6889d44a0a515f9c2e46b928464b034156614f6",
+    "bytes": 894,
+    "usage": "Official website favicon for issuer identification"
+  },
+  {
+    "symbol": "WIPRO",
+    "file": "WIPRO.png",
+    "isin": "INE075A01022",
+    "sourcePage": "https://www.wipro.com/",
+    "assetUrl": "https://www.wipro.com/content/dam/nexus/en/favicon.png",
+    "downloadedAt": "2026-11-16T11:58:06.365Z",
+    "sha256": "f4b7fd9b945d0e45a3928a0b4c47103b0577428b3a83aa5450691b86e256ea58",
+    "bytes": 6015,
+    "usage": "Official website favicon for issuer identification"
+  },
+  {
+    "symbol": "MARUTI",
+    "file": "MARUTI.ico",
+    "isin": "INE585B01010",
+    "sourcePage": "https://www.marutisuzuki.com/",
+    "assetUrl": "https://www.marutisuzuki.com/favicon.ico",
+    "downloadedAt": "2026-11-16T11:58:06.447Z",
+    "sha256": "3bf23b5644c6998f1ac2145f0991eb7789f462c28c0e6f8db89facd2835fe74b",
+    "bytes": 1150,
+    "usage": "Official website favicon for issuer identification"
+  },
+  {
+    "symbol": "SUNPHARMA",
+    "file": "SUNPHARMA.png",
+    "isin": "INE044A01036",
+    "sourcePage": "https://sunpharma.com/",
+    "assetUrl": "https://sunpharma.com/favicon.ico",
+    "downloadedAt": "2026-11-16T11:58:06.788Z",
+    "sha256": "4f7615ff1c9ec01e525178c268ad4c4a6528fb6703800ac5d641e0913cdc6aed",
+    "bytes": 1881,
+    "usage": "Official website favicon for issuer identification"
+  },
+  {
+    "symbol": "HINDUNILVR",
+    "file": "HINDUNILVR.png",
+    "isin": "INE030A01027",
+    "sourcePage": "https://www.hul.co.in/",
+    "assetUrl": "https://www.hul.co.in/apple-touch-icon.png",
+    "downloadedAt": "2026-11-16T11:58:07.302Z",
+    "sha256": "44a2c90b81ee1f5ed0317ffca74c5df69aa0968c9b3ab50fb3c32a34f8a98526",
+    "bytes": 6464,
+    "usage": "Official website favicon for issuer identification"
+  },
+  {
+    "symbol": "TATAMOTORS",
+    "file": "TATAMOTORS.ico",
+    "isin": null,
+    "sourcePage": "https://www.tatamotors.com/",
+    "assetUrl": "https://www.tatamotors.com/wp-content/themes/TataMotors/images/favicon.ico",
+    "downloadedAt": "2026-11-16T11:58:08.076Z",
+    "sha256": "1cb402a821868dd784e76e5599c08b6d73eb64dc355a4c829001ea4acc635746",
+    "bytes": 1287,
+    "usage": "Official website favicon for issuer identification"
+  },
+  {
+    "symbol": "TTML",
+    "file": "TTML.ico",
+    "isin": "INE517B01013",
+    "sourcePage": "https://www.tatatelebusiness.com/",
+    "assetUrl": "https://www.tatatelebusiness.com/images/ttbs.ico",
+    "downloadedAt": "2026-11-16T11:58:08.582Z",
+    "sha256": "5ec8f7d56f66ffd9e6f2904e4a055ff5f904d0ab6364c19edcf0fe93d4a64e6c",
+    "bytes": 14622,
+    "usage": "Official website favicon for issuer identification"
+  }
+]

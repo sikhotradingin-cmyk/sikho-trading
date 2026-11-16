@@ -1,7 +1,7 @@
 /**
  * Sikho Trading — Professional Instrument Identity System & Central Asset Manifest
  *
- * Provides verified issuer/company logos, indices artwork, commodity icons,
+ * Provides sourced issuer/company logos, indices artwork, commodity icons,
  * derivative badges (FUT / CE / PE), and deterministic high-contrast monogram fallbacks.
  *
  * Security & Performance:
@@ -142,123 +142,6 @@
       <text x="20" y="23" font-family="sans-serif" font-size="8" font-weight="900" fill="#C2410C" text-anchor="middle">Cu</text>
     </svg>`;
 
-  // 3. TOP EQUITIES SVGs
-  const SVG_RELIANCE = `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
-      <rect width="40" height="40" rx="10" fill="#0C4A6E"/>
-      <circle cx="20" cy="20" r="11" fill="none" stroke="#F59E0B" stroke-width="2"/>
-      <path d="M20 13 V27 M15 17 H22 C24.5 17 24.5 21 22 21 H15 M19 21 L24 27" fill="none" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round"/>
-    </svg>`;
-
-  const SVG_TCS = `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
-      <rect width="40" height="40" rx="10" fill="#0284C7"/>
-      <text x="20" y="25" font-family="sans-serif" font-size="12" font-weight="900" fill="#FFFFFF" text-anchor="middle" letter-spacing="0.5">TCS</text>
-    </svg>`;
-
-  const SVG_HDFCBANK = `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
-      <rect width="40" height="40" rx="10" fill="#1E3A8A"/>
-      <rect x="12" y="12" width="16" height="16" fill="#0284C7"/>
-      <rect x="17" y="12" width="6" height="16" fill="#DC2626"/>
-      <rect x="12" y="17" width="16" height="6" fill="#DC2626"/>
-      <rect x="17" y="17" width="6" height="6" fill="#FFFFFF"/>
-    </svg>`;
-
-  const SVG_INFY = `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
-      <rect width="40" height="40" rx="10" fill="#0369A1"/>
-      <text x="20" y="24" font-family="sans-serif" font-size="10.5" font-weight="900" fill="#FFFFFF" text-anchor="middle">infosys</text>
-    </svg>`;
-
-  const SVG_ICICIBANK = `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
-      <rect width="40" height="40" rx="10" fill="#991B1B"/>
-      <circle cx="20" cy="20" r="10" fill="#EA580C"/>
-      <path d="M16 16 H24 M20 16 V24" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round"/>
-      <circle cx="20" cy="20" r="2.5" fill="#FEF08A"/>
-    </svg>`;
-
-  const SVG_SBIN = `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
-      <rect width="40" height="40" rx="10" fill="#0284C7"/>
-      <circle cx="20" cy="18" r="9" fill="#38BDF8"/>
-      <path d="M20 17 V27" stroke="#0284C7" stroke-width="3" stroke-linecap="round"/>
-      <circle cx="20" cy="16" r="3" fill="#0284C7"/>
-    </svg>`;
-
-  const SVG_BHARTIARTL = `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
-      <rect width="40" height="40" rx="10" fill="#DC2626"/>
-      <path d="M24 28 C20 28 15 25 15 20 C15 15 20 12 25 15 C26 15.6 27 17 27 17 V28 M22 20 C22 23 20 24 18 23" fill="none" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round"/>
-    </svg>`;
-
-  const SVG_ITC = `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
-      <rect width="40" height="40" rx="10" fill="#FACC15"/>
-      <polygon points="20,10 32,30 8,30" fill="#B45309"/>
-      <text x="20" y="27" font-family="sans-serif" font-size="8" font-weight="900" fill="#FFFFFF" text-anchor="middle">ITC</text>
-    </svg>`;
-
-  const SVG_KOTAKBANK = `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
-      <rect width="40" height="40" rx="10" fill="#EF4444"/>
-      <path d="M14 20 C14 16 18 16 20 20 C22 24 26 24 26 20 C26 16 22 16 20 20 C18 24 14 24 14 20 Z" fill="none" stroke="#FFFFFF" stroke-width="2.5"/>
-    </svg>`;
-
-  const SVG_TATAMOTORS = `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
-      <rect width="40" height="40" rx="10" fill="#0F172A"/>
-      <ellipse cx="20" cy="20" rx="12" ry="7" fill="none" stroke="#38BDF8" stroke-width="2"/>
-      <path d="M15 16 H25 M20 16 V24" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round"/>
-      <text x="20" y="32" font-family="sans-serif" font-size="5" font-weight="800" fill="#94A3B8" text-anchor="middle">TATA</text>
-    </svg>`;
-
-  const SVG_TTML = `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
-      <rect width="40" height="40" rx="10" fill="#1E293B"/>
-      <path d="M12 18 C12 14 28 14 28 18" fill="none" stroke="#0284C7" stroke-width="2.5" stroke-linecap="round"/>
-      <path d="M15 22 C15 19 25 19 25 22" fill="none" stroke="#38BDF8" stroke-width="2" stroke-linecap="round"/>
-      <circle cx="20" cy="25" r="2" fill="#0284C7"/>
-      <text x="20" y="33" font-family="sans-serif" font-size="6" font-weight="900" fill="#E2E8F0" text-anchor="middle">TTML</text>
-    </svg>`;
-
-  const SVG_WIPRO = `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
-      <rect width="40" height="40" rx="10" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
-      <circle cx="16" cy="16" r="3.5" fill="#EF4444"/>
-      <circle cx="24" cy="16" r="3.5" fill="#F59E0B"/>
-      <circle cx="16" cy="24" r="3.5" fill="#10B981"/>
-      <circle cx="24" cy="24" r="3.5" fill="#3B82F6"/>
-    </svg>`;
-
-  const SVG_MARUTI = `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
-      <rect width="40" height="40" rx="10" fill="#DC2626"/>
-      <path d="M12 13 H28 L17 27 H30" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>`;
-
-  const SVG_SUNPHARMA = `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
-      <rect width="40" height="40" rx="10" fill="#EA580C"/>
-      <circle cx="20" cy="20" r="6" fill="#FEF08A"/>
-      <path d="M20 9 V12 M20 28 V31 M9 20 H12 M28 20 H31 M12 12 L14.5 14.5 M25.5 25.5 L28 28 M28 12 L25.5 14.5 M14.5 25.5 L12 28" stroke="#FEF08A" stroke-width="2" stroke-linecap="round"/>
-    </svg>`;
-
-  const SVG_BAJFINANCE = `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
-      <rect width="40" height="40" rx="10" fill="#0284C7"/>
-      <path d="M12 20 L20 12 L28 20 L20 28 Z" fill="none" stroke="#FFFFFF" stroke-width="2.5"/>
-      <circle cx="20" cy="20" r="3" fill="#FFFFFF"/>
-    </svg>`;
-
-  const SVG_HINDUNILVR = `
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
-      <rect width="40" height="40" rx="10" fill="#1E3A8A"/>
-      <path d="M14 12 V22 C14 26 26 26 26 22 V12" fill="none" stroke="#60A5FA" stroke-width="3" stroke-linecap="round"/>
-      <circle cx="20" cy="20" r="2" fill="#FFFFFF"/>
-    </svg>`;
-
   // Central mapping table by canonical symbol & ISIN & alias
   const ASSET_REGISTRY = {
     // Indices
@@ -308,55 +191,28 @@
     'COPPER': SVG_COPPER,
     'MCX:COPPER': SVG_COPPER,
 
-    // Equities & ISINs
-    'RELIANCE': SVG_RELIANCE,
-    'INE002A01018': SVG_RELIANCE,
-
-    'TCS': SVG_TCS,
-    'INE467B01029': SVG_TCS,
-
-    'HDFCBANK': SVG_HDFCBANK,
-    'INE040A01034': SVG_HDFCBANK,
-
-    'INFY': SVG_INFY,
-    'INE009A01021': SVG_INFY,
-
-    'ICICIBANK': SVG_ICICIBANK,
-    'INE090A01021': SVG_ICICIBANK,
-
-    'SBIN': SVG_SBIN,
-    'INE062A01020': SVG_SBIN,
-
-    'BHARTIARTL': SVG_BHARTIARTL,
-    'INE397D01024': SVG_BHARTIARTL,
-
-    'ITC': SVG_ITC,
-    'INE154A01025': SVG_ITC,
-
-    'KOTAKBANK': SVG_KOTAKBANK,
-    'INE237A01028': SVG_KOTAKBANK,
-
-    'TATAMOTORS': SVG_TATAMOTORS,
-    'INE155A01022': SVG_TATAMOTORS,
-
-    'TTML': SVG_TTML,
-    'INE517A01014': SVG_TTML,
-
-    'WIPRO': SVG_WIPRO,
-    'INE075A01022': SVG_WIPRO,
-
-    'MARUTI': SVG_MARUTI,
-    'INE585B01010': SVG_MARUTI,
-
-    'SUNPHARMA': SVG_SUNPHARMA,
-    'INE044A01036': SVG_SUNPHARMA,
-
-    'BAJFINANCE': SVG_BAJFINANCE,
-    'INE296A01024': SVG_BAJFINANCE,
-
-    'HINDUNILVR': SVG_HINDUNILVR,
-    'INE030A01027': SVG_HINDUNILVR,
   };
+
+  const ISSUER_LOGOS = Object.freeze({...{"AADHARHFC":"logos/AADHARHFC.png","INE883F01010":"logos/AADHARHFC.png","HDFCBANK":"logos/HDFCBANK.png","INE040A01034":"logos/HDFCBANK.png","ICICIBANK":"logos/ICICIBANK.png","INE090A01021":"logos/ICICIBANK.png","SBIN":"logos/SBIN.ico","INE062A01020":"logos/SBIN.ico","ITC":"logos/ITC.png","INE154A01025":"logos/ITC.png","BAJFINANCE":"logos/BAJFINANCE.svg","INE296A01032":"logos/BAJFINANCE.svg","RELIANCE":"logos/RELIANCE.ico","INE002A01018":"logos/RELIANCE.ico","TCS":"logos/TCS.png","INE467B01029":"logos/TCS.png","INFY":"logos/INFY.png","INE009A01021":"logos/INFY.png","BHARTIARTL":"logos/BHARTIARTL.png","INE397D01024":"logos/BHARTIARTL.png","KOTAKBANK":"logos/KOTAKBANK.ico","INE237A01036":"logos/KOTAKBANK.ico","WIPRO":"logos/WIPRO.png","INE075A01022":"logos/WIPRO.png","MARUTI":"logos/MARUTI.ico","INE585B01010":"logos/MARUTI.ico","SUNPHARMA":"logos/SUNPHARMA.png","INE044A01036":"logos/SUNPHARMA.png","HINDUNILVR":"logos/HINDUNILVR.png","INE030A01027":"logos/HINDUNILVR.png","TATAMOTORS":"logos/TATAMOTORS.ico","TTML":"logos/TTML.ico","INE517B01013":"logos/TTML.ico"},
+  "AADHARHFC": "logos/AADHARHFC.png",
+  "INE883F01010": "logos/AADHARHFC.png",
+  "HDFCBANK": "logos/HDFCBANK.png",
+  "INE040A01034": "logos/HDFCBANK.png",
+  "ICICIBANK": "logos/ICICIBANK.png",
+  "INE090A01021": "logos/ICICIBANK.png",
+  "SBIN": "logos/SBIN.ico",
+  "INE062A01020": "logos/SBIN.ico",
+  "ITC": "logos/ITC.png",
+  "INE154A01025": "logos/ITC.png",
+  "BAJFINANCE": "logos/BAJFINANCE.svg",
+  "INE296A01032": "logos/BAJFINANCE.svg",
+  "HDFC BANK": "logos/HDFCBANK.png",
+  "ICICI BANK": "logos/ICICIBANK.png",
+  "STATE BANK OF INDIA": "logos/SBIN.ico",
+  "AADHAR HOUSING FINANCE": "logos/AADHARHFC.png",
+  "BAJAJ FINANCE": "logos/BAJFINANCE.svg",
+  "INE296A01024": "logos/BAJFINANCE.svg"
+});
 
   /**
    * Generates an intentional, attractive monogram SVG data URI fallback
@@ -388,6 +244,12 @@
     const globalId = (inst.globalId || '').trim();
     const isin = (inst.isin || '').trim().toUpperCase();
     const name = (inst.name || '').trim().toUpperCase();
+
+    // Issuer ISIN takes precedence over display aliases; derivatives use an exact underlying.
+    const issuerKey = (inst.tradingSymbol || symbol).toUpperCase().replace(/-(EQ|BE|BZ)$/, '');
+    const issuer = ISSUER_LOGOS[isin] || ISSUER_LOGOS[issuerKey] ||
+      ((inst.instrumentType === 'FUTSTK' || inst.instrumentType === 'OPTSTK') ? ISSUER_LOGOS[underlying] : null);
+    if (issuer) return issuer;
 
     // 1. Direct registry lookup by exact symbol
     if (ASSET_REGISTRY[symbol]) return svgToDataUri(ASSET_REGISTRY[symbol]);
@@ -421,24 +283,6 @@
       if (symbol.includes('METAL')) return svgToDataUri(SVG_NIFTYMETAL);
     }
 
-    // 7. Equities common aliases
-    if (symbol.startsWith('RELIANCE')) return svgToDataUri(SVG_RELIANCE);
-    if (symbol.startsWith('TCS')) return svgToDataUri(SVG_TCS);
-    if (symbol.startsWith('HDFC')) return svgToDataUri(SVG_HDFCBANK);
-    if (symbol.startsWith('INFY')) return svgToDataUri(SVG_INFY);
-    if (symbol.startsWith('ICICI')) return svgToDataUri(SVG_ICICIBANK);
-    if (symbol.startsWith('SBIN')) return svgToDataUri(SVG_SBIN);
-    if (symbol.startsWith('AIRTEL') || symbol.startsWith('BHARTI')) return svgToDataUri(SVG_BHARTIARTL);
-    if (symbol.startsWith('ITC')) return svgToDataUri(SVG_ITC);
-    if (symbol.startsWith('KOTAK')) return svgToDataUri(SVG_KOTAKBANK);
-    if (symbol.startsWith('TATAMOT') || symbol.startsWith('TATA MOT')) return svgToDataUri(SVG_TATAMOTORS);
-    if (symbol.startsWith('TTML')) return svgToDataUri(SVG_TTML);
-    if (symbol.startsWith('WIPRO')) return svgToDataUri(SVG_WIPRO);
-    if (symbol.startsWith('MARUTI')) return svgToDataUri(SVG_MARUTI);
-    if (symbol.startsWith('SUNPHARM')) return svgToDataUri(SVG_SUNPHARMA);
-    if (symbol.startsWith('BAJFIN')) return svgToDataUri(SVG_BAJFINANCE);
-    if (symbol.startsWith('HINDUNIL')) return svgToDataUri(SVG_HINDUNILVR);
-
     // 8. Intentional, attractive monogram fallback
     return createMonogramDataUri(symbol, inst.name, size);
   }
@@ -453,6 +297,7 @@
    */
   function renderInstrumentAvatar(inst, size = 38, extraClass = '') {
     const iconUri = resolveInstrumentSvgUri(inst, size);
+    const fallback = createMonogramDataUri(inst?.symbol, inst?.name, size);
     const boxSize = size;
     const isDeriv = inst && (
       inst.instrumentType === 'FUTIDX' ||
@@ -476,7 +321,7 @@
 
     return `
       <div class="inst-avatar-box ${extraClass}" style="width:${boxSize}px;height:${boxSize}px;">
-        <img src="${iconUri}" alt="${inst?.symbol || 'Instrument'}" class="inst-avatar-img" width="${boxSize}" height="${boxSize}" loading="lazy" />
+        <img src="${iconUri}" alt="${inst?.symbol || 'Instrument'}" class="inst-avatar-img" width="${boxSize}" height="${boxSize}" loading="lazy" decoding="async" data-logo-fallback="${fallback}" onerror="this.onerror=null;this.src=this.dataset.logoFallback" />
         ${badgeHtml}
       </div>
     `;
@@ -488,6 +333,7 @@
     resolveInstrumentSvgUri,
     createMonogramDataUri,
     ASSET_REGISTRY,
+    ISSUER_LOGOS,
   };
 
 })(typeof window !== 'undefined' ? window : this);
