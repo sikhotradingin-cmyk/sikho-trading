@@ -4,10 +4,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {execFileSync} from 'node:child_process';
+import {pathToFileURL} from 'node:url';
 const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'sikho-website-check-'));
 for(const file of ['build.mjs','site.css','site.js','assets'])fs.cpSync(new URL('./'+file,import.meta.url),path.join(tmp,file),{recursive:true});
 fs.writeFileSync(path.join(tmp,'site-config.json'),JSON.stringify({supportEmail:'qa@example.test',supportEmailConfirmed:true}));
 execFileSync(process.execPath,['build.mjs'],{cwd:tmp});
+const worker=(await import(pathToFileURL(path.join(tmp,'dist/server/index.js')))).default;
 const read=p=>fs.readFileSync(path.join(tmp,'dist',p),'utf8');
 test('app-ads.txt contains exactly the approved publisher line and newline',()=>assert.equal(read('app-ads.txt'),'google.com, pub-3649125435732222, DIRECT, f08c47fec0942fa0\n'));
 test('all requested pages have correct canonical URLs, landmarks and mobile viewport',()=>{for(const p of ['','privacy','support','delete-account']){const h=read((p?p+'/':'')+'index.html');assert.ok(h.includes('href="https://sikhotrading.in/'+p+'"'));assert.ok(h.includes('name="viewport"'));assert.ok(h.includes('<main id="content">'));assert.ok(h.includes('href="/delete-account"'));}});
@@ -17,3 +19,4 @@ test('internal navigation resolves to published pages or assets',()=>{for(const 
 test('homepage makes no store/download/social-proof inventions',()=>{const h=read('index.html');assert.ok(h.includes('No real-money trading'));assert.ok(h.includes('no verified public Play Store link'));assert.ok(!h.includes('play.google.com/store/apps'));assert.ok(!/testimonials|1,000 downloads|1000 downloads/i.test(h));});
 test('secure headers, plain-text MIME and canonical-host redirect are configured',()=>{assert.ok(read('_headers').includes('Content-Type: text/plain'));assert.ok(read('_headers').includes("frame-ancestors 'none'"));assert.ok(read('_redirects').startsWith('https://www.sikhotrading.in/* https://sikhotrading.in/:splat 301'));});
 test('publication build refuses an unconfirmed contact',()=>{fs.writeFileSync(path.join(tmp,'site-config.json'),JSON.stringify({supportEmail:'qa@example.test',supportEmailConfirmed:false}));assert.throws(()=>execFileSync(process.execPath,['build.mjs'],{cwd:tmp,stdio:'pipe'}),/confirmed, monitored support mailbox/);});
+test('hosting handler returns actual routes, plain text, canonical redirect and safe method handling',async()=>{for(const p of ['/','/privacy','/support','/delete-account','/app-ads.txt'])assert.equal((await worker.fetch(new Request('https://sikhotrading.in'+p))).status,200);const txt=await worker.fetch(new Request('https://sikhotrading.in/app-ads.txt'));assert.equal(txt.headers.get('content-type'),'text/plain; charset=utf-8');assert.equal(await txt.text(),'google.com, pub-3649125435732222, DIRECT, f08c47fec0942fa0\n');const www=await worker.fetch(new Request('https://www.sikhotrading.in/?ref=test'));assert.equal(www.status,301);assert.equal(www.headers.get('location'),'https://sikhotrading.in/?ref=test');assert.equal((await worker.fetch(new Request('https://sikhotrading.in/unknown'))).status,404);assert.equal((await worker.fetch(new Request('https://sikhotrading.in/support',{method:'POST'}))).status,405);assert.equal(await(await worker.fetch(new Request('https://sikhotrading.in/app-ads.txt',{method:'HEAD'}))).text(),'');});

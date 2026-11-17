@@ -1,6 +1,6 @@
 # Sikho Trading developer website
 
-Buildless static HTML/CSS/JS output generated with Node. No app/backend/Android/database changes. The approved app icon is copied byte-for-byte from the shipped WebView assets. No stock imagery, third-party font requests, analytics or invented app-store link.
+Static HTML/CSS/JS output generated with Node and served by a tiny Cloudflare Worker hosting adapter for exact routes, MIME/security headers and the canonical www redirect. No app/backend/Android/database changes. The approved app icon is copied byte-for-byte from the shipped WebView assets. No stock imagery, third-party font requests, analytics or invented app-store link.
 
 `node --test website.test.mjs` checks publisher bytes, paths, contact/ownership flow and security/redirect declarations with an isolated `.test` mailbox. It does not send email or connect to a database.
 
