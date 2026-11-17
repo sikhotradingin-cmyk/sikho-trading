@@ -1,0 +1,70 @@
+{
+  "observedOn": "2026-11-18 Asia/Kolkata",
+  "source": "Sites hosting dashboard list_custom_domains",
+  "ttl": "Hosting response does not prescribe TTL. Use GoDaddy default 1 hour (3600 seconds).",
+  "items": [
+    {
+      "id": "appgdom_6afc9e637ba08191aeaddb23b45e477a",
+      "project_id": "appgprj_6afc9b94f4188191ac8cb98148dfbbef",
+      "hostname": "sikhotrading.in",
+      "worker_name": "release---6afc9e34790c81918a6094c4a871ee1a",
+      "status": "pending",
+      "provider_status": "pending",
+      "ssl_status": "pending_validation",
+      "cname_target": "custom-domains.chatgpt.site.",
+      "apex_proxy_ipv4_targets": [
+        "162.159.143.30",
+        "172.66.3.26"
+      ],
+      "validation_records": [
+        {
+          "record_type": "TXT",
+          "name": "_openai-site-verification.sikhotrading.in",
+          "value": "openai-site-verification=EvsIAs1iFMeD_PezPBPUMvETHeSWt4xgcYHbjIkiNJg"
+        },
+        {
+          "record_type": null,
+          "name": null,
+          "value": null
+        },
+        {
+          "record_type": "TXT",
+          "name": "_cf-custom-hostname.sikhotrading.in",
+          "value": "e90a3b8c-b1b9-478c-952f-4af9b9c5358b"
+        }
+      ],
+      "last_error": null,
+      "created_at": "2026-11-17T18:35:15.483402+00:00",
+      "updated_at": "2026-11-17T18:40:22.520949+00:00"
+    },
+    {
+      "id": "appgdom_6afc9e6c19b48191839904da02fbc0fc",
+      "project_id": "appgprj_6afc9b94f4188191ac8cb98148dfbbef",
+      "hostname": "www.sikhotrading.in",
+      "worker_name": "release---6afc9e34790c81918a6094c4a871ee1a",
+      "status": "pending",
+      "provider_status": "pending",
+      "ssl_status": "initializing",
+      "cname_target": "custom-domains.chatgpt.site.",
+      "apex_proxy_ipv4_targets": [
+        "162.159.143.30",
+        "172.66.3.26"
+      ],
+      "validation_records": [
+        {
+          "record_type": "TXT",
+          "name": "_openai-site-verification.www.sikhotrading.in",
+          "value": "openai-site-verification=J44zgjCtCB5V-07EJwGDybjHw9NlWR9DIUkgq61R2iw"
+        },
+        {
+          "record_type": "TXT",
+          "name": "_cf-custom-hostname.www.sikhotrading.in",
+          "value": "2ccf4ec0-1505-4df9-a1c5-cb22590205f8"
+        }
+      ],
+      "last_error": null,
+      "created_at": "2026-11-17T18:35:24.100718+00:00",
+      "updated_at": "2026-11-17T18:35:28.148292+00:00"
+    }
+  ]
+}
