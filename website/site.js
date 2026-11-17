@@ -1,0 +1,5 @@
+(() => {
+  const label=document.getElementById('offer-label'),note=document.getElementById('offer-note');
+  async function refresh(){try{const r=await fetch('https://sikho-trading-api.onrender.com/api/v1/access',{credentials:'omit',cache:'no-store',signal:AbortSignal.timeout(6000)});if(!r.ok)return;const {access}=await r.json();if(access?.accessMode==='FREE_LAUNCH'){label.textContent='Free Launch — all supported features unlocked';note.textContent='Introductory access supported by ads. Genuine ad-free memberships remain ad-free. The owner controls when this offer ends.';}else if(access?.accessMode==='STANDARD'){label.textContent='Paper trading with Free and Premium access';note.textContent='The introductory Free Launch offer has ended. Current account entitlements and available plans are shown in the app.';}}catch{note.textContent='Free Launch was available when this page was published. We could not check its current status; confirm access in the app. Ad availability and consent vary.';}}
+  refresh();setInterval(()=>{if(document.visibilityState==='visible')refresh();},30000);
+})();

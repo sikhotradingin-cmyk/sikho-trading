@@ -1,0 +1,1 @@
+{"name":"sikho-trading-developer-website","private":true,"type":"module","scripts":{"build":"node build.mjs","test":"node --test website.test.mjs"}}
