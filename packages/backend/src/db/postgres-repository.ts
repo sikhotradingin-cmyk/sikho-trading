@@ -1,3 +1,4 @@
+import { recordExecutionHistory } from '../history.js';
 import {
   LedgerEntry,
   Money,
@@ -47,7 +48,9 @@ export function verifySecretPBKDF2(secret: string, storedHash?: string | null): 
 }
 
 export class PostgresRepository {
+  public onMutation?: (accountId: string) => void;
   constructor(private db: IDatabase) {}
+
 
   public async syncInstruments(instruments: any[]): Promise<void> {
     const now = Date.now();
@@ -720,7 +723,8 @@ export class PostgresRepository {
   }
 
   public async saveOrder(order: SimulatedOrder): Promise<void> {
-    await this.db.query(
+    await this.db.transaction(async client=>{
+    await client.query(
       `INSERT INTO orders 
        (id, account_id, global_instrument_id, side, order_type, product_type, quantity, requested_price, trigger_price, executed_price, status, idempotency_key, rejection_reason, oco_companion_order_id, position_id, estimated_charges_paise, executed_at, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
@@ -746,10 +750,14 @@ export class PostgresRepository {
         order.updatedAt,
       ]
     );
+    await recordExecutionHistory(client,order,(order as any).historySnapshot);
+    });
+    this.onMutation?.(order.accountId);
   }
 
   public async updateOrder(order: SimulatedOrder): Promise<void> {
-    await this.db.query(
+    await this.db.transaction(async client=>{
+    await client.query(
       `UPDATE orders 
        SET status = $1, executed_price = $2, rejection_reason = $3, executed_at = $4, updated_at = $5
        WHERE id = $6`,
@@ -762,6 +770,9 @@ export class PostgresRepository {
         order.id,
       ]
     );
+    await recordExecutionHistory(client,order,(order as any).historySnapshot);
+    });
+    this.onMutation?.(order.accountId);
   }
 
   public async saveOrUpdatePosition(position: SimulatedPosition): Promise<void> {
@@ -809,14 +820,20 @@ export class PostgresRepository {
         ]
       );
     }
+    this.onMutation?.(position.accountId);
   }
 
-  public async getOrders(accountId: string): Promise<SimulatedOrder[]> {
+  public async getOrders(accountId: string, limit?: number): Promise<SimulatedOrder[]> {
     const res = await this.db.query(
-      'SELECT * FROM orders WHERE account_id = $1 ORDER BY created_at DESC',
+      'SELECT * FROM orders WHERE account_id = $1 ORDER BY created_at DESC'+(limit?' LIMIT '+Math.max(1,Math.min(1000,Math.floor(limit))):''),
       [accountId]
     );
     return res.rows.map(this.mapOrder);
+  }
+
+  public async getPendingExecutionContexts() {
+    const result=await this.db.query("SELECT o.*,c.payload_json FROM orders o JOIN order_execution_context c ON c.order_id=o.id WHERE o.status='PENDING'");
+    return result.rows.map(row=>({order:this.mapOrder(row),context:JSON.parse(row.payload_json)}));
   }
 
   public async getOrderByAccountAndIdempotency(

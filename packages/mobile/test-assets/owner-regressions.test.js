@@ -29,7 +29,7 @@ function chainHarness(fetch) {
   };
   const c = harness(['optionChainCanonicalUnderlying', 'optionChainFreeAllowed', 'ensureOptionChainState',
     'mergeOptionChainRows', 'loadOptionChain', 'loadMoreOptionStrikes'], {
-    OC_WINDOW_SIZE: 21, apiFetch: fetch, isProUser: () => false,
+    OC_WINDOW_SIZE: 21, apiFetch: fetch, isProUser: () => false, hasFullFeatureAccess: () => false,
     document: { getElementById: getNode }, requestAnimationFrame: (f) => f(),
     setOptionChainStatus() {}, ocRegisterContracts() {}, renderOptionChainHeader() {},
     renderOptionChainTable() {}, syncVisibleOptionChainSubscriptions() {},

@@ -133,6 +133,7 @@
         </div>
       </header>
 
+      <div id="launch-access-label" class="launch-label" hidden></div>
       <!-- Persistent Benchmark Index Strip -->
       <div id="benchmark-index-strip" class="index-strip-bar"></div>
 
@@ -217,6 +218,7 @@
           </div>
           <button class="btn-lime-primary" style="width:auto;min-height:36px;padding:0 14px;font-size:12.5px;" onclick="window.TZApp.openSearchModal()">+ Add Symbol</button>
         </div>
+        <button class="link-btn" style="min-height:44px;margin:0 16px;" onclick="TZApp.clearCurrentWatchlist()">Clear watchlist…</button>
         <div id="watchlist-items-container"></div>
       </main>
 
@@ -272,6 +274,8 @@
         </div>
         <div id="orders-list-container"></div>
       </main>
+
+      <main id="tab-history" class="white-content-scroll" style="display:none;"></main>
 
       <!-- TAB 5: PROFILE & PRACTICE PERFORMANCE (Light-First Design) -->
       <main id="tab-profile" class="white-content-scroll" style="display:none;background:#F8FAFC;">
@@ -443,6 +447,7 @@
           </svg>
           <span>Orders</span>
         </button>
+<button id="nav-btn-history" class="nav-tab-btn" onclick="window.TZApp.switchMainTab('history')"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 5h16v16H4zM8 2v6m8-6v6M8 12h8m-8 4h5"/></svg><span>History</span></button>
         <button id="nav-btn-profile" class="nav-tab-btn" onclick="window.TZApp.switchMainTab('profile')">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
@@ -525,6 +530,7 @@
 
       <!-- Main Chart Canvas + Touch-Arbitrated Vector Drawing Layer -->
       <div class="chart-stage-wrap">
+        <div id="chart-indicator-label" class="chart-indicator-label">Indicators off · dashed line: last price · drawings: user saved</div>
         <div id="chart-ohlc-legend" class="ohlc-floating-legend">O — H — L — C —</div>
         <div id="tv-main-chart"></div>
         <svg id="drawing-svg-layer"></svg>
@@ -534,7 +540,7 @@
       </div>
 
       <!-- Range Preset Strip (Separated from Timeframe Interval) -->
-      <div class="range-footer-strip">
+      <div class="range-footer-strip"><button class="tf-pill" onclick="TZApp.openChartDateNavigation()">Go to date/time</button>
         <div style="display:flex;gap:4px;overflow-x:auto;">
           <button class="tf-pill" data-range="1D" onclick="window.TZApp.selectRangePreset('1D')">1D</button>
           <button class="tf-pill" data-range="5D" onclick="window.TZApp.selectRangePreset('5D')">5D</button>
@@ -1061,7 +1067,7 @@
         </div>
 
         <div style="margin:14px 0;padding:12px;border-radius:12px;background:#F8FAFC;border:1px solid #E2E8F0;font-size:12px;color:#64748B;line-height:1.45;">
-          ℹ️ <strong>Atomic Reset:</strong> All pending orders and open margins are wiped. Previous session performance is archived to your immutable ledger.
+          Start a new practice session after closing positions and cancelling pending orders. Existing orders, settlements and lifetime history are preserved.
         </div>
 
         <button id="btn-confirm-capital-reset" class="btn-lime-primary" onclick="window.TZApp.executeCapitalReset()">
@@ -1105,6 +1111,7 @@
   <script src="instrument-identity.js"></script>
   <script src="free-access.js"></script>
   <script src="ux.js"></script>
+  <script src="history.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

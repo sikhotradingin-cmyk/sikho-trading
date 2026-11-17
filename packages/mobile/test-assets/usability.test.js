@@ -46,3 +46,8 @@ test('an old account 401 cannot clear the newly switched account session', async
   let resolve;const c=apiHarness(()=>new Promise(r=>resolve=r));const pending=c.apiFetch('/api/v1/account');c.state.token='new-session';resolve({status:401,ok:false,json:async()=>({error:'expired'})});
   await assert.rejects(pending);assert.equal(c.signedOut,undefined);assert.equal(c.state.token,'new-session');
 });
+
+test('successful old-account responses cannot populate a new account watchlist',async()=>{
+  let resolve;const c=apiHarness(()=>new Promise(r=>resolve=r));const pending=c.apiFetch('/api/v1/watchlists');c.state.token='other-account';resolve({status:200,ok:true,json:async()=>({watchlists:[{name:'Private old list'}]})});
+  await assert.rejects(pending,{name:'AbortError'});assert.equal(c.state.token,'other-account');assert.equal(c.signedOut,undefined);
+});

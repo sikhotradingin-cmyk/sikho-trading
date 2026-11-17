@@ -65,6 +65,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private lateinit var bannerContainer: FrameLayout
+    private lateinit var appRoot: FrameLayout
     private lateinit var adMobManager: AdMobManager
     private lateinit var credentialManager: CredentialManager
     private val googleSignInInFlight = AtomicBoolean(false)
@@ -602,6 +603,12 @@ class MainActivity : AppCompatActivity() {
         }
 
         @JavascriptInterface
+        fun configureAppOpenUnit(unitId:String){
+            if(!verifyCallerIsTrusted())return
+            runOnUiThread{if(::adMobManager.isInitialized)adMobManager.configureAppOpenUnit(unitId)}
+        }
+
+        @JavascriptInterface
         fun getAdDiagnostics(): String {
             if (!verifyCallerIsTrusted()) return "{}"
             return if (::adMobManager.isInitialized) {
@@ -618,6 +625,7 @@ class MainActivity : AppCompatActivity() {
                 try {
                     val parsedColor = Color.parseColor(colorHex)
                     window.decorView.setBackgroundColor(parsedColor)
+                    if(::appRoot.isInitialized)appRoot.setBackgroundColor(parsedColor)
                     val insetsController = WindowCompat.getInsetsController(window, window.decorView)
                     insetsController.isAppearanceLightStatusBars = isLight
                     insetsController.isAppearanceLightNavigationBars = isLight
@@ -895,6 +903,7 @@ class MainActivity : AppCompatActivity() {
             }
             visibility = View.GONE
         }
+        appRoot=rootLayout
         rootLayout.addView(bannerContainer)
 
         adMobManager = AdMobManager(this, bannerContainer) { isVisible, heightDp ->
@@ -957,11 +966,25 @@ class MainActivity : AppCompatActivity() {
         webView.loadUrl("file:///android_asset/www/index.html")
     }
 
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if(::adMobManager.isInitialized && !googleSignInInFlight.get())adMobManager.noteUserLeaving()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean){
+        super.onWindowFocusChanged(hasFocus)
+        if(hasFocus && ::adMobManager.isInitialized)adMobManager.onForegroundWindowReady()
+    }
+    override fun onUserInteraction(){
+        super.onUserInteraction()
+        if(::adMobManager.isInitialized)adMobManager.cancelForegroundOpportunity()
+    }
+
     override fun onResume() {
         super.onResume()
         if (googleSignInInFlight.get()) recordGoogleStage(activeGoogleRequestKey, "ACTIVITY_RESUME", "request_preserved")
         if (::adMobManager.isInitialized) {
-            adMobManager.onResume()
+            adMobManager.onResume(googleSignInInFlight.get())
         }
     }
 

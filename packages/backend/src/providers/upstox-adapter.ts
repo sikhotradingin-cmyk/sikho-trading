@@ -1344,7 +1344,7 @@ export class UpstoxAdapter implements IMarketDataProvider {
     const mergedMap = new Map<number, Candle>();
 
     // Fetch today's intraday candles if loading latest window on an intraday timeframe
-    if (!opts.before && timeframe !== '1D') {
+    if (!opts.before && !opts.to && !opts.from && timeframe !== '1D') {
       try {
         const intra = await this.fetchUpstoxIntraday(upstoxKey, unit, interval);
         for (const c of intra.candles) {
@@ -1411,7 +1411,7 @@ export class UpstoxAdapter implements IMarketDataProvider {
         }
       }
 
-      if (!opts.before) {
+      if (!opts.before && !opts.to && !opts.from) {
         const existingQuote = this.quotes.get(inst.globalId);
         const latestTimeMs = latestBar.time * 1000;
         if (!existingQuote || latestTimeMs >= existingQuote.providerTimestamp) {
@@ -1425,7 +1425,7 @@ export class UpstoxAdapter implements IMarketDataProvider {
             open: existingQuote?.open ?? latestBar.open,
             high: existingQuote ? Math.max(existingQuote.high, latestBar.high) : latestBar.high,
             low: existingQuote ? Math.min(existingQuote.low, latestBar.low) : latestBar.low,
-            close: prevSessionClose ?? existingQuote?.close ?? latestBar.open,
+            close: prevSessionClose ?? existingQuote?.close ?? 0,
             volume: latestBar.volume,
             providerTimestamp: latestTimeMs,
             receiveTimestamp: Date.now(),
@@ -1485,7 +1485,7 @@ export class UpstoxAdapter implements IMarketDataProvider {
               open: Number(ohlc.open || ltp),
               high: Number(ohlc.high || ltp),
               low: Number(ohlc.low || ltp),
-              close: Number(ohlc.close || ltp),
+              close: Number(ohlc.close || 0),
               bidPrice: depthBuy?.price ? Number(depthBuy.price) : Number((ltp - inst.tickSize).toFixed(2)),
               bidQty: depthBuy?.quantity ? Number(depthBuy.quantity) : undefined,
               askPrice: depthSell?.price ? Number(depthSell.price) : Number((ltp + inst.tickSize).toFixed(2)),
@@ -1687,7 +1687,7 @@ export class UpstoxAdapter implements IMarketDataProvider {
         open: t.open ?? prev?.open ?? t.ltp,
         high: t.high ?? Math.max(prev?.high ?? t.ltp, t.ltp),
         low: t.low ?? Math.min(prev?.low ?? t.ltp, t.ltp),
-        close: t.cp > 0 ? t.cp : prev?.close ?? t.ltp,
+        close: t.cp > 0 ? t.cp : prev?.close ?? 0,
         bidPrice: t.bidPrice ?? prev?.bidPrice ?? Number((t.ltp - inst.tickSize).toFixed(2)),
         bidQty: t.bidQty ?? prev?.bidQty,
         askPrice: t.askPrice ?? prev?.askPrice ?? Number((t.ltp + inst.tickSize).toFixed(2)),
@@ -1770,7 +1770,7 @@ export class UpstoxAdapter implements IMarketDataProvider {
     this.getQuote(key)
       .then((snap) => {
         if (snap && this.listeners.get(key)?.has(listener)) {
-          listener(snap);
+          listener(Object.assign({},snap,{isSnapshot:true}));
         }
       })
       .catch(() => {});

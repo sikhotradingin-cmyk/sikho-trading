@@ -9,6 +9,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import com.google.android.gms.ads.appopen.AppOpenAd
 import com.google.android.gms.ads.AdListener
 import com.google.android.gms.ads.AdRequest
 import com.google.android.gms.ads.AdSize
@@ -65,7 +66,7 @@ class AdMobManager(
         private val BANNER_RETRY_DELAYS_MS = longArrayOf(15000L, 30000L, 60000L)
         private val INTERSTITIAL_RETRY_DELAYS_MS = longArrayOf(15000L, 30000L, 60000L)
 
-        private val ALLOWED_BANNER_SCREENS = setOf("explore", "watchlists", "portfolio", "orders", "profile")
+        private val ALLOWED_BANNER_SCREENS = setOf("explore", "watchlists", "portfolio", "orders", "history", "profile")
     }
 
     private val isMobileAdsInitialized = AtomicBoolean(false)
@@ -134,7 +135,28 @@ class AdMobManager(
     private var lastInterstitialShownAt: Long = 0L
     private var interstitialShownCount = 0
 
+    private var appOpenAd: AppOpenAd? = null
+    private var appOpenUnitId = BuildConfig.APP_OPEN_AD_UNIT_ID
+    private var appOpenUnitGeneration = 0L
+    private var appOpenLoading = false
+    private var appOpenLoadedAt = 0L
+    private var appOpenRequests = 0
+    private var appOpenImpressions = 0
+    private var appOpenDisplays = 0
+    private var appOpenDismissals = 0
+    private var appOpenError: String? = null
+    private var appOpenResponseId: String? = null
+    private var appOpenBlock = "INITIAL_USE_OR_NOT_READY"
+    private var appOpenRetry = 0
+    private var appOpenNextRetry = 0L
+    private var fullscreenShowing = false
+    private var userLeftAt = 0L
+    private var userLeftSafely = false
+    private var foregroundOpportunityUntil = 0L
+    private var foregroundAuthentication = false
+    private var sessionStatsRestored = false
     private var consentUpdateInFlight = false
+    private var consentAttempts = 0
     private var entitlementGeneration = 0L
     private var bannerImpressionCount = 0
 
@@ -144,7 +166,10 @@ class AdMobManager(
 
     fun initializeUmpConsent() {
         if (currentUserTier != "FREE" || consentUpdateInFlight) return
+        if(consentCallbackAt>0L && consentRequestError==null && consentFormError==null && consentInformation.canRequestAds())return
+        if(consentAttempts>=4){lastPreloadBlockedReason="UMP_RETRY_EXHAUSTED";return}
         if (consentRequestStartedAt > 0L && System.currentTimeMillis() - consentRequestStartedAt < 60000L) return
+        consentAttempts++
         consentUpdateInFlight = true
         val consentGeneration = entitlementGeneration
         consentRequestStartedAt = System.currentTimeMillis()
@@ -235,6 +260,7 @@ class AdMobManager(
             if (currentUserTier == "FREE" && canRequestAdsSnapshot) initMobileAdsSdk()
             updateBannerVisibility()
             preloadInterstitialIfEligible()
+            preloadAppOpen()
         }
     }
 
@@ -295,6 +321,7 @@ class AdMobManager(
     // =============================================================================
 
     fun updateUserTier(tier: String, userId: String) {
+        restoreFullscreenSession()
         val cleanTier = tier.uppercase().trim().ifEmpty { "UNKNOWN" }
         val cleanUserId = userId.trim()
         val accountChanged = cleanUserId != currentUserId
@@ -316,12 +343,15 @@ class AdMobManager(
 
         activity.runOnUiThread {
             if (accountChanged) {
+                consentAttempts=0
                 consentUpdateInFlight = false
                 consentRequestStartedAt = 0L
                 retryHandler.removeCallbacksAndMessages(null)
                 destroyBanner()
                 interstitialAd = null
                 isInterstitialLoading = false
+                appOpenAd = null
+                appOpenLoading = false
             }
             when (currentUserTier) {
                 "PRO", "UNKNOWN" -> {
@@ -331,6 +361,8 @@ class AdMobManager(
                     destroyBanner()
                     interstitialAd = null
                     isInterstitialLoading = false
+                    appOpenAd = null
+                    appOpenLoading = false
                     bannerContainer.visibility = View.GONE
                     onBannerHeightChange(false, 0)
                     lastEligibilityCheckReason =
@@ -521,6 +553,9 @@ class AdMobManager(
             return
         }
         eligibleActionCounter++
+        val onboarding=prefs.getInt("completed_browsing",0)+1
+        prefs.edit().putInt("completed_browsing",onboarding.coerceAtMost(3)).apply()
+        preloadAppOpen()
         recentEligibleActions.add(actionName)
         if (recentEligibleActions.size > 12) recentEligibleActions.removeAt(0)
         Log.i(TAG, "Recorded completed action: $actionName (${eligibleActionCounter}/$ACTIONS_REQUIRED_FOR_INTERSTITIAL)")
@@ -575,12 +610,14 @@ class AdMobManager(
                     Log.i(TAG, "Interstitial preloaded successfully.")
                     ad.fullScreenContentCallback = object : FullScreenContentCallback() {
                         override fun onAdDismissedFullScreenContent() {
+                            fullscreenShowing=false
                             Log.i(TAG, "Interstitial dismissed by user.")
                             interstitialAd = null
                             preloadInterstitialIfEligible()
                         }
 
                         override fun onAdFailedToShowFullScreenContent(adError: com.google.android.gms.ads.AdError) {
+                            fullscreenShowing=false
                             Log.w(TAG, "Interstitial failed to show: ${adError.message}")
                             interstitialAd = null
                             preloadInterstitialIfEligible()
@@ -618,6 +655,7 @@ class AdMobManager(
 
     private fun checkAndTriggerInterstitial(triggerReason: String) {
         val now = System.currentTimeMillis()
+        if(fullscreenShowing || now-prefs.getLong("last_fullscreen_impression",0L)<MIN_FOREGROUND_MS){lastEligibilityCheckReason="REASON_SHARED_FULLSCREEN_COOLDOWN";return}
         if (currentUserTier == "PRO") {
             lastEligibilityCheckReason = "REASON_PRO_TIER"; return
         }
@@ -671,6 +709,7 @@ class AdMobManager(
             return
         }
         interstitialAd = null
+        fullscreenShowing = true
         eligibleActionCounter = 0
         recentEligibleActions.clear()
         lastEligibilityCheckReason = "REASON_ELIGIBLE"
@@ -682,12 +721,12 @@ class AdMobManager(
         }
     }
 
-    private fun recordInterstitialImpression() {
+    private fun recordInterstitialImpression(isAppOpen: Boolean = false) {
         val now = System.currentTimeMillis()
         lastInterstitialTime = now
         foregroundAtLastImpressionMs = currentForegroundMs()
         sessionInterstitialCount++
-        interstitialShownCount++
+        if(!isAppOpen)interstitialShownCount++
         val timestamps = getValid24hTimestamps()
         timestamps.add(now)
         save24hTimestamps(timestamps)
@@ -723,7 +762,7 @@ class AdMobManager(
     private fun save24hTimestamps(timestamps: List<Long>) {
         val arr = JSONArray()
         timestamps.forEach { arr.put(it) }
-        prefs.edit().putString(KEY_24H_IMPRESSIONS, arr.toString()).apply()
+        prefs.edit().putString(KEY_24H_IMPRESSIONS, arr.toString()).putLong("last_fullscreen_impression",System.currentTimeMillis()).putInt("fullscreen_session_count",sessionInterstitialCount).putLong("fullscreen_session_touch",System.currentTimeMillis()).commit()
     }
 
     // =============================================================================
@@ -743,6 +782,16 @@ class AdMobManager(
     fun getAdDiagnostics(): JSONObject {
         val now = System.currentTimeMillis()
         return JSONObject().apply {
+            put("appOpenUnit",appOpenUnitId)
+            put("appOpenRequests",appOpenRequests)
+            put("appOpenLoaded",appOpenAd!=null)
+            put("appOpenDisplays",appOpenDisplays)
+            put("appOpenImpressions",appOpenImpressions)
+            put("appOpenDismissals",appOpenDismissals)
+            put("appOpenError",appOpenError)
+            put("appOpenResponseId",appOpenResponseId)
+            put("appOpenBlockedReason",appOpenBlock)
+            put("sharedLastImpression",prefs.getLong("last_fullscreen_impression",0L))
             put("tier", currentUserTier)
             put("userId", currentUserId)
             put("isDebugBuild", BuildConfig.DEBUG)
@@ -807,13 +856,100 @@ class AdMobManager(
     // Lifecycle
     // =============================================================================
 
-    fun onResume() {
+    private fun restoreFullscreenSession(){
+        if(sessionStatsRestored)return
+        sessionStatsRestored=true
+        val now=System.currentTimeMillis()
+        if(now-prefs.getLong("fullscreen_session_touch",0L)<30*60*1000L)sessionInterstitialCount=prefs.getInt("fullscreen_session_count",0)
+        prefs.edit().putLong("fullscreen_session_touch",now).putInt("fullscreen_session_count",sessionInterstitialCount).apply()
+    }
+    fun noteUserLeaving(){
+        userLeftAt=android.os.SystemClock.elapsedRealtime()
+        userLeftSafely=!fullscreenShowing && currentUserTier=="FREE" && currentScreen in setOf("explore","watchlists","profile") && !isTradingWorkspaceOpen && !hasOpenPositions && !hasPendingOrders && !consentUpdateInFlight
+    }
+    fun configureAppOpenUnit(value:String){
+        if(BuildConfig.DEBUG)return // Debug always uses Google's official App Open test format.
+        val unit=value.trim()
+        if(unit.isNotEmpty() && (!Regex("^ca-app-pub-[0-9]+/[0-9]+$").matches(unit) || unit.substringBefore('/')!=manifestAdMobAppId().substringBefore('~') || unit==BuildConfig.BANNER_AD_UNIT_ID || unit==BuildConfig.INTERSTITIAL_AD_UNIT_ID)){
+            appOpenError="INVALID_APP_OPEN_CONFIGURATION";return
+        }
+        if(unit==appOpenUnitId)return
+        appOpenUnitGeneration++;appOpenUnitId=unit;appOpenAd=null;appOpenLoading=false;appOpenRetry=0;appOpenNextRetry=0L
+        preloadAppOpen()
+    }
+    private fun preloadAppOpen(){
+        if(currentUserTier!="FREE" || !canShowAdsNow() || appOpenLoading || appOpenAd!=null)return
+        if(appOpenUnitId.isBlank()){appOpenBlock="PRODUCTION_APP_OPEN_UNIT_NOT_CONFIGURED";return}
+        if(prefs.getInt("completed_browsing",0)<3){appOpenBlock="INITIAL_USE_ONBOARDING";return}
+        if(System.currentTimeMillis()<appOpenNextRetry || appOpenRetry>3 || foregroundStartedAt==0L)return
+        if(sessionInterstitialCount>=MAX_INTERSTITIALS_PER_SESSION || getRecent24hImpressionsCount()>=MAX_INTERSTITIALS_PER_24H)return
+        appOpenLoading=true;appOpenRequests++
+        val generation=entitlementGeneration
+        val unitGeneration=appOpenUnitGeneration
+        Log.i(TAG,"AppOpen load request unit="+appOpenUnitId)
+        AppOpenAd.load(activity,appOpenUnitId,AdRequest.Builder().build(),object:AppOpenAd.AppOpenAdLoadCallback(){
+            override fun onAdLoaded(ad:AppOpenAd){
+                if(generation!=entitlementGeneration || unitGeneration!=appOpenUnitGeneration || currentUserTier!="FREE")return
+                appOpenLoading=false;appOpenAd=ad;appOpenLoadedAt=System.currentTimeMillis();appOpenRetry=0;appOpenError=null;appOpenResponseId=ad.responseInfo?.responseId
+                Log.i(TAG,"AppOpen loaded responseId="+appOpenResponseId)
+                // Never show from a late load callback. Only a future eligible foreground may show.
+            }
+            override fun onAdFailedToLoad(error:LoadAdError){
+                if(generation!=entitlementGeneration || unitGeneration!=appOpenUnitGeneration)return
+                appOpenLoading=false;appOpenError="code="+error.code+" domain="+error.domain+" message="+error.message+" responseId="+error.responseInfo?.responseId
+                Log.w(TAG,"AppOpen load failed "+appOpenError)
+                if(appOpenRetry<3){val delay=longArrayOf(15000L,30000L,60000L)[appOpenRetry++];appOpenNextRetry=System.currentTimeMillis()+delay;retryHandler.postDelayed({preloadAppOpen()},delay)}else appOpenRetry++
+            }
+        })
+    }
+    private fun tryShowAppOpen(externalAuthentication:Boolean){
+        val left=userLeftAt;val safe=userLeftSafely;userLeftAt=0L;userLeftSafely=false
+        val now=System.currentTimeMillis()
+        val blocked=when{
+            externalAuthentication -> "AUTHENTICATION_RETURN"
+            left==0L || android.os.SystemClock.elapsedRealtime()-left<30000L -> "NOT_A_NEW_FOREGROUND_VISIT"
+            !safe || currentUserTier!="FREE" || isTradingWorkspaceOpen || hasOpenPositions || hasPendingOrders -> "UNSAFE_OR_AD_FREE"
+            activity.isFinishing || activity.isDestroyed || !activity.hasWindowFocus() -> "ACTIVITY_NOT_READY"
+            (activity.getSystemService(Context.KEYGUARD_SERVICE) as android.app.KeyguardManager).isKeyguardLocked -> "DEVICE_LOCKED"
+            fullscreenShowing || now-prefs.getLong("last_fullscreen_impression",0L)<MIN_FOREGROUND_MS -> "SHARED_FULLSCREEN_COOLDOWN"
+            sessionInterstitialCount>=MAX_INTERSTITIALS_PER_SESSION || getRecent24hImpressionsCount()>=MAX_INTERSTITIALS_PER_24H -> "SHARED_FULLSCREEN_CAP"
+            !canShowAdsNow() -> "CONSENT_OR_SDK_NOT_READY"
+            appOpenAd==null -> "NOT_LOADED_SKIP"
+            now-appOpenLoadedAt>=4*60*60*1000L -> "EXPIRED_SKIP"
+            else -> "ELIGIBLE"
+        }
+        appOpenBlock=blocked;Log.i(TAG,"AppOpen foreground "+blocked)
+        if(blocked!="ELIGIBLE"){if(blocked=="EXPIRED_SKIP")appOpenAd=null;preloadAppOpen();return}
+        val ad=appOpenAd ?: return;appOpenAd=null;fullscreenShowing=true
+        ad.fullScreenContentCallback=object:FullScreenContentCallback(){
+            override fun onAdShowedFullScreenContent(){appOpenDisplays++;Log.i(TAG,"AppOpen displayed")}
+            override fun onAdImpression(){appOpenImpressions++;recordInterstitialImpression(true);Log.i(TAG,"AppOpen impression responseId="+appOpenResponseId)}
+            override fun onAdDismissedFullScreenContent(){fullscreenShowing=false;appOpenDismissals++;Log.i(TAG,"AppOpen dismissed");preloadAppOpen()}
+            override fun onAdFailedToShowFullScreenContent(error:com.google.android.gms.ads.AdError){fullscreenShowing=false;appOpenError="display code="+error.code+" domain="+error.domain+" message="+error.message;Log.w(TAG,"AppOpen "+appOpenError);preloadAppOpen()}
+        }
+        // The SDK shows immediately from the foreground transition; no artificial loading delay.
+        ad.show(activity)
+    }
+
+    fun onResume(externalAuthentication: Boolean = false) {
         if (foregroundStartedAt == 0L) foregroundStartedAt = android.os.SystemClock.elapsedRealtime()
+        foregroundAuthentication=externalAuthentication
+        foregroundOpportunityUntil=if(userLeftAt>0L)android.os.SystemClock.elapsedRealtime()+2000L else 0L
+        if(activity.hasWindowFocus())onForegroundWindowReady()
         bannerAdView?.resume()
         updateBannerVisibility()
     }
 
+    fun onForegroundWindowReady(){
+        if(foregroundOpportunityUntil==0L)return
+        val timely=android.os.SystemClock.elapsedRealtime()<=foregroundOpportunityUntil
+        foregroundOpportunityUntil=0L
+        if(timely)tryShowAppOpen(foregroundAuthentication)else{userLeftAt=0L;userLeftSafely=false;appOpenBlock="FOREGROUND_WINDOW_PASSED_SKIP"}
+    }
+    fun cancelForegroundOpportunity(){foregroundOpportunityUntil=0L;userLeftAt=0L;userLeftSafely=false}
+
     fun onPause() {
+        if(sessionStatsRestored)prefs.edit().putLong("fullscreen_session_touch",System.currentTimeMillis()).putInt("fullscreen_session_count",sessionInterstitialCount).apply()
         if (foregroundStartedAt > 0) {
             foregroundAccumulatedMs += android.os.SystemClock.elapsedRealtime() - foregroundStartedAt
             foregroundStartedAt = 0L
@@ -825,5 +961,6 @@ class AdMobManager(
         retryHandler.removeCallbacksAndMessages(null)
         destroyBanner()
         interstitialAd = null
+        appOpenAd=null
     }
 }

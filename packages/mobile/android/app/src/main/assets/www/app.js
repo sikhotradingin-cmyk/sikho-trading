@@ -38,6 +38,7 @@
     account: null,
     subscription: null,
     entitlementResolved: false,
+    access: null,
     isGoogleSignInPending: false,
     googleTrace: [],
     mainTab: 'explore',
@@ -90,7 +91,7 @@
 
     // Indicators & Drawings
     indicators: {
-      sma20: true,
+      sma20: false,
       ema50: false,
       bb20: false,
       vwap: false,
@@ -193,12 +194,20 @@
   }
 
   function calcChange(quote) {
-    if (!quote || !quote.ltp) return { diff: 0, pct: 0, sign: '' };
-    const base = quote.close && quote.close > 0 ? quote.close : quote.open || quote.ltp;
+    if (!quote || !quote.ltp) return {diff:null,pct:null,sign:'',available:false};
+    const base = Number(quote.close);
+    if(!(base>0))return {diff:null,pct:null,sign:'',available:false};
     const diff = quote.ltp - base;
     const pct = base > 0 ? (diff / base) * 100 : 0;
     const sign = diff > 0 ? '+' : '';
-    return { diff, pct, sign };
+    return { diff, pct, sign, available:true };
+  }
+
+  function formatChangePct(pct){
+    if(pct===null||!Number.isFinite(pct))return 'Unavailable';
+    if(pct===0)return '0.00%';
+    if(Math.abs(pct)<.01)return (pct>0?'+':'−')+'<0.01%';
+    return (pct>0?'+':'')+pct.toFixed(2)+'%';
   }
 
   function quoteTimestamp(q) {
@@ -272,6 +281,7 @@
     }
 
     const data = await res.json().catch(() => ({}));
+    if(state.token!==requestToken)throw new DOMException('Response belongs to a previous session','AbortError');
     if (res.status === 401 && state.token && state.token===requestToken && !path.startsWith('/api/v1/auth/')) {
       signOut('Your session has expired. Please sign in again.');
       throw new Error(data.error || 'Session expired');
@@ -351,8 +361,8 @@
     );
 
     const ordList = state.orders || [];
-    const hasPendingOrders = Boolean(
-      ordList.some((o) => o.status === 'PENDING' || o.status === 'TRIGGER_PENDING')
+    const hasPendingOrders = state.hasPendingOrders || Boolean(
+      ordList.some((o) => o.status === 'PENDING' || o.status === 'TRIGGER_PENDING' || o.status === 'TRIGGERED')
     );
 
     if (window.TradingzoneNative && typeof window.TradingzoneNative.updateScreenState === 'function') {
@@ -372,6 +382,8 @@
     }
   }
 
+  function hasFullFeatureAccess() { return Boolean(state.access?.fullFeatureAccess || isProUser()); }
+
   function isProUser() {
     return Boolean(
       state.entitlementResolved &&
@@ -381,7 +393,7 @@
   }
 
   function isGlobalIdRestrictedForFree(globalId) {
-    if (!globalId) return false;
+    if (!globalId || hasFullFeatureAccess()) return false;
     const access = window.TzFreeAccess;
     if (!access) return true; // fail closed if the access-matrix asset is missing
     return !access.isFreeTierAllowedGlobalId(globalId);
@@ -389,13 +401,14 @@
 
   function isInstrumentRestrictedForFree(inst) {
     if (!inst) return false;
-    if (isProUser()) return false;
+    if (hasFullFeatureAccess()) return false;
     const access = window.TzFreeAccess;
     if (!access) return true; // fail closed if the access-matrix asset is missing
     return !access.isFreeTierAllowedInstrument(inst);
   }
 
   function showSubscriptionUpgradePrompt(symbol) {
+    if(state.access?.accessMode==='FREE_LAUNCH')return;
     showBrandedAlert(
       'Premium Pro Required',
       `${symbol || 'This instrument'} is exclusive to Sikho Trading Premium. Upgrade now to unlock BSE SENSEX, Equities, and MCX Commodities.`
@@ -1062,6 +1075,9 @@
 
   function completeAuthenticatedSession(token, user, account, isFreshLogin, entitlement) {
     // Strip any legacy PIN/biometric flags and never trust cached client-side PRO tier until server verifies entitlement
+    state.previousAccessMode=account?.access?.accessMode || null;
+    state.access = null;
+    state.indicators={sma20:false,ema50:false,bb20:false,vwap:false,rsi14:false};
     const resolvedTier = (isFreshLogin && entitlement && entitlement.tier === 'PRO') ? 'PRO' : 'FREE';
     const cleanUser = Object.assign({}, user || {}, {
       tier: resolvedTier,
@@ -1087,6 +1103,8 @@
       state.entitlementResolved = true;
     } else {
       state.subscription = null;
+    state.access = null;
+    window.SikhoHistory?.clear();
       state.entitlementResolved = false;
     }
     enterMainWorkspace();
@@ -1099,10 +1117,14 @@
     state.account = null;
     state.subscription = null;
     state.entitlementResolved = false;
+    state.access=null;state.quotesMap=new Map();
+    window.SikhoHistory?.clear();
+    document.getElementById('modal-history-csv')?.remove();
     stopFeedHealthPolling();
     serverClockOffsetMs = 0;
     state.positionsData = { positions: [], holdings: [], activePositions: [], closedPositions: [] };
     state.orders = [];
+    state.hasPendingOrders=false;
     state.watchlists = [];
     state.performance = null;
     clearSessionSecure();
@@ -1123,7 +1145,34 @@
   // =========================================================================
   // 2. MAIN WORKSPACE INITIALIZATION & REAL-TIME WEBSOCKET
   // =========================================================================
+  let tradingReconcileTimer,accessPollTimer;
+  function scheduleTradingReconcile(){
+    clearTimeout(tradingReconcileTimer);tradingReconcileTimer=setTimeout(async()=>{if(!state.token)return;await refreshAccountAndPortfolio();if(state.mainTab==='history')window.SikhoHistory?.show(apiFetch);},180);
+  }
+  function applyAccessPolicy(policy){
+    if(!policy)return;
+    if(typeof policy.appOpenAdUnitId==='string')window.TradingzoneNative?.configureAppOpenUnit?.(policy.appOpenAdUnitId);
+    const previous=state.access?.accessMode||state.previousAccessMode;state.access=policy;state.previousAccessMode=policy.accessMode;
+    if(previous&&previous!==policy.accessMode){
+      if(policy.accessMode==='STANDARD'){
+        const exposure=(state.positionsData?.positions||[]).some(p=>p.globalInstrumentId===state.activeInstrument?.globalId&&p.quantity!==0);
+        if(state.chartOpen&&isInstrumentRestrictedForFree(state.activeInstrument)&&!exposure)closeChartWorkspace();
+        if(state.optionChain&&!optionChainFreeAllowed(state.optionChain.underlying))closeOptionChainModal();
+      }
+      state.quotesMap=new Map();window.SikhoUX.notify(policy.accessMode==='FREE_LAUNCH'?'Free Launch — all features unlocked':'Introductory access has ended. Existing positions can still be viewed and reduced.');
+      renderExploreStocksList();renderExploreFnoLists();renderCommoditiesList();renderWatchlistsTab();
+    }
+    const label=document.getElementById('launch-access-label');if(label){label.textContent=policy.label;label.hidden=policy.accessMode!=='FREE_LAUNCH';}
+  }
+  async function pollAccessPolicy(){if(!state.token)return;const token=state.token;try{const r=await apiFetch('/api/v1/access');if(token===state.token){applyAccessPolicy(r.access);if(r.entitlement){state.subscription=r.entitlement;state.entitlementResolved=true;if(state.user)state.user.tier=r.entitlement.tier;notifyNativeUserTier();}renderProfileStatsUI();}}catch{}}
+  async function clearCurrentWatchlist(){
+    const list=state.watchlists[0];if(!list)return;
+    if(!await new Promise(resolve=>showConfirmSheet('Clear watchlist','Remove all instruments from this watchlist? Positions and trading history are preserved.',resolve)))return;
+    await apiFetch('/api/v1/watchlists',{method:'POST',body:JSON.stringify({id:list.id,name:list.name,instruments:[]})});await loadWatchlists();
+  }
   async function enterMainWorkspace() {
+    clearInterval(accessPollTimer);accessPollTimer=setInterval(pollAccessPolicy,30000);
+    pollAccessPolicy();
     showTopScreen('screen-main');
     (window.requestIdleCallback||((fn)=>setTimeout(fn,150)))(()=>ensureChartLibrary().catch(()=>{}));
     notifyNativeUserTier();
@@ -1209,12 +1258,14 @@
       if(state.token!==sessionToken)return;
       if (acc && !acc.error) {
         state.account = acc;
+        applyAccessPolicy(acc.access);
       }
       if (posRes) {
         state.positionsData = posRes;
       }
       if (ordRes && Array.isArray(ordRes.orders)) {
         state.orders = ordRes.orders;
+        state.hasPendingOrders=Boolean(ordRes.hasPendingOrders);
       }
       if (perfRes) {
         state.performance = perfRes;
@@ -1305,9 +1356,17 @@
       }
     }
 
+    if(state.access?.accessMode==='FREE_LAUNCH'){
+      if(!isPro && badgeEl)badgeEl.textContent='FREE LAUNCH';
+      if(!isPro && subTitle)subTitle.textContent=state.access.label;
+      if(!isPro && subDesc)subDesc.textContent='Introductory access supported by ads. Capital changes use the approved presets.';
+      if(subBtn)subBtn.hidden=true;
+    }else if(subBtn)subBtn.hidden=false;
     if (state.performance) {
-      const cur = state.performance.currentSession || {};
-      const life = state.performance.lifetime || {};
+      const session=state.performance.session || state.performance.currentSession || {};
+      const lifetime=state.performance.lifetime || {};
+      const cur={...session,realizedPnlINR:Number(session.realizedPnlPaise||0)/100,winRatePercent:session.tradesCount?100*Number(session.winTradesCount||0)/session.tradesCount:0};
+      const life={...lifetime,netPnlINR:Number(lifetime.lifetimeNetTradingPnlPaise||0)/100,totalChargesINR:Number(lifetime.lifetimeChargesPaise||0)/100,totalClosedTrades:lifetime.lifetimeTradesCount||0,winRatePercent:lifetime.winRatePct||0};
 
       const sessPnlEl = document.getElementById('prof-session-pnl');
       if (sessPnlEl) {
@@ -1511,7 +1570,7 @@
         const isDerivative = inst.instrumentType === 'FUTIDX' || inst.instrumentType === 'OPTIDX';
         const eBadge = isDerivative && inst.expiry ? `<span class="expiry-e-badge">${inst.expiry}</span>` : '';
         const ltpDisplay = q && q.ltp !== undefined && q.ltp !== null && q.ltp > 0 ? fmtNum(q.ltp) : '—';
-        const chgDisplay = q && q.ltp !== undefined && q.ltp !== null && q.ltp > 0 ? `${sign}${pct.toFixed(2)}%` : '';
+        const chgDisplay = q && q.ltp !== undefined && q.ltp !== null && q.ltp > 0 ? formatChangePct(pct) : '';
         return `
           <div class="index-card-mini" onclick="window.TZApp.openChartByGlobalId('${inst.globalId}')">
             <div class="idx-card-top">
@@ -1776,7 +1835,7 @@
         const cls = diff >= 0 ? 'val-pos' : 'val-neg';
         const hasOptions = inst.hasDerivatives || ['CRUDEOIL', 'GOLD', 'SILVER', 'NATURALGAS', 'COPPER'].includes(und);
         const priceText = q && q.ltp !== undefined && q.ltp !== null ? fmtINR(q.ltp) : '—';
-        const chgText = q && q.ltp !== undefined && q.ltp !== null ? `${sign}${pct.toFixed(2)}%` : '';
+        const chgText = q && q.ltp !== undefined && q.ltp !== null ? `${sign}${(pct===null?'—':pct.toFixed(2))}%` : '';
 
         return `
           <div class="instrument-row-white" onclick="window.TZApp.openChartByGlobalId('${inst.globalId}')">
@@ -1872,7 +1931,7 @@
   function renderInstrumentRowHTML(inst, showChainBtn = false, options = {}) {
  const isRestricted = !isProUser() && isInstrumentRestrictedForFree(inst);
  const q = pickQuote(inst); const {diff,pct,sign}=calcChange(q);
- return window.SikhoUX.row(inst, {restricted:isRestricted,avatar:window.InstrumentIdentity.renderInstrumentAvatar(inst,40),price:q?.ltp>0?fmtINR(q.ltp):'—',change:q?.ltp>0?sign+pct.toFixed(2)+'%':'',changeClass:diff>=0?'val-pos-dark':'val-neg',showChain:showChainBtn,search:options.search});
+ return window.SikhoUX.row(inst, {restricted:isRestricted,avatar:window.InstrumentIdentity.renderInstrumentAvatar(inst,40),price:q?.ltp>0?fmtINR(q.ltp):'—',change:q?.ltp>0?formatChangePct(pct):'',changeClass:diff>=0?'val-pos-dark':'val-neg',showChain:showChainBtn,search:options.search});
 }
 
   function renderExploreStocksList() {
@@ -2209,7 +2268,7 @@
   async function openOptionChainModal(underlying = 'NIFTY', expiry) {
     const requested = optionChainCanonicalUnderlying(underlying || 'NIFTY');
     // FREE entitlement: NIFTY 50 and BANKNIFTY chains only. SENSEX/other chains stay Premium.
-    if (!isProUser() && !optionChainFreeAllowed(requested)) {
+    if (!hasFullFeatureAccess() && !optionChainFreeAllowed(requested)) {
       showSubscriptionUpgradePrompt(requested);
       return;
     }
@@ -2242,7 +2301,7 @@
 
   async function onOptionChainUnderlyingChange(value) {
     const requested = optionChainCanonicalUnderlying(value);
-    if (!isProUser() && !optionChainFreeAllowed(requested)) {
+    if (!hasFullFeatureAccess() && !optionChainFreeAllowed(requested)) {
       showSubscriptionUpgradePrompt(requested);
       const sel = document.getElementById('oc-underlying-select');
       const oc = ensureOptionChainState();
@@ -2262,7 +2321,7 @@
   async function loadOptionChain(underlying, expiry, opts = {}) {
     const oc = ensureOptionChainState();
     const requested = optionChainCanonicalUnderlying(underlying || oc.underlying || 'NIFTY');
-    if (!isProUser() && !optionChainFreeAllowed(requested)) {
+    if (!hasFullFeatureAccess() && !optionChainFreeAllowed(requested)) {
       showSubscriptionUpgradePrompt(requested);
       return;
     }
@@ -2440,8 +2499,8 @@
         await apiFetch('/api/v1/watchlists', {
           method: 'POST',
           body: JSON.stringify({
-            name: 'Core Indian Markets',
-            instruments: ['NSE:NIFTY 50:99926000', 'BSE:SENSEX:99919000', 'NFO:NIFTY23NOV26FUT:61471', 'NSE:RELIANCE:2885', 'NSE:HDFCBANK:1333'],
+            name: 'My Watchlist',
+            instruments: [],
           }),
         });
         const retry = await apiFetch('/api/v1/watchlists');
@@ -2568,6 +2627,8 @@
     notifyNativeScreenState();
 
     state.activeInstrument = inst;
+    state.historicalInspection=false;inspectedCandleTime=null;
+    try{const saved=JSON.parse(localStorage.getItem('tz_indicators_'+(state.user?.userId||state.user?.id))||'null');if(saved)Object.assign(state.indicators,saved);}catch{}
     document.getElementById('chart-ltp-display').textContent='—';
     document.getElementById('chart-chg-display').textContent='';
     document.getElementById('chart-sym-title').textContent = inst.symbol;
@@ -2686,6 +2747,34 @@
     openOptionChainModal(und);
   }
 
+  let inspectedCandleTime=null;
+  const historicalPageCache=new Map();
+  function openChartDateNavigation(){
+    let modal=document.getElementById('modal-chart-date');if(!modal){modal=document.createElement('div');modal.id='modal-chart-date';modal.className='modal-backdrop';document.body.appendChild(modal);}
+    modal.innerHTML='<div class="white-bottom-sheet history-detail"><h3>Find a candle</h3><label>Date and time (IST)<input id="chart-date-target" type="datetime-local"></label><p>Actual provider history only. Holidays and unavailable times use the nearest recorded candle.</p><div id="chart-date-status" role="status"></div><button class="row-retry" id="chart-date-find">Find candle</button><button class="row-retry" id="chart-date-close">Close</button></div>';
+    document.getElementById('chart-date-target').value=new Date(serverNowMs()+19800000).toISOString().slice(0,16);
+    document.getElementById('chart-date-close').onclick=()=>{modal.classList.remove('active');notifyNativeScreenState();};
+    document.getElementById('chart-date-find').onclick=async()=>{
+      const input=document.getElementById('chart-date-target'),status=document.getElementById('chart-date-status'),button=document.getElementById('chart-date-find');
+      const target=Date.parse(input.value+':00+05:30');if(!Number.isFinite(target)||target>serverNowMs()){status.textContent='Choose a valid past date/time in IST.';return;}
+      const gid=state.activeInstrument?.globalId,tf=state.activeTimeframe,token=state.token;const seq=++state.chartLoadSeq;chartRequestController?.abort();button.disabled=true;status.textContent='Loading recorded history…';
+      try{const day=Math.floor((target+19800000)/86400000)*86400000-19800000;const key=[state.user?.userId,gid,tf,day].join(':');let data=historicalPageCache.get(key);
+        if(!data){data=await apiFetch('/api/v1/market-data/candles?globalId='+encodeURIComponent(gid)+'&timeframe='+tf+'&from='+Math.floor((day-7*86400000)/1000)+'&to='+Math.floor((day+86400000)/1000)+'&limit=1500');historicalPageCache.set(key,data);if(historicalPageCache.size>6)historicalPageCache.delete(historicalPageCache.keys().next().value);}
+        if(seq!==state.chartLoadSeq||token!==state.token||gid!==state.activeInstrument?.globalId)return;
+        const bars=sanitizeChartCandles(data.candles||[]);if(!bars.length){status.textContent=data.providerError||'No recorded candles available. Choose another date or instrument.';return;}
+        state.candles=bars;state.earliestTime=bars[0].time;state.hasMoreHistory=Boolean(data.hasMore);state.historicalInspection=true;candleSeries.setData(bars);recalculateAndRenderIndicators();
+        const targetSec=target/1000;let nearest=0;for(let i=1;i<bars.length;i++)if(Math.abs(bars[i].time-targetSec)<Math.abs(bars[nearest].time-targetSec))nearest=i;
+        tvChart.timeScale().setVisibleLogicalRange({from:Math.max(-2,nearest-45),to:nearest+45});const bar=bars[nearest];inspectedCandleTime=bar.time;
+        document.getElementById('chart-ohlc-legend').textContent=formatChartTime(bar.time,true)+' · O '+fmtNum(bar.open)+' H '+fmtNum(bar.high)+' L '+fmtNum(bar.low)+' C '+fmtNum(bar.close);
+        document.getElementById('chart-candle-stats').textContent='Historical view · '+formatChartTime(bar.time,true);document.getElementById('btn-go-latest').style.display='inline-flex';
+        const exact=bar.time<=targetSec&&targetSec<bar.time+getTimeframeIntervalSec(tf);status.textContent=(exact?'Recorded candle: ':'No candle at that time. Nearest recorded candle: ')+formatChartTime(bar.time,true)+'. Close this sheet to inspect it.';
+      }catch(e){status.textContent=e.message||'History unavailable. Try another date.';}finally{button.disabled=false;}
+    };modal.classList.add('active');notifyNativeScreenState();
+  }
+  function formatChartTime(t,full=false){
+    const epoch=typeof t==='number'?t*1000:Date.parse(typeof t==='string'?t:t.year+'-'+String(t.month).padStart(2,'0')+'-'+String(t.day).padStart(2,'0'));
+    return new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',...(full?{day:'2-digit',month:'short',year:'numeric'}:{}),...(state.activeTimeframe==='1D'?{}:{hour:'2-digit',minute:'2-digit',hour12:false})}).format(epoch)+(full?' IST':'');
+  }
   function initLightweightChartInstance() {
     const container = document.getElementById('tv-main-chart');
     if (tvChart) {
@@ -2699,6 +2788,7 @@
     tvChart = LightweightCharts.createChart(container, {
       width: container.clientWidth || 380,
       height: container.clientHeight || 420,
+      localization:{locale:'en-IN',timeFormatter:t=>formatChartTime(t,true)},
       layout: {
         background: { type: 'solid', color: '#080C12' },
         textColor: '#AAB4C2',
@@ -2709,12 +2799,14 @@
         horzLines: { color: 'rgba(255, 255, 255, 0.05)' },
       },
       crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-      rightPriceScale: { borderColor: '#1E293B', autoScale: true },
+      rightPriceScale: { borderColor: '#1E293B', autoScale: true, scaleMargins:{top:.1,bottom:.1} },
       timeScale: {
         borderColor: '#1E293B',
         timeVisible: true,
         secondsVisible: false,
         rightOffset: 5,
+        visible:true, minimumHeight:32, barSpacing:7, minBarSpacing:3,
+        tickMarkFormatter:t=>formatChartTime(t,state.activeTimeframe==='1D'),
       },
     });
 
@@ -2725,14 +2817,16 @@
       borderDownColor: '#D92D45',
       wickUpColor: '#22C55E',
       wickDownColor: '#D92D45',
+      priceLineColor:'#7792ad',priceLineStyle:2,
     });
 
     tvChart.subscribeCrosshairMove((param) => {
+      inspectedCandleTime=param?.time || null;
       if (!param || !param.time || !param.seriesData) return;
       const bar = param.seriesData.get(candleSeries);
       if (bar) {
         document.getElementById('chart-ohlc-legend').textContent =
-          `O ${fmtNum(bar.open)}  H ${fmtNum(bar.high)}  L ${fmtNum(bar.low)}  C ${fmtNum(bar.close)}`;
+          `${formatChartTime(param.time,true)} · O ${fmtNum(bar.open)}  H ${fmtNum(bar.high)}  L ${fmtNum(bar.low)}  C ${fmtNum(bar.close)}`;
       }
     });
 
@@ -2853,6 +2947,7 @@
       for (const c of older) byTime.set(c.time, c);
       for (const c of state.candles) byTime.set(c.time, c);
       state.candles = sanitizeChartCandles(Array.from(byTime.values()).sort((a, b) => a.time - b.time));
+      if(state.candles.length>6000){state.candles=state.candles.slice(0,6000);state.historicalInspection=true;document.getElementById('btn-go-latest').style.display='inline-flex';}
       state.earliestTime = state.candles[0].time;
       state.hasMoreHistory = Boolean(data.hasMore);
 
@@ -2926,6 +3021,7 @@
   }
 
   function scrollToLatestBar() {
+    if(state.historicalInspection){state.historicalInspection=false;inspectedCandleTime=null;loadChartCandlesInitial();return;}
     if (tvChart) {
       const totalBars = state.candles.length;
       const barsToShow = Math.min(100, Math.max(60, totalBars));
@@ -2940,6 +3036,7 @@
 
   function selectTimeframe(tf) {
     rememberChartViewport();
+    state.historicalInspection=false;inspectedCandleTime=null;
     state.activeTimeframe = tf;
     document.querySelectorAll('.chart-controls-strip .tf-pill').forEach((b) => {
       b.classList.toggle('active', b.getAttribute('data-tf') === tf);
@@ -2966,12 +3063,13 @@
     const ltpEl = document.getElementById('chart-ltp-display');
     const chgEl = document.getElementById('chart-chg-display');
     if (!ltpEl || !quote) return;
-    const base = state.prevSessionClose || quote.close || quote.open || quote.ltp;
+    const base = Number(quote.close);
+    if(!(base>0)){ltpEl.textContent=fmtINR(quote.ltp);chgEl.textContent='Change unavailable';return;}
     const diff = quote.ltp - base;
     const pct = base > 0 ? (diff / base) * 100 : 0;
     const sign = diff >= 0 ? '+' : '';
     ltpEl.textContent = fmtINR(quote.ltp);
-    chgEl.textContent = `${sign}${diff.toFixed(2)} (${sign}${pct.toFixed(2)}%)`;
+    chgEl.textContent = `${sign}${diff.toFixed(2)} (${formatChangePct(pct)})`;
     chgEl.className = 'tabular-nums ' + (diff >= 0 ? 'val-pos-dark' : 'val-neg');
     checkPriceAlerts(quote);
   }
@@ -2981,6 +3079,7 @@
   // =========================================================================
   function recalculateAndRenderIndicators() {
     if (!tvChart || state.candles.length === 0) return;
+    const label=document.getElementById('chart-indicator-label');if(label)label.textContent=Object.keys(state.indicators).filter(k=>state.indicators[k]).map(k=>k==='sma20'?'SMA 20':k==='ema50'?'EMA 50':k).join(' · ')||'Indicators off · dashed line: last price · drawings: user saved';
     Object.values(indicatorSeriesMap).forEach((s) => {
       try { tvChart.removeSeries(s); } catch { }
     });
@@ -2989,7 +3088,7 @@
     const closes = state.candles.map((c) => c.close);
 
     if (state.indicators.sma20 && state.candles.length >= 20) {
-      const smaSeries = tvChart.addLineSeries({ color: '#C7F542', lineWidth: 2, priceLineVisible: false });
+      const smaSeries = tvChart.addLineSeries({ title:'SMA 20',color:'#a78bfa',lineWidth:1,priceLineVisible:false,lastValueVisible:false,autoscaleInfoProvider:()=>null });
       const data = [];
       for (let i = 19; i < state.candles.length; i++) {
         let sum = 0;
@@ -3001,7 +3100,7 @@
     }
 
     if (state.indicators.ema50 && state.candles.length >= 50) {
-      const emaSeries = tvChart.addLineSeries({ color: '#38BDF8', lineWidth: 2, priceLineVisible: false });
+      const emaSeries = tvChart.addLineSeries({ title:'EMA 50',color:'#38BDF8',lineWidth:1,priceLineVisible:false,lastValueVisible:false,autoscaleInfoProvider:()=>null });
       const k = 2 / 51;
       let ema = closes.slice(0, 50).reduce((a, b) => a + b, 0) / 50;
       const data = [{ time: state.candles[49].time, value: Number(ema.toFixed(2)) }];
@@ -3063,6 +3162,7 @@
 
   function toggleIndicator(key) {
     state.indicators[key] = !state.indicators[key];
+    localStorage.setItem('tz_indicators_'+(state.user?.userId||state.user?.id),JSON.stringify(state.indicators));
     recalculateAndRenderIndicators();
     openIndicatorsModal();
   }
@@ -3179,13 +3279,15 @@
     const toCoords = (pt) => {
       const x = tvChart.timeScale().timeToCoordinate(pt.time);
       const y = candleSeries.priceToCoordinate(pt.price);
-      return { x: x !== null ? x : pt.x || 100, y: y !== null ? y : pt.y || 100 };
+      return {x,y,valid:x!==null&&y!==null};
     };
 
     svg.innerHTML = all
       .map((d) => {
         const c1 = toCoords(d.p1);
         const c2 = toCoords(d.p2);
+        if(d.type!=='hline'&&(!c1.valid||!c2.valid))return '';
+        if(d.type==='hline'&&c1.y===null)return '';
         if (d.type === 'hline') {
           return `<line x1="0" y1="${c1.y}" x2="100%" y2="${c1.y}" stroke="#C7F542" stroke-width="2" stroke-dasharray="5,4"/>`;
         }
@@ -3496,6 +3598,7 @@
   // 8. PORTFOLIO (Holdings | Positions | History) & ORDERS TABS
   // =========================================================================
   function setPortfolioSubTab(sub) {
+    if(sub==='HISTORY'){switchMainTab('history');return;}
     if (state.portfolioSubTab === sub) return;
     state.portfolioSubTab = sub;
     document.getElementById('btn-port-positions').classList.toggle('active', sub === 'POSITIONS');
@@ -3595,61 +3698,7 @@
     renderOrdersTab();
   }
 
-  function renderOrdersTab() {
-    const container = document.getElementById('orders-list-container');
-    const list = state.orders.filter((o) => state.ordersFilter === 'ALL' || o.status === state.ordersFilter);
-
-    if (list.length === 0) {
-      container.innerHTML =
-        '<div style="padding:32px 16px;text-align:center;color:var(--text-on-white-secondary);">No orders matching this filter.</div>';
-      return;
-    }
-
-    container.innerHTML = list
-      .map((o) => {
-        const priceLabel = o.executedPrice
-          ? `Fill: ${fmtINR(o.executedPrice)}`
-          : o.requestedPrice
-            ? `Limit: ${fmtINR(o.requestedPrice)}`
-            : o.triggerPrice
-              ? `SL Trigger: ${fmtINR(o.triggerPrice)}`
-              : 'Market';
-        const avatarHtml = window.InstrumentIdentity
-          ? window.InstrumentIdentity.renderInstrumentAvatar(o, 38)
-          : `<div class="inst-badge-icon" style="color:${o.side === 'BUY' ? 'var(--positive-on-white)' : 'var(--negative-red)'};">${o.side}</div>`;
-        const sideTag = o.side === 'BUY'
-          ? '<span class="tag-exch" style="background:#ECFDF5;color:#059669;font-weight:800;">BUY</span>'
-          : '<span class="tag-exch" style="background:#FEF2F2;color:#DC2626;font-weight:800;">SELL</span>';
-        return `
-          <div class="instrument-row-white">
-            <div class="inst-left">
-              ${avatarHtml}
-              <div class="inst-meta">
-                <div class="inst-symbol-row">
-                  <span class="inst-symbol">${o.symbol || o.globalInstrumentId}</span>
-                  ${sideTag}
-                  <span class="tag-exch">${o.productType || 'INTRADAY'}</span>
-                  <span class="tag-exch">${o.orderType}</span>
-                </div>
-                <div class="inst-name-sub">Qty: ${o.quantity} • ${priceLabel}</div>
-                ${o.rejectionReason ? `<div style="font-size:11px;color:var(--negative-red);margin-top:2px;">${o.rejectionReason}</div>` : ''}
-              </div>
-            </div>
-            <div class="inst-right">
-              <span class="tag-exch" style="font-weight:800;">${o.status}</span>
-              ${o.status === 'PENDING'
-            ? `<button class="btn-lime-primary" style="width:auto;min-height:32px;padding:0 10px;font-size:11.5px;background:var(--negative-red);color:#fff;"
-                             onclick="window.TZApp.cancelPendingOrder('${o.id}')">
-                      Cancel
-                    </button>`
-            : ''
-          }
-            </div>
-          </div>
-        `;
-      })
-      .join('');
-  }
+  function renderOrdersTab(){if(state.mainTab==='orders')window.SikhoHistory?.showOrders(apiFetch,state.ordersFilter);}
 
   async function cancelPendingOrder(orderId) {
     showConfirmSheet(
@@ -3679,7 +3728,7 @@
     // Check positions and pending orders
     const allPos = state.positionsData?.positions || [];
     const hasOpenPos = allPos.some((p) => Math.abs(p.quantity || 0) > 0);
-    const hasPendingOrd = (state.orders || []).some((o) => o.status === 'PENDING' || o.status === 'TRIGGER_PENDING');
+    const hasPendingOrd = state.hasPendingOrders || (state.orders || []).some((o) => o.status === 'PENDING' || o.status === 'TRIGGER_PENDING');
 
     const warningEl = document.getElementById('reset-positions-warning');
     const confirmBtn = document.getElementById('btn-confirm-capital-reset');
@@ -3691,7 +3740,7 @@
       confirmBtn.style.opacity = (hasOpenPos || hasPendingOrd) ? '0.5' : '1';
     }
 
-    const isPro = (state.user?.tier === 'PRO') || (state.subscription?.tier === 'PRO');
+    const isPro = hasFullFeatureAccess();
     // Free: ₹1L, ₹2L, ₹5L, ₹10L, ₹20L
     // Pro: ₹1L, ₹10L, ₹25L, ₹50L, ₹1Cr, ₹2Cr, ₹5Cr, ₹10Cr
     const freePresets = [100000, 200000, 500000, 1000000, 2000000];
@@ -3731,6 +3780,8 @@
       confirmBtn.textContent = `Confirm Reset to ${fmtINR(selectedResetPresetINR)}`;
     }
 
+    const custom=document.getElementById('input-custom-reset-capital')?.closest('div[style*="margin-top"]');
+    if(custom)custom.hidden=state.access?.accessMode==='FREE_LAUNCH';
     modal.classList.add('active');
     notifyNativeScreenState();
   }
@@ -3758,8 +3809,9 @@
 
   function applyCustomCapital() {
     const input = document.getElementById('input-custom-reset-capital');
+    if(state.access?.accessMode==='FREE_LAUNCH'){showBrandedAlert('Choose a preset','Free Launch includes the approved Premium capital presets.');return;}
     const val = Math.round(Number(input?.value) || 0);
-    const isPro = (state.user?.tier === 'PRO') || (state.subscription?.tier === 'PRO');
+    const isPro = hasFullFeatureAccess();
 
     if (!val || val < 100000) {
       showBrandedAlert('Invalid Capital', 'Minimum starting practice capital is ₹1,00,000.');
@@ -3819,6 +3871,7 @@
   let selectedPlanId = 'plan_month_100';
 
   function openSubscriptionPlansModal() {
+    if(state.access?.accessMode==='FREE_LAUNCH'){showBrandedAlert('Free Launch','All supported paper-trading features are unlocked. Your account remains Free unless you hold verified ad-free access.');return;}
     const modal = document.getElementById('modal-subscription');
     if (!modal) return;
     selectPlanCard('plan_month_100');
@@ -3931,13 +3984,17 @@
     const activeTab = tab === 'markets' ? 'explore' : tab;
     const changed = state.mainTab !== activeTab;
     state.mainTab = activeTab;
-    const tabs = ['explore', 'watchlists', 'portfolio', 'orders', 'profile'];
+    const strip=document.getElementById('benchmark-index-strip');if(strip)strip.style.display=activeTab==='explore'?'flex':'none';
+    const launch=document.getElementById('launch-access-label');if(launch)launch.style.display=activeTab==='explore'?'block':'none';
+    const tabs = ['explore', 'watchlists', 'portfolio', 'orders', 'history', 'profile'];
     tabs.forEach((t) => {
       const el = document.getElementById(`tab-${t}`);
       const btn = document.getElementById(`nav-btn-${t}`);
       if (el) el.style.display = t === activeTab ? 'block' : 'none';
       if (btn) btn.classList.toggle('active', t === activeTab);
     });
+    if(tab==='history')window.SikhoHistory?.show(apiFetch);
+    if(tab==='orders')window.SikhoHistory?.showOrders(apiFetch,state.ordersFilter);
     if (tab === 'portfolio' || tab === 'orders' || tab === 'profile') {
       refreshAccountAndPortfolio();
     }
@@ -4304,7 +4361,10 @@
             if (ocIsOpen()) setOptionChainStatus('Live subscription capacity unavailable', 'Displayed prices may be stale; retry later.');
             return;
           }
+          if(msg.type==='TRADING_CHANGED'){scheduleTradingReconcile();return;}
           if (msg.type === 'AUTH_SUCCESS') {
+            applyAccessPolicy(msg.access);
+            scheduleTradingReconcile();
             noteServerClock(msg.serverTimestamp);
             // Re-send desired subscriptions once authenticated so Pro-tier instruments are authorized
             sendWsSubscribe(collectDesiredSubscriptions());
@@ -4315,6 +4375,7 @@
               recoverChartAfterReconnect();
             }
           } else if (msg.type === 'ENTITLEMENT_UPDATED') {
+            applyAccessPolicy(msg.access);
             const newTier = msg.tier || msg.entitlement?.tier || 'FREE';
             if (msg.entitlement) {
               state.subscription = msg.entitlement;
@@ -4389,7 +4450,7 @@
               }
             }
           } else if (msg.type === 'QUOTE_TICK' && msg.data) {
-            handleIncomingQuoteTick(msg.data);
+            handleIncomingQuoteTick(msg.data,Boolean(msg.isSnapshot));
           }
         } catch { }
       };
@@ -4423,7 +4484,7 @@
    * - Preserves user zoom, scroll position, and drawings
    */
   function reconcileCandleWithTick(quote, isInitialSnapshot = false) {
-    if (!candleSeries || state.candles.length === 0 || state.replayMode) return;
+    if (!candleSeries || state.candles.length === 0 || state.replayMode || state.historicalInspection) return;
     const ltp = Number(quote.ltp);
     if (!ltp || isNaN(ltp) || ltp <= 0) return;
 
@@ -4462,11 +4523,12 @@
       candleSeries.update(updatedBar);
       updateIndicatorsForLastBar();
       const legendEl = document.getElementById('chart-ohlc-legend');
-      if (legendEl) {
+      if (legendEl && (!inspectedCandleTime || inspectedCandleTime===bucketSec)) {
         legendEl.textContent =
           `O ${fmtNum(updatedBar.open)}  H ${fmtNum(updatedBar.high)}  L ${fmtNum(updatedBar.low)}  C ${fmtNum(updatedBar.close)}`;
       }
     } else if (bucketSec > lastBar.time) {
+      if(isInitialSnapshot)return; // A cached snapshot does not prove a new interval traded.
       // Genuine tick in a new timeframe interval -> start a new candle at the exact boundary.
       // Note: an "initial snapshot" is NOT special-cased into the previous bar; doing so used to
       // merge the new interval's price into the old candle and corrupt its OHLC.
@@ -4482,7 +4544,7 @@
       candleSeries.update(newBar);
       recalculateAndRenderIndicators();
       const legendEl = document.getElementById('chart-ohlc-legend');
-      if (legendEl) {
+      if (legendEl && (!inspectedCandleTime || inspectedCandleTime===bucketSec)) {
         legendEl.textContent =
           `O ${fmtNum(newBar.open)}  H ${fmtNum(newBar.high)}  L ${fmtNum(newBar.low)}  C ${fmtNum(newBar.close)}`;
       }
@@ -4494,7 +4556,7 @@
     }
   }
 
-  function handleIncomingQuoteTick(quote) {
+  function handleIncomingQuoteTick(quote,isSnapshot=false) {
     if (!quote || !quote.globalId) return;
     state.lastTickTimestamps = state.lastTickTimestamps || {};
     const quoteTime = Number(quote.providerTimestamp || quote.receiveTimestamp || quote.timestamp || Date.now());
@@ -4538,7 +4600,7 @@
     // Update DOM price elements matching data-ltp-id
     document.querySelectorAll(`[data-ltp-id="${quote.globalId}"]`).forEach((el) => {
       if (currentQ.ltp !== undefined && currentQ.ltp !== null && currentQ.ltp > 0) {
-        el.textContent = fmtNum(currentQ.ltp);
+        el.textContent = el.classList.contains('inst-ltp-val')?fmtINR(currentQ.ltp):fmtNum(currentQ.ltp);
       }
     });
 
@@ -4547,7 +4609,7 @@
     const cls = diff >= 0 ? 'val-pos-dark' : 'val-neg';
     document.querySelectorAll(`[data-chg-id="${quote.globalId}"]`).forEach((el) => {
       if (currentQ.ltp !== undefined && currentQ.ltp !== null && currentQ.ltp > 0) {
-        el.textContent = `${sign}${pct.toFixed(2)}%`;
+        el.textContent = formatChangePct(pct);
         el.className = `idx-chg ${cls}`;
       }
     });
@@ -4592,7 +4654,7 @@
     }
 
     if (state.chartOpen && state.activeInstrument && state.activeInstrument.globalId === quote.globalId) {
-      updateChartHeaderQuote(quote);
+      updateChartHeaderQuote(currentQ);
       reconcileCandleWithTick(quote, false);
       updateChartCountdownUI();
     }
@@ -4658,8 +4720,13 @@
     }
   }
 
-  function exportJournalCSV() {
-    window.open('/api/v1/journal/export.csv', '_blank');
+  async function exportJournalCSV() {
+    const token=state.token;
+    try{const response=await fetch(API_BASE+'/api/v1/journal/export.csv',{headers:{Authorization:'Bearer '+token}});if(!response.ok)throw Error('History export unavailable. Retry after signing in.');const csv=await response.text();if(token!==state.token)return;
+      let modal=document.getElementById('modal-history-csv');if(!modal){modal=document.createElement('div');modal.id='modal-history-csv';modal.className='modal-backdrop';document.body.appendChild(modal);}
+      modal.innerHTML='<div class="white-bottom-sheet history-detail"><h3>Trade history CSV · Last 7 Days</h3><p>Actual fills and ledger settlements. Unknown historical fields stay blank.</p><textarea id="history-csv-text" readonly aria-label="Trade history CSV" style="width:100%;height:45vh;"></textarea><button class="row-retry" id="history-csv-copy">Copy CSV</button><button class="row-retry" id="history-csv-close">Close</button></div>';
+      document.getElementById('history-csv-text').value=csv;document.getElementById('history-csv-copy').onclick=()=>{const area=document.getElementById('history-csv-text');area.select();window.SikhoUX.notify(document.execCommand('copy')?'CSV copied':'Select and copy the CSV text.');};document.getElementById('history-csv-close').onclick=()=>{modal.remove();notifyNativeScreenState();};modal.classList.add('active');notifyNativeScreenState();
+    }catch(e){showBrandedAlert('Export unavailable',e.message);}
   }
 
   // =========================================================================
@@ -4807,6 +4874,8 @@
     retryExploreData:loadExploreData,
     signOut,
     switchMainTab,
+    openChartDateNavigation,
+    clearCurrentWatchlist,
     setExploreCategory,
     setMarketSegment: setExploreCategory,
     filterExploreStocks,

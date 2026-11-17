@@ -25,13 +25,22 @@ export class SimulationEngine {
   private pendingOrders: SimulatedOrder[] = [];
   private lockedOrderMargins: Map<string, Paise> = new Map();
   private latestTickTimestamps: Map<string, number> = new Map();
+  private pendingInstruments = new Map<string, InstrumentMetadata>();
+  public async restorePendingOrders(){
+    for(const {order,context} of await this.repo.getPendingExecutionContexts()){
+      this.pendingOrders.push(order);this.lockedOrderMargins.set(order.id,BigInt(context.requiredMarginPaise));this.pendingInstruments.set(order.id,context.instrument);
+    }
+  }
 
+  private mutationQueue: Promise<unknown> = Promise.resolve();
+  private serialized<T>(fn:()=>Promise<T>):Promise<T>{const work=this.mutationQueue.then(fn,fn);this.mutationQueue=work.catch(()=>{});return work;}
   constructor(private repo: PostgresRepository) {}
 
   /**
    * Submit and evaluate a simulated order with PostgreSQL persistence.
    */
-  public async submitOrder(
+  public submitOrder(...args: Parameters<SimulationEngine['submitOrderNow']>) {return this.serialized(()=>this.submitOrderNow(...args));}
+  private async submitOrderNow(
     request: PlaceOrderRequest,
     _instrument: InstrumentMetadata,
     quote: QuoteSnapshot,
@@ -122,6 +131,8 @@ export class SimulationEngine {
     };
 
     // 5. Margin Reservation in PostgreSQL (ensure account has requiredMarginPaise + estimatedChargesPaise)
+    Object.defineProperty(order,'executionContext',{value:{instrument:_instrument,requiredMarginPaise:requiredMarginPaise.toString()},configurable:true});
+    this.pendingInstruments.set(order.id,_instrument);
     const acc = await this.repo.getAccount(request.accountId);
     if (!acc || acc.availableBalancePaise < requiredMarginPaise + estimatedChargesPaise) {
       order.status = 'REJECTED';
@@ -243,6 +254,7 @@ export class SimulationEngine {
 
     const existingPositions = await this.repo.getPositions(order.accountId);
     let position = existingPositions.find((p) => p.globalInstrumentId === order.globalInstrumentId);
+    const historyBefore = { previousQuantity: position?.quantity || 0, averageEntryPrice: position?.averageEntryPrice ?? null };
     let realizedPnlPaise = 0n;
 
     const deltaQty = order.side === 'BUY' ? order.quantity : -order.quantity;
@@ -306,6 +318,7 @@ export class SimulationEngine {
 
         position.realizedPnlPaise += realizedPnlPaise;
         position.quantity += deltaQty;
+        if (position.quantity && Math.sign(position.quantity) !== Math.sign(position.quantity - deltaQty)) { position.averageEntryPrice = fillPrice; position.createdAt = Date.now(); }
         if (position.quantity === 0) {
           position.stopLossPrice = undefined;
           position.targetPrice = undefined;
@@ -325,6 +338,7 @@ export class SimulationEngine {
       }
     }
 
+    Object.defineProperty(order, 'historySnapshot', {value:{...historyBefore,quantity:position.quantity,realizedPnlPaise:realizedPnlPaise.toString(),instrument:instrument || null},configurable:true});
     this.updatePositionUnrealized(position, quote.ltp, instrument);
 
     return {
@@ -335,7 +349,8 @@ export class SimulationEngine {
     };
   }
 
-  public async onMarketTick(quote: QuoteSnapshot): Promise<ExecutionResult[]> {
+  public onMarketTick(quote: QuoteSnapshot): Promise<ExecutionResult[]> {return this.serialized(()=>this.onMarketTickNow(quote));}
+  private async onMarketTickNow(quote: QuoteSnapshot): Promise<ExecutionResult[]> {
     const results: ExecutionResult[] = [];
     const remainingPending: SimulatedOrder[] = [];
 
@@ -386,9 +401,11 @@ export class SimulationEngine {
           }
         }
 
-        const fillPrice = this.computeFillPrice(order.side, quote, order.orderType, gapPrice);
+        const instrument = this.pendingInstruments.get(order.id);
+        const fillPrice = this.computeFillPrice(order.side, quote, order.orderType, gapPrice, instrument?.tickSize);
         this.lockedOrderMargins.delete(order.id);
-        const res = await this.executeFill(order, fillPrice, quote, 0n);
+        const res = await this.executeFill(order, fillPrice, quote, 0n, instrument);
+        this.pendingInstruments.delete(order.id);
         await this.repo.updateOrder(res.order);
         if (res.position) {
           await this.repo.saveOrUpdatePosition(res.position);

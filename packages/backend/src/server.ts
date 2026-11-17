@@ -1,3 +1,6 @@
+import { Readable } from 'node:stream';
+import { historyBounds, readTradeHistory } from './history.js';
+import { resolveAccessPolicy } from './monetization/access-policy.js';
 import Fastify, { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
@@ -6,16 +9,15 @@ import {
   DisciplineGuard,
   Money,
   OrderValidator,
-  PerformanceAnalytics,
   PlaceOrderRequest,
   Timeframe,
-  ClosedTradeRecord,
   QuoteSnapshot,
   COMMODITY_CONTRACT_SPECS,
   getExchangeSessionStatus,
   InstrumentMetadata,
   isFreeTierAllowedInstrument,
   UserTier,
+  PREMIUM_CAPITAL_PRESETS_INR,
 } from '@trading/shared';
 import { config, isPlaceholderCredential, validateSmartApiEnv, validateUpstoxEnv } from './config.js';
 import { DeterministicProvider } from './providers/deterministic-provider.js';
@@ -43,7 +45,7 @@ if (!(BigInt.prototype as any).toJSON) {
 }
 
 /** Application version advertised by /health (kept in sync with the Android versionName). */
-export const SERVICE_VERSION = '1.0.10';
+export const SERVICE_VERSION = '1.0.11';
 const SERVICE_STARTED_AT = new Date().toISOString();
 
 /** Browser/WebSocket clients must be told the server clock so countdowns can be corrected. */
@@ -130,6 +132,7 @@ export async function buildServer(
   const accountEngine = new VirtualAccountEngine();
   const simEngine = new SimulationEngine(repo);
   const billingService = new BillingService(db);
+  await simEngine.restorePendingOrders();
   const adsCoordinator = new AdsCoordinator();
 
   const isNodeTestContext = Boolean(process.env.NODE_TEST_CONTEXT) && !customProviderMode;
@@ -174,6 +177,7 @@ export async function buildServer(
   });
 
   // Active WebSocket clients
+  const clientTokens = new WeakMap<WebSocket, string>();
   const wsClients = new Set<{
     ws: WebSocket;
     userId?: string;
@@ -181,6 +185,10 @@ export async function buildServer(
     tier: UserTier;
     subscriptions: Set<string>;
   }>();
+  repo.onMutation = accountId => {
+    for(const client of wsClients) if(client.accountId===accountId && client.ws.readyState===WebSocket.OPEN)
+      client.ws.send(JSON.stringify({type:'TRADING_CHANGED',accountId,eventId:randomUUID(),serverTimestamp:Date.now()}));
+  };
   const engineSubscribedIds = new Set<string>();
   const engineSubscriptionReleases = new Map<string, () => void>();
   const defaultSubscriptionIds = new Set(instruments.map(i => i.globalId));
@@ -204,7 +212,7 @@ export async function buildServer(
     for (const client of wsClients) {
       if (client.userId === userId) {
         client.tier = entitlement.tier;
-        if (entitlement.tier === 'FREE') {
+        if (!resolveAccessPolicy(entitlement.tier).fullFeatureAccess) {
           for (const sym of Array.from(client.subscriptions)) {
             if (openPositionSymbols.has(sym)) continue;
             const inst =
@@ -221,6 +229,7 @@ export async function buildServer(
               type: 'ENTITLEMENT_UPDATED',
               tier: entitlement.tier,
               entitlement,
+              access: resolveAccessPolicy(entitlement.tier),
             })
           );
         }
@@ -237,9 +246,12 @@ export async function buildServer(
   const ensureEngineSubscription = (globalId: string) => {
     if (engineSubscribedIds.has(globalId)) return;
     const release = activeProvider.subscribe(globalId, (quote: QuoteSnapshot) => {
-      simEngine.onMarketTick(quote).catch(() => { });
-      formingTracker.applyTick(quote);
-      const msg = JSON.stringify({ type: 'QUOTE_TICK', data: quote });
+      const isSnapshot=Boolean((quote as any).isSnapshot);
+      if(!isSnapshot){
+        simEngine.onMarketTick(quote).catch(() => { });
+        formingTracker.applyTick(quote);
+      }
+      const msg = JSON.stringify({ type: 'QUOTE_TICK', data: quote, isSnapshot });
       for (const client of wsClients) {
         if (client.subscriptions.has(globalId) || client.subscriptions.has(quote.globalId)) {
           if (client.ws.readyState === WebSocket.OPEN) {
@@ -444,6 +456,7 @@ export async function buildServer(
         },
         account: formatAccountResponse(account),
         entitlement,
+      access: resolveAccessPolicy(entitlement.tier),
       };
     } catch (err: any) {
       return reply.status(400).send({
@@ -518,6 +531,7 @@ export async function buildServer(
         },
         account: formatAccountResponse(account),
         entitlement,
+      access: resolveAccessPolicy(entitlement.tier),
       };
     } catch (err: any) {
       return reply.status(401).send({
@@ -659,6 +673,7 @@ export async function buildServer(
         },
         account: formatAccountResponse(account),
         entitlement,
+      access: resolveAccessPolicy(entitlement.tier),
       };
     } catch (err: any) {
       // Google library exception messages can contain claims or token material. Log class only.
@@ -734,6 +749,7 @@ export async function buildServer(
         },
         account: formatAccountResponse(account),
         entitlement,
+      access: resolveAccessPolicy(entitlement.tier),
       };
     } catch (err: any) {
       const isCredentialError = String(err?.message || '').startsWith('ERR_INVALID_CREDENTIALS');
@@ -785,6 +801,7 @@ export async function buildServer(
         },
       account: formatAccountResponse(account),
       entitlement,
+      access: resolveAccessPolicy(entitlement.tier),
     };
   });
 
@@ -897,22 +914,26 @@ export async function buildServer(
     };
   });
 
-  const resolveUserTierFromReq = async (req: any): Promise<UserTier> => {
-    try {
-      const authHeader = req.headers?.authorization;
-      if (authHeader && authHeader.startsWith('Bearer ')) {
-        const token = authHeader.substring(7);
-        const decoded = (app as any).jwt?.verify(token);
-        if (decoded && decoded.userId) {
-          return await billingService.getAccountTier(decoded.userId);
-        }
-      }
-    } catch {
-      // Unauthenticated or invalid token
-    }
-    return 'FREE';
+  const resolveAccessFromReq=async(req:any)=>{
+    try{const decoded=(app as any).jwt.verify((req.headers.authorization||'').replace(/^Bearer /,''));return resolveAccessPolicy(await billingService.getAccountTier(decoded.userId));}catch{return resolveAccessPolicy('FREE',false);}
   };
+  app.addHook('onSend',async(req,reply,payload)=>{
+    if(!/^\/api\/v1\/(instruments|indices|commodities|watchlists|user\/preferences\/indices)/.test(req.url)||typeof payload!=='string')return payload;
+    reply.header('Cache-Control','private, no-store');
+    const policy=await resolveAccessFromReq(req);if(policy.fullFeatureAccess)return payload;
+    try{const data=JSON.parse(payload);const scrub=(node:any):void=>{if(!node||typeof node!=='object')return;if(node.globalId&&node.instrumentType&&!isFreeTierAllowedInstrument(node))node.latestQuote=null;for(const val of Object.values(node))if(val&&typeof val==='object')Array.isArray(val)?val.forEach(scrub):scrub(val);};scrub(data);reply.header('Cache-Control','private, no-store');return JSON.stringify(data);}catch{return payload;}
+  });
+  app.get('/api/v1/access', async (req,reply) => {
+    reply.header('Cache-Control','private, no-store');
+    try{const decoded=(app as any).jwt.verify((req.headers.authorization||'').replace(/^Bearer /,''));const entitlement=await billingService.resolveEntitlement(decoded.userId);return {access:resolveAccessPolicy(entitlement.tier),entitlement};}catch{return {access:resolveAccessPolicy('FREE',false)};}
+  });
 
+  const canViewExposure = async (req: any, gid: string): Promise<boolean> => {
+    try { const decoded = (app as any).jwt.verify((req.headers.authorization || '').replace(/^Bearer /, ''));
+      const account = await repo.provisionInitialAccount(decoded.userId);
+      return (await repo.getPositions(account.id)).some(p => p.globalInstrumentId === gid && p.quantity !== 0);
+    } catch { return false; }
+  };
   const parseFallbackInstrument = (globalId: string): { globalId: string; symbol: string; exchange: string; instrumentType: string } => {
     const parts = (globalId || '').split(':');
     const exch = parts[0] || 'NSE';
@@ -1002,8 +1023,8 @@ export async function buildServer(
     };
     const underlying = (query.underlying || 'NIFTY').trim().toUpperCase();
 
-    const tier = await resolveUserTierFromReq(req);
-    if (tier === 'FREE') {
+    const access = await resolveAccessFromReq(req);
+    if (!access.fullFeatureAccess) {
       // Canonical access matrix: only NIFTY 50 and BANKNIFTY chains are free.
       const canonicalUnderlying =
         underlying === 'NIFTY 50' || underlying === 'NIFTY' || underlying === 'NIFTY50'
@@ -1050,14 +1071,14 @@ export async function buildServer(
       return reply.status(400).send({ error: 'Missing globalId query parameter' });
     }
 
-    const tier = await resolveUserTierFromReq(req);
-    if (tier === 'FREE') {
+    const access = await resolveAccessFromReq(req);
+    if (!access.fullFeatureAccess) {
       const inst =
         (activeProvider.getInstrumentById
           ? await activeProvider.getInstrumentById(query.globalId)
           : (await activeProvider.getInstruments()).find((i) => i.globalId === query.globalId)) ||
         parseFallbackInstrument(query.globalId);
-      if (!isFreeTierAllowedInstrument(inst)) {
+      if (!isFreeTierAllowedInstrument(inst) && !(await canViewExposure(req, inst.globalId))) {
         return reply.status(403).send({
           error: 'UPGRADE_REQUIRED: Historical charts for equities, commodities, and other indices are exclusive to Premium subscribers.',
           code: 'UPGRADE_REQUIRED',
@@ -1127,14 +1148,14 @@ export async function buildServer(
       return reply.status(400).send({ error: 'Missing globalId query parameter' });
     }
 
-    const tier = await resolveUserTierFromReq(req);
-    if (tier === 'FREE') {
+    const access = await resolveAccessFromReq(req);
+    if (!access.fullFeatureAccess) {
       const inst =
         (activeProvider.getInstrumentById
           ? await activeProvider.getInstrumentById(query.globalId)
           : (await activeProvider.getInstruments()).find((i) => i.globalId === query.globalId)) ||
         parseFallbackInstrument(query.globalId);
-      if (!isFreeTierAllowedInstrument(inst)) {
+      if (!isFreeTierAllowedInstrument(inst) && !(await canViewExposure(req, inst.globalId))) {
         return reply.status(403).send({
           error: 'UPGRADE_REQUIRED: Live quotes for equities, commodities, and other indices are exclusive to Premium subscribers.',
           code: 'UPGRADE_REQUIRED',
@@ -1260,6 +1281,7 @@ export async function buildServer(
     return {
       ...formatAccountResponse(account),
       entitlement,
+      access: resolveAccessPolicy(entitlement.tier),
     };
   });
 
@@ -1274,8 +1296,9 @@ export async function buildServer(
   app.post('/api/v1/account/reset', { preHandler: [(app as any).authenticate] }, async (req: any, reply) => {
     const accountId = req.user.accountId;
     const body = (req.body as { startingCapitalINR?: number }) || {};
-    const requestedCapitalINR = body.startingCapitalINR || 100000;
-    const tier = await billingService.getAccountTier(req.user.userId);
+    const requestedCapitalINR = body.startingCapitalINR ?? 100000;
+    if(resolveAccessPolicy(await billingService.getAccountTier(req.user.userId)).accessMode==='FREE_LAUNCH' && !PREMIUM_CAPITAL_PRESETS_INR.includes(requestedCapitalINR))return reply.status(400).send({error:'Choose an approved Free Launch capital preset.',code:'ERR_CAPITAL_PRESET_REQUIRED'});
+    const tier = resolveAccessPolicy(await billingService.getAccountTier(req.user.userId)).capitalTier;
 
     const positions = await repo.getPositions(accountId);
     const quotes = new Map<string, number>();
@@ -1373,7 +1396,7 @@ export async function buildServer(
     // If a user's Premium subscription expired, they are permitted to view and square off / reduce existing
     // restricted positions, but are strictly prohibited from opening new exposure or adding to existing positions.
     const userTier = await billingService.getAccountTier(userId);
-    if (userTier === 'FREE' && !isFreeTierAllowedInstrument(instrument) && !isRiskReducingExit) {
+    if (!resolveAccessPolicy(userTier).fullFeatureAccess && !isFreeTierAllowedInstrument(instrument) && !isRiskReducingExit) {
       return reply.status(403).send({
         error: `ERR_PRO_TIER_REQUIRED: Free tier users can only trade NIFTY and BANKNIFTY futures and options. Upgrade to Premium to trade ${instrument.symbol}.`,
         code: 'ERR_PRO_TIER_REQUIRED',
@@ -1543,7 +1566,7 @@ export async function buildServer(
 
   // 11. Orders & Positions Retrieval (with Holdings vs Positions separation)
   app.get('/api/v1/orders', { preHandler: [(app as any).authenticate] }, async (req: any) => {
-    const orders = await repo.getOrders(req.user.accountId);
+    const orders = await repo.getOrders(req.user.accountId,100);
     const enriched = await Promise.all(
       orders.map(async (o) => {
         const inst = activeProvider.getInstrumentById
@@ -1559,7 +1582,8 @@ export async function buildServer(
         };
       })
     );
-    return { orders: enriched };
+    const pending=await db.query("SELECT COUNT(*) as count FROM orders WHERE account_id=$1 AND status IN ('PENDING','TRIGGERED')",[req.user.accountId]);
+    return { orders: enriched,hasPendingOrders:Number(pending.rows[0].count)>0 };
   });
 
   app.get('/api/v1/positions', { preHandler: [(app as any).authenticate] }, async (req: any) => {
@@ -1669,54 +1693,48 @@ export async function buildServer(
     return { entries: res.rows };
   });
 
-  app.get('/api/v1/journal/analytics', { preHandler: [(app as any).authenticate] }, async (req: any) => {
-    const accountId = req.user.accountId;
-    const orders = await repo.getOrders(accountId);
-    const executedExits = orders.filter((o) => o.status === 'EXECUTED');
-
-    const trades: ClosedTradeRecord[] = executedExits.map((o) => ({
-      id: o.id,
-      globalInstrumentId: o.globalInstrumentId,
-      symbol: o.globalInstrumentId.split(':')[1] || 'NIFTY',
-      side: o.side,
-      quantity: o.quantity,
-      entryPrice: o.executedPrice || 24500,
-      exitPrice: o.executedPrice || 24500,
-      realizedPnlPaise: 0n,
-      chargesPaise: o.estimatedChargesPaise,
-      netPnlPaise: -o.estimatedChargesPaise,
-      entryTimestamp: o.createdAt,
-      exitTimestamp: o.executedAt || o.createdAt,
-    }));
-
-    const metrics = PerformanceAnalytics.calculate(trades, 10000000n);
-    return { metrics };
+  app.get('/api/v1/journal/analytics', {preHandler:[(app as any).authenticate]}, async (req:any) => {
+    const history=await readTradeHistory(db,req.user.accountId,{...req.query,from:Date.now()-3650*86400000,to:Date.now()+1});
+    return {metrics:history.summary,methodology:history.methodology,legacyNote:history.legacyNote};
+  });
+  app.get('/api/v1/journal/export.csv', {preHandler:[(app as any).authenticate]}, async (req:any,reply) => {
+    const q={...req.query,limit:100};const initial=await readTradeHistory(db,req.user.accountId,q);
+    const cell=(x:any)=>'"'+String(x??'').replace(/"/g,'""')+'"';
+    async function* rows(){
+      yield 'SIMULATED PAPER-TRADING EDUCATIONAL PERFORMANCE EXPORT\n';
+      yield 'IST period '+new Date(initial.from+19800000).toISOString().slice(0,10)+' through '+new Date(initial.to-1+19800000).toISOString().slice(0,10)+'; monetary values in integer paise; unavailable legacy fields are blank.\n';
+      yield 'coverage,contract,side,quantity,entry_price,exit_price,entry_time_IST,exit_time_IST,gross_paise,charges_paise,net_paise,exit_order_id\n';
+      const when=(t:any)=>t?new Date(Number(t)+19800000).toISOString().replace('T',' ').replace('Z',' IST'):'';
+      let page=initial;
+      while(true){for(const t of page.trades)yield [t.coverage,t.globalInstrumentId,t.side,t.quantity,t.entryPrice,t.exitPrice,when(t.entryTimestamp),when(t.exitTimestamp),t.grossPaise,t.chargesPaise,t.netPaise,t.exitOrderId].map(cell).join(',')+'\n';if(page.nextOffset===null)break;page=await readTradeHistory(db,req.user.accountId,{...q,offset:page.nextOffset});}
+      page=initial;
+      while(true){for(const t of page.legacyRealizations)yield [t.coverage,'','','','','','',when(t.exitTimestamp),t.grossPaise,'','',t.exitOrderId].map(cell).join(',')+'\n';if(page.nextLegacyOffset===null)break;page=await readTradeHistory(db,req.user.accountId,{...q,legacyOffset:page.nextLegacyOffset});}
+    }
+    reply.header('Content-Type','text/csv; charset=utf-8').header('Content-Disposition','attachment; filename="sikho-trade-history.csv"');return Readable.from(rows());
   });
 
-  app.get('/api/v1/journal/export.csv', { preHandler: [(app as any).authenticate] }, async (req: any, reply) => {
-    const accountId = req.user.accountId;
-    const orders = await repo.getOrders(accountId);
-    const trades: ClosedTradeRecord[] = orders.map((o) => ({
-      id: o.id,
-      globalInstrumentId: o.globalInstrumentId,
-      symbol: o.globalInstrumentId.split(':')[1] || 'NIFTY',
-      side: o.side,
-      quantity: o.quantity,
-      entryPrice: o.executedPrice || 24500,
-      exitPrice: o.executedPrice || 24500,
-      realizedPnlPaise: 0n,
-      chargesPaise: o.estimatedChargesPaise,
-      netPnlPaise: -o.estimatedChargesPaise,
-      entryTimestamp: o.createdAt,
-      exitTimestamp: o.executedAt || o.createdAt,
-    }));
-
-    const csvData = PerformanceAnalytics.exportToCSV(trades);
-    reply.header('Content-Type', 'text/csv');
-    reply.header('Content-Disposition', 'attachment; filename="simulated-trades-journal.csv"');
-    return csvData;
+  app.get('/api/v1/history', {preHandler:[(app as any).authenticate]}, async (req: any,reply) => {
+    try { return await readTradeHistory(db,req.user.accountId,req.query); } catch(e:any){return reply.status(400).send({error:e.message});}
   });
-
+  app.get('/api/v1/history/sessions', {preHandler:[(app as any).authenticate]}, async (req:any) => {
+    const r=await db.query('SELECT id,started_at,ended_at,is_active FROM practice_sessions WHERE account_id=$1 ORDER BY started_at DESC',[req.user.accountId]);
+    return {sessions:r.rows.map(x=>({id:x.id,startedAt:Number(x.started_at),endedAt:x.ended_at?Number(x.ended_at):null,isActive:x.is_active}))};
+  });
+  app.get('/api/v1/orders/page', {preHandler:[(app as any).authenticate]}, async (req:any,reply) => {
+    try{const {from,to}=historyBounds(req.query);const limit=40,offset=Math.max(0,Math.min(1000000,Math.floor(Number(req.query.offset)||0)));const status=['EXECUTED','PENDING','CANCELLED','REJECTED','TRIGGERED'].includes(req.query.status)?req.query.status:null;
+    const params:any[]=[req.user.accountId,from,to];const filter=status?' AND status=$4':'';if(status)params.push(status);
+    const count=await db.query('SELECT COUNT(*) as count FROM orders WHERE account_id=$1 AND created_at >= $2 AND created_at < $3'+filter,params);
+    const rows=await db.query('SELECT * FROM orders WHERE account_id=$1 AND created_at >= $2 AND created_at < $3'+filter+' ORDER BY created_at DESC,id DESC LIMIT 40 OFFSET '+offset,params);
+    const statuses=await db.query('SELECT status,COUNT(*) as count FROM orders WHERE account_id=$1 AND created_at >= $2 AND created_at < $3 GROUP BY status',[req.user.accountId,from,to]);
+    return {counts:Object.fromEntries(statuses.rows.map(r=>[r.status,Number(r.count)])),orders:rows.rows.map((o:any)=>({id:o.id,globalInstrumentId:o.global_instrument_id,side:o.side,quantity:o.quantity,orderType:o.order_type,status:o.status,filledQuantity:o.status==='EXECUTED'?o.quantity:0,pendingQuantity:['PENDING','TRIGGERED'].includes(o.status)?o.quantity:0,createdAt:Number(o.created_at),updatedAt:Number(o.updated_at),executedAt:o.executed_at?Number(o.executed_at):null,rejectionReason:o.rejection_reason})),nextOffset:offset+limit<Number(count.rows[0].count)?offset+limit:null,partialFillsSupported:false};
+    }catch(e:any){return reply.status(400).send({error:e.message});}
+  });
+  app.get('/api/v1/history/orders/:id', {preHandler:[(app as any).authenticate]}, async (req:any,reply) => {
+    const result=await db.query('SELECT * FROM orders WHERE account_id=$1 AND id=$2',[req.user.accountId,req.params.id]);
+    const fill=await db.query('SELECT payload_json FROM execution_history WHERE account_id=$1 AND order_id=$2',[req.user.accountId,req.params.id]);
+    if(!result.rows.length)return reply.status(404).send({error:'Order not found'});
+    return {order:result.rows[0],fills:fill.rows.map(r=>JSON.parse(r.payload_json))};
+  });
   // 13. Multi-Watchlists (with add/remove item support)
   app.get('/api/v1/watchlists', { preHandler: [(app as any).authenticate] }, async (req: any) => {
     const res = await db.query(
@@ -1752,10 +1770,11 @@ export async function buildServer(
     const userId = req.user.userId;
 
     if (body.id) {
-      await db.query(
+      const updated=await db.query(
         'UPDATE watchlists SET name = $1, instruments_json = $2 WHERE id = $3 AND user_id = $4',
         [body.name, JSON.stringify(body.instruments || []), body.id, userId]
       );
+      if(!updated.rowCount)return reply.status(404).send({error:'Watchlist not found'});
       return { success: true, watchlistId: body.id };
     }
 
@@ -1763,7 +1782,7 @@ export async function buildServer(
     const existing = await db.query('SELECT COUNT(*) as count FROM watchlists WHERE user_id = $1', [userId]);
     const count = parseInt(existing.rows[0].count, 10);
 
-    const maxWatchlists = tier === 'PRO' ? 10 : 1;
+    const maxWatchlists = resolveAccessPolicy(tier).fullFeatureAccess ? 10 : 1;
     if (count >= maxWatchlists) {
       return reply.status(403).send({
         error: `Watchlist limit reached (${maxWatchlists} allowed for ${tier} tier). Upgrade to Pro for additional watchlists.`,
@@ -1930,9 +1949,11 @@ export async function buildServer(
             const decoded = (app as any).jwt?.verify(msg.token);
             if (decoded && decoded.userId) {
               clientState.userId = decoded.userId;
+              clientTokens.set(ws, msg.token);
               clientState.tier = await billingService.getAccountTier(decoded.userId);
               // Auto-subscribe client to their open positions so live P&L streams even when chart is closed
               const accountId = decoded.accountId || (await repo.provisionInitialAccount(decoded.userId))?.id;
+              (clientState as any).accountId=accountId;
               if (accountId) {
                 const userPositions = await repo.getPositions(accountId);
                 for (const pos of userPositions) {
@@ -1943,7 +1964,7 @@ export async function buildServer(
                       .getQuote(pos.globalInstrumentId)
                       .then((snap) => {
                         if (snap && ws.readyState === WebSocket.OPEN && clientState.subscriptions.has(pos.globalInstrumentId)) {
-                          ws.send(JSON.stringify({ type: 'QUOTE_TICK', data: snap }));
+                          ws.send(JSON.stringify({ type: 'QUOTE_TICK', data: snap, isSnapshot:true }));
                           wsTicksEmitted += 1;
                           lastWsEmitTime = Date.now();
                         }
@@ -1956,6 +1977,7 @@ export async function buildServer(
                 ws.send(
                   JSON.stringify({
                     type: 'AUTH_SUCCESS',
+                    access: resolveAccessPolicy(clientState.tier),
                     tier: clientState.tier,
                     serverTimestamp: Date.now(),
                   })
@@ -1981,7 +2003,7 @@ export async function buildServer(
               instruments.find((i) => i.globalId === s || i.symbol === s) ||
               parseFallbackInstrument(s);
 
-            if (clientState.tier === 'FREE' && !isFreeTierAllowedInstrument(inst)) {
+            if (!resolveAccessPolicy(clientState.tier,Boolean(clientState.userId)).fullFeatureAccess && !isFreeTierAllowedInstrument(inst) && !(clientState.userId && await canViewExposure({headers:{authorization:'Bearer '+(msg.token || clientTokens.get(ws))}},inst.globalId))) {
               if (ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: 'RESTRICTED_ACCESS', symbol: s, error: 'UPGRADE_REQUIRED' }));
               }

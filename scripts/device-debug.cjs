@@ -9,7 +9,7 @@ const WebSocket = require('ws');
   await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
   let expression;
   if (process.argv[2] === 'session') {
-    const sessions = JSON.parse(fs.readFileSync('C:/tmp/sikho-isolated-device-sessions.json', 'utf8'));
+    const sessions = JSON.parse(fs.readFileSync(process.env.SIKHO_DEVICE_SESSION_FILE || 'C:/tmp/sikho-isolated-device-sessions.json', 'utf8'));
     const sessionLiteral = JSON.stringify(JSON.stringify(sessions[process.argv[3] || 'FREE']));
     expression = `if (JSON.parse(TradingzoneNative.getGoogleSignInDiagnostics()).packageName !== 'com.indianpapertrading.debug') throw Error('Refusing fixture injection into release'); TradingzoneNative.saveSession(${sessionLiteral}); location.reload(); 'isolated session restored through encrypted storage'`;
   } else expression = fs.readFileSync(process.argv[2], 'utf8');

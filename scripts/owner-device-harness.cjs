@@ -66,7 +66,7 @@ const crypto = require('node:crypto');
     }
     sessions[tier] = { token: auth.token, user: auth.user, account: auth.account };
   }
-  fs.writeFileSync('C:/tmp/sikho-isolated-device-sessions.json', JSON.stringify(sessions));
-  await app.listen({ port: 4100, host: '127.0.0.1' });
-  console.info('ISOLATED_QA_READY port=4100 database=pg-mem controlledPrices=true newUnpaidAccounts=FREE');
+  fs.writeFileSync(process.env.SIKHO_DEVICE_SESSION_FILE || 'C:/tmp/sikho-isolated-device-sessions.json', JSON.stringify(sessions));
+  await app.listen({ port: Number(process.env.SIKHO_DEVICE_QA_PORT || 4100), host: '127.0.0.1' });
+  console.info('ISOLATED_QA_READY port='+Number(process.env.SIKHO_DEVICE_QA_PORT||4100)+' database=pg-mem controlledPrices=true newUnpaidAccounts=FREE');
 })().catch(err => { console.error(err.constructor.name, err.message); process.exit(1); });

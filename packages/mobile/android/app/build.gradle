@@ -9,8 +9,8 @@ android {
         applicationId "com.indianpapertrading"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 20
-        versionName "1.0.10"
+        versionCode 21
+        versionName "1.0.11"
     }
 
     buildFeatures {
@@ -24,6 +24,7 @@ android {
         debug {
             applicationIdSuffix ".debug"
             debuggable true
+            buildConfigField "String", "APP_OPEN_AD_UNIT_ID", "\"ca-app-pub-3940256099942544/9257395921\""
             manifestPlaceholders = [
                 admobAppId: "ca-app-pub-3940256099942544~3347511713"
             ]
@@ -34,6 +35,8 @@ android {
         }
         release {
             signingConfig signingConfigs.debug
+            def appOpenUnit = System.getenv("APP_OPEN_AD_UNIT_ID") ?: ""
+            buildConfigField "String", "APP_OPEN_AD_UNIT_ID", "\"${appOpenUnit}\""
             minifyEnabled false
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
             manifestPlaceholders = [
