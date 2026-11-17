@@ -1701,7 +1701,7 @@ button:focus-visible,[role=button]:focus-visible { outline:2px solid #2275c9; ou
 .history-detail {max-height:85vh;overflow:auto;color:#17324b;overflow-wrap:anywhere;}
 .history-error {color:#a32b3a !important;}
 .chart-stage-wrap {min-height:180px;flex:1 1 0;}
-.chart-indicator-label {position:absolute;top:28px;left:10px;right:70px;font-size:9px;color:#abbdd1;z-index:11;pointer-events:none;}
+.chart-indicator-label {position:absolute;bottom:40px;left:10px;right:70px;font-size:9px;color:#abbdd1;z-index:11;pointer-events:none;background:rgba(8,12,18,.8);}
 .ohlc-floating-legend {max-width:calc(100% - 65px);font-size:10px;overflow-wrap:anywhere;}
 .range-footer-strip {flex-wrap:wrap;height:auto;min-height:36px;gap:6px;flex-shrink:0;}
 .chart-top-bar,.chart-controls-strip {flex-shrink:0;}
