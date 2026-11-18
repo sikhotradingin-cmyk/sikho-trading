@@ -1569,16 +1569,49 @@ export class UpstoxAdapter implements IMarketDataProvider {
         } catch {}
       }
       this.clearWsHeartbeat();
-      this.ws = new WebSocket(wsUrl, { followRedirects: true, handshakeTimeout: 10000 });
+      this.ws = new WebSocket(wsUrl, {
+        headers: {
+          ...this.getAuthHeaders(),
+          'User-Agent': 'SikhoTrading/1.0',
+        },
+        followRedirects: true,
+        handshakeTimeout: 10000,
+      });
       const socket = this.ws;
-      socket.on('unexpected-response',(_req,response)=>{
-        if(this.ws!==socket){response.resume();return;}
-        this.wsHttpStatus=response.statusCode||null;this.isConnected=false;
-        this.wsResponseId=String(response.headers['x-request-id']||response.headers['cf-ray']||'')||null;
-        let body='';response.on('data',(chunk)=>{if(body.length<8192)body+=chunk.toString();});
-        response.on('end',()=>{try{const e=JSON.parse(body);const code=e.code||e.errorCode||e.errors?.[0]?.errorCode;if(typeof code==='string'&&/^[A-Z0-9_-]{1,80}$/i.test(code))this.wsErrorCode=code;}catch{};});
-        this.lastErrorReason=`Upstox WebSocket handshake rejected (HTTP ${this.wsHttpStatus}); no live prices assumed.`;
-        response.resume();socket.terminate();
+      socket.on('unexpected-response', (_req, response) => {
+        if (this.ws !== socket) {
+          response.resume();
+          return;
+        }
+        this.wsHttpStatus = response.statusCode || null;
+        this.isConnected = false;
+        this.wsResponseId = String(response.headers['x-request-id'] || response.headers['cf-ray'] || '') || null;
+        let body = '';
+        response.on('data', (chunk) => {
+          if (body.length < 8192) body += chunk.toString();
+        });
+        const finalize = () => {
+          try {
+            const e = JSON.parse(body);
+            const code = e.code || e.errorCode || e.errors?.[0]?.errorCode;
+            if (typeof code === 'string' && /^[A-Z0-9_-]{1,80}$/i.test(code)) {
+              this.wsErrorCode = code;
+            }
+            const msg = e.message || e.errors?.[0]?.message;
+            if (msg) {
+              this.lastErrorReason = `Upstox WebSocket handshake rejected (HTTP ${this.wsHttpStatus}): ${msg}`;
+            } else {
+              this.lastErrorReason = `Upstox WebSocket handshake rejected (HTTP ${this.wsHttpStatus}); no live prices assumed.`;
+            }
+          } catch {
+            this.lastErrorReason = `Upstox WebSocket handshake rejected (HTTP ${this.wsHttpStatus}); no live prices assumed.`;
+          }
+          try {
+            socket.terminate();
+          } catch {}
+        };
+        response.on('end', finalize);
+        setTimeout(finalize, 500);
       });
 
       this.ws.on('open', () => {
@@ -1607,7 +1640,9 @@ export class UpstoxAdapter implements IMarketDataProvider {
       this.ws.on('error', (err) => {
         if(this.ws!==socket)return;
         this.isConnected = false;
-        this.lastErrorReason = `Upstox WebSocket error: ${err.name}; handshake HTTP ${this.wsHttpStatus||'unavailable'}.`;
+        if (!this.lastErrorReason || !this.lastErrorReason.includes('rejected')) {
+          this.lastErrorReason = `Upstox WebSocket error: ${err.name}; handshake HTTP ${this.wsHttpStatus||'unavailable'}.`;
+        }
       });
 
       this.ws.on('close', () => {
