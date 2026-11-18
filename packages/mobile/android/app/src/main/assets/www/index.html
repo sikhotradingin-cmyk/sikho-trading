@@ -721,15 +721,15 @@
     <div id="modal-order-ticket" class="modal-backdrop" onclick="if(event.target===this) window.TZApp.closeOrderTicket()">
       <div class="white-bottom-sheet">
         <div class="sheet-handle"></div>
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;">
-          <div>
-            <div style="display:flex;align-items:center;gap:6px;">
-              <span id="ticket-symbol" style="font-size:17px;font-weight:700;">NIFTY FUT</span>
-              <span id="ticket-exchange-badge" class="tag-exch">NFO</span>
+        <div style="display:flex;flex-direction:column;gap:12px;margin-bottom:14px;">
+          <div style="min-width:0;width:100%;">
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px;">
+              <span id="ticket-symbol" style="font-size:17px;font-weight:700;width:100%;overflow-wrap:anywhere;">NIFTY FUT</span>
+              <span id="ticket-exchange-badge" class="tag-exch" style="white-space:normal;line-height:1.6;">NFO</span>
             </div>
             <div id="ticket-ltp-sub" class="tabular-nums" style="font-size:13px;color:var(--text-on-white-secondary);margin-top:2px;">LTP: —</div>
           </div>
-          <div class="segmented-pill-group">
+          <div class="segmented-pill-group" style="display:grid;grid-template-columns:1fr 1fr;width:100%;">
             <button id="ticket-side-buy" class="seg-pill-btn active" onclick="window.TZApp.setOrderSide('BUY')">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:-2px;margin-right:4px;"><path d="M21 7.5c-.8-.5-2.2-.5-3.3.3l-1.9 1.5C14.7 8.5 13.4 8 12 8s-2.7.5-3.8 1.3L6.3 7.8C5.2 7 3.8 7 3 7.5 1.9 8.2 2 9.5 2.5 11l1.5 4.5c.6 1.8 2.2 3 4.1 3.2L9 20h6l.9-1.3c1.9-.2 3.5-1.4 4.1-3.2L21.5 11c.5-1.5.6-2.8-.5-3.5zm-5.5 6.5c-.8 0-1.5-.7-1.5-1.5s.7-1.5 1.5-1.5 1.5.7 1.5 1.5-.7 1.5-1.5 1.5zm-7 0c-.8 0-1.5-.7-1.5-1.5s.7-1.5 1.5-1.5 1.5.7 1.5 1.5-.7 1.5-1.5 1.5z"/></svg>
               <span>BUY (Long)</span>

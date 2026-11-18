@@ -514,7 +514,11 @@ export class UpstoxAdapter implements IMarketDataProvider {
   private isDisposed = false;
   private quoteRequests = new Map<string, Promise<QuoteSnapshot | null>>();
   private quoteAttempts = new Map<string, number>();
-  private restWindow: number[] = [];
+  private restRequestTimes:number[]=[];
+  private restBlockedUntil=0;
+  private rest429Attempts=0;
+  private quoteQueue=new Map<string,{inst:InstrumentMetadata;cached?:QuoteSnapshot;resolve:(q:QuoteSnapshot|null)=>void}>();
+  private quoteBatchTimer:NodeJS.Timeout|null=null;
   private subscriptionsSent = new Map<string, number>();
   private decodeErrors = 0;
   private subscriptionErrors = 0;
@@ -1309,8 +1313,8 @@ export class UpstoxAdapter implements IMarketDataProvider {
   ): Promise<Candle[]> {
     const encodedKey = encodeURIComponent(upstoxKey);
     const url = `https://api.upstox.com/v3/historical-candle/${encodedKey}/${unit}/${interval}/${toDateStr}/${fromDateStr}`;
-    const res = await fetch(url, { headers: this.getAuthHeaders() });
-    if (!res.ok) return [];
+    const res = await fetch(url, { headers: this.getAuthHeaders(),signal:AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error(`Upstox history HTTP ${res.status}`);
     const json = (await res.json()) as any;
     if (json?.status === 'success' && Array.isArray(json.data?.candles)) {
       return this.parseUpstoxCandleRows(json.data.candles).candles;
@@ -1325,8 +1329,8 @@ export class UpstoxAdapter implements IMarketDataProvider {
   ): Promise<{ candles: Candle[]; latestOi?: number }> {
     const encodedKey = encodeURIComponent(upstoxKey);
     const url = `https://api.upstox.com/v3/historical-candle/intraday/${encodedKey}/${unit}/${interval}`;
-    const res = await fetch(url, { headers: this.getAuthHeaders() });
-    if (!res.ok) return { candles: [] };
+    const res = await fetch(url, { headers: this.getAuthHeaders(),signal:AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error(`Upstox intraday HTTP ${res.status}`);
     const json = (await res.json()) as any;
     if (json?.status === 'success' && Array.isArray(json.data?.candles)) {
       return this.parseUpstoxCandleRows(json.data.candles);
@@ -1376,6 +1380,7 @@ export class UpstoxAdapter implements IMarketDataProvider {
 
     const startTargetMs = Math.max(minAllowedMs, endMs - targetDays * 86400 * 1000);
     const mergedMap = new Map<number, Candle>();
+    let providerError:string|null=null;
 
     // Fetch today's intraday candles if loading latest window on an intraday timeframe
     if (!opts.before && !opts.to && !opts.from && timeframe !== '1D') {
@@ -1386,7 +1391,8 @@ export class UpstoxAdapter implements IMarketDataProvider {
             mergedMap.set(c.time, c);
           }
         }
-      } catch {
+      } catch (err:any) {
+        providerError=err?.message||'Intraday history unavailable';
         // continue with historical endpoint
       }
     }
@@ -1402,7 +1408,8 @@ export class UpstoxAdapter implements IMarketDataProvider {
       );
       const fromStr = this.formatISTDate(cursorStartMs);
       const toStr = this.formatISTDate(cursorEndMs);
-      const chunk = await this.fetchUpstoxHistoricalChunk(upstoxKey, unit, interval, fromStr, toStr);
+      let chunk:Candle[]=[];
+      try{chunk=await this.fetchUpstoxHistoricalChunk(upstoxKey, unit, interval, fromStr, toStr);}catch(err:any){providerError=err?.message||'Historical data unavailable';break;}
       chunksFetched++;
 
       for (const c of chunk) {
@@ -1445,29 +1452,7 @@ export class UpstoxAdapter implements IMarketDataProvider {
         }
       }
 
-      if (!opts.before && !opts.to && !opts.from) {
-        const existingQuote = this.quotes.get(inst.globalId);
-        const latestTimeMs = latestBar.time * 1000;
-        if (!existingQuote || latestTimeMs >= existingQuote.providerTimestamp) {
-          // Honest last-known snapshot derived from the latest provider candle. We deliberately do
-          // NOT synthesise a bid/ask spread from a candle close - that would look like an
-          // executable live book. Only ltp/OHLC/volume are populated.
-          this.quotes.set(inst.globalId, {
-            globalId: inst.globalId,
-            token: inst.token,
-            ltp: latestBar.close,
-            open: existingQuote?.open ?? latestBar.open,
-            high: existingQuote ? Math.max(existingQuote.high, latestBar.high) : latestBar.high,
-            low: existingQuote ? Math.min(existingQuote.low, latestBar.low) : latestBar.low,
-            close: prevSessionClose ?? existingQuote?.close ?? 0,
-            volume: latestBar.volume,
-            providerTimestamp: latestTimeMs,
-            receiveTimestamp: Date.now(),
-            source: 'UPSTOX',
-            isSimulated: false,
-          });
-        }
-      }
+      // History bars remain reference data; never cache them as executable quotes.
     }
 
     return {
@@ -1477,7 +1462,7 @@ export class UpstoxAdapter implements IMarketDataProvider {
       latestTime: sorted.length > 0 ? sorted[sorted.length - 1].time : null,
       sessionDateIST,
       prevSessionClose,
-      providerError: null,
+      providerError,
     };
   }
 
@@ -1496,79 +1481,44 @@ export class UpstoxAdapter implements IMarketDataProvider {
     }
 
     const pending=this.quoteRequests.get(inst.globalId);if(pending)return pending;
-    const now=Date.now();this.restWindow=this.restWindow.filter(t=>now-t<1000);
-    if(now-(this.quoteAttempts.get(inst.globalId)||0)<1500||this.restWindow.length>=8)return cached||null;
-    this.quoteAttempts.set(inst.globalId,now);this.restWindow.push(now);
-    const request=this.fetchRestQuote(inst,cached);this.quoteRequests.set(inst.globalId,request);
+    const now=Date.now();
+    if(now-(this.quoteAttempts.get(inst.globalId)||0)<1500||now<this.restBlockedUntil)return cached||null;
+    this.quoteAttempts.set(inst.globalId,now);
+    const request=this.queueRestQuote(inst,cached);this.quoteRequests.set(inst.globalId,request);
     try{return await request;}finally{this.quoteRequests.delete(inst.globalId);}
   }
 
-  private async fetchRestQuote(inst: InstrumentMetadata, cached?: QuoteSnapshot): Promise<QuoteSnapshot|null> {
-
-    const upstoxKey = inst.upstoxInstrumentKey!;
-
-    // 1. Authenticated Upstox Market Quote V2 if token is configured
-    if (this.hasConfiguredToken()) {
-      try {
-        const url = `https://api.upstox.com/v2/market-quote/quotes?instrument_key=${encodeURIComponent(upstoxKey)}`;
-        const res = await fetch(url, { headers: this.getAuthHeaders(), signal:AbortSignal.timeout(3000) });
-        this.restStatus.set(inst.globalId,{http:res.status,at:Date.now()});
-        if (res.ok) {
-          const json = (await res.json()) as any;
-          const dataMap = json?.data || {};
-          const item = Object.values(dataMap).find((v:any)=>v?.instrument_token===upstoxKey) as any;
-          if (item && Number(item.last_price) > 0) {
-            this.isTokenVerified = true;
-            const ltp = Number(item.last_price);
-            const ohlc = item.ohlc || {};
-            const depthBuy = item.depth?.buy?.[0];
-            const depthSell = item.depth?.sell?.[0];
-            const snap: QuoteSnapshot = {
-              globalId: inst.globalId,
-              token: inst.token,
-              ltp,
-              open: Number(ohlc.open || ltp),
-              high: Number(ohlc.high || ltp),
-              low: Number(ohlc.low || ltp),
-              close: Number(ohlc.close || 0),
-              bidPrice: depthBuy?.price ? Number(depthBuy.price) : Number((ltp - inst.tickSize).toFixed(2)),
-              bidQty: depthBuy?.quantity ? Number(depthBuy.quantity) : undefined,
-              askPrice: depthSell?.price ? Number(depthSell.price) : Number((ltp + inst.tickSize).toFixed(2)),
-              askQty: depthSell?.quantity ? Number(depthSell.quantity) : undefined,
-              volume: item.volume !== undefined ? Number(item.volume) : undefined,
-              openInterest: item.oi !== undefined ? Number(item.oi) : undefined,
-              providerTimestamp: upstoxEpochMs(item.timestamp) || upstoxEpochMs(item.last_trade_time),
-              lastTradeTimestamp: upstoxEpochMs(item.last_trade_time),
-              timestampSource: upstoxEpochMs(item.timestamp)?'UPSTOX_REST_TIMESTAMP':'LAST_TRADE_FALLBACK',
-              isTradeEvent:false,
-              isSnapshot:true,
-              receiveTimestamp: Date.now(),
-              source: 'UPSTOX',
-              isSimulated: false,
-            };
-            // A slow REST response cannot roll back a newer WS quote.
-            if(snap.providerTimestamp>Date.now()+1000||(snap.lastTradeTimestamp||0)>Date.now()+1000){this.restStatus.set(inst.globalId,{http:res.status,error:'SOURCE_CLOCK_IN_FUTURE',at:Date.now()});return cached||null;}
-            const latest=this.quotes.get(inst.globalId);
-            if(latest && latest.providerTimestamp>snap.providerTimestamp)return latest;
-            this.quotes.set(inst.globalId, snap);
-            if(!this.lastPublishedTrade.has(inst.globalId))this.lastPublishedTrade.set(inst.globalId,snap.lastTradeTimestamp||0);
-            this.lastTickTime=Math.max(this.lastTickTime,snap.receiveTimestamp);
-            this.lastSourceEventTimestamp=Math.max(this.lastSourceEventTimestamp,snap.providerTimestamp);
-            return snap;
-          }
-        }
-      } catch (err:any) {
-        this.restStatus.set(inst.globalId,{http:null,error:err?.name||'QuoteRequestError',at:Date.now()});
-        // Fall through
-      }
-    }
-
-    // 2. Unauthenticated Mode: Do NOT synthesize executable "LIVE" quotes from candle closes.
-    // If the token is missing, return cached quote if available or null.
-    // Historical candle-derived values can be viewed in the chart, but are NOT served as fresh executable live quotes.
-    return cached || null;
+  private queueRestQuote(inst:InstrumentMetadata,cached?:QuoteSnapshot):Promise<QuoteSnapshot|null>{
+    return new Promise(resolve=>{this.quoteQueue.set(inst.globalId,{inst,cached,resolve});if(!this.quoteBatchTimer)this.quoteBatchTimer=setTimeout(()=>{this.quoteBatchTimer=null;void this.flushRestQuotes();},20);});
   }
 
+  private async flushRestQuotes():Promise<void>{
+    const pending=[...this.quoteQueue.values()].slice(0,100);pending.forEach(p=>this.quoteQueue.delete(p.inst.globalId));
+    const now=Date.now();this.restRequestTimes=this.restRequestTimes.filter(t=>now-t<1800000);
+    const limited=now<this.restBlockedUntil||this.restRequestTimes.length>=1500||this.restRequestTimes.filter(t=>now-t<60000).length>=240||this.restRequestTimes.filter(t=>now-t<1000).length>=4;
+    const resolved=new Set<string>();
+    const finish=(p:typeof pending[number],q:QuoteSnapshot|null)=>{resolved.add(p.inst.globalId);p.resolve(q);};
+    try{
+      if(!pending.length||!this.hasConfiguredToken()||limited)return;
+      this.restRequestTimes.push(now);
+      const keys=pending.map(p=>p.inst.upstoxInstrumentKey!).join(',');
+      const res=await fetch('https://api.upstox.com/v2/market-quote/quotes?instrument_key='+encodeURIComponent(keys),{headers:this.getAuthHeaders(),signal:AbortSignal.timeout(3000)});
+      pending.forEach(p=>this.restStatus.set(p.inst.globalId,{http:res.status,at:Date.now()}));
+      if(res.status===429){const retry=res.headers.get('retry-after');const seconds=Number(retry),at=retry?Date.parse(retry):NaN;const wait=Number.isFinite(seconds)&&seconds>0?seconds*1000:Number.isFinite(at)?Math.max(0,at-Date.now()):Math.min(300000,30000*2**Math.min(this.rest429Attempts++,4));this.restBlockedUntil=Date.now()+Math.max(30000,wait);return;}
+      if(!res.ok)return;
+      this.rest429Attempts=0;
+      const json=await res.json() as any,items=Object.values(json?.data||{}) as any[];
+      for(const p of pending){const inst=p.inst,item=items.find(v=>v?.instrument_token===inst.upstoxInstrumentKey);if(!item||!(Number(item.last_price)>0))continue;
+        this.isTokenVerified=true;const ltp=Number(item.last_price),ohlc=item.ohlc||{},buy=item.depth?.buy?.[0],sell=item.depth?.sell?.[0];
+        const snap:QuoteSnapshot={globalId:inst.globalId,token:inst.token,ltp,open:Number(ohlc.open||ltp),high:Number(ohlc.high||ltp),low:Number(ohlc.low||ltp),close:Number(ohlc.close||0),bidPrice:buy?.price?Number(buy.price):undefined,bidQty:buy?.quantity?Number(buy.quantity):undefined,askPrice:sell?.price?Number(sell.price):undefined,askQty:sell?.quantity?Number(sell.quantity):undefined,volume:item.volume!==undefined?Number(item.volume):undefined,openInterest:item.oi!==undefined?Number(item.oi):undefined,providerTimestamp:upstoxEpochMs(item.timestamp)||upstoxEpochMs(item.last_trade_time),lastTradeTimestamp:upstoxEpochMs(item.last_trade_time),timestampSource:upstoxEpochMs(item.timestamp)?'UPSTOX_REST_TIMESTAMP':'LAST_TRADE_FALLBACK',isSnapshot:true,isTradeEvent:false,receiveTimestamp:Date.now(),source:'UPSTOX',isSimulated:false};
+        if(snap.providerTimestamp>Date.now()+1000||(snap.lastTradeTimestamp||0)>Date.now()+1000){this.restStatus.set(inst.globalId,{http:res.status,error:'SOURCE_CLOCK_IN_FUTURE',at:Date.now()});continue;}
+        const latest=this.quotes.get(inst.globalId);if(latest&&latest.providerTimestamp>snap.providerTimestamp){finish(p,latest);continue;}
+        this.quotes.set(inst.globalId,snap);if(!this.lastPublishedTrade.has(inst.globalId))this.lastPublishedTrade.set(inst.globalId,snap.lastTradeTimestamp||0);
+        this.lastTickTime=Math.max(this.lastTickTime,snap.receiveTimestamp);this.lastSourceEventTimestamp=Math.max(this.lastSourceEventTimestamp,snap.providerTimestamp);finish(p,snap);
+      }
+    }catch(err:any){pending.forEach(p=>this.restStatus.set(p.inst.globalId,{http:null,error:err?.name||'QuoteRequestError',at:Date.now()}));}
+    finally{pending.forEach(p=>{if(!resolved.has(p.inst.globalId))p.resolve(this.quotes.get(p.inst.globalId)||p.cached||null);});if(this.quoteQueue.size&&!this.quoteBatchTimer)this.quoteBatchTimer=setTimeout(()=>{this.quoteBatchTimer=null;void this.flushRestQuotes();},250);}
+  }
   private scheduleWebSocketReconnect(): void {
     if (this.isDisposed || !this.hasConfiguredToken()) return;
     if (this.wsReconnectTimer) {
@@ -1782,6 +1732,7 @@ export class UpstoxAdapter implements IMarketDataProvider {
       lastDecodeAt: this.lastDecodeAt,
       cachedQuotesCount: this.quotes.size,
       wsConnected: this.isConnected,
+      restRecovery:{requestsLastMinute:this.restRequestTimes.filter(t=>Date.now()-t<60000).length,requestsLast30Minutes:this.restRequestTimes.length,nextRetryAt:this.restBlockedUntil||null,queuedKeys:this.quoteQueue.size},
       decodeErrors:this.decodeErrors,subscriptionErrors:this.subscriptionErrors,authHttpStatus:this.authHttpStatus,connectionFlow:'DIRECT_AUTHENTICATED_V3',wsHttpStatus:this.wsHttpStatus,wsErrorCode:this.wsErrorCode,wsResponseId:this.wsResponseId,
     };
   }
@@ -1950,6 +1901,10 @@ export class UpstoxAdapter implements IMarketDataProvider {
 
   public async dispose(): Promise<void> {
     this.isDisposed = true;
+    this.socketGeneration++;
+    if(this.quoteBatchTimer){clearTimeout(this.quoteBatchTimer);this.quoteBatchTimer=null;}
+    for(const [gid,p] of this.quoteQueue)p.resolve(this.quotes.get(gid)||p.cached||null);
+    this.quoteQueue.clear();
     this.clearWsHeartbeat();
     if (this.wsReconnectTimer) {
       clearTimeout(this.wsReconnectTimer);

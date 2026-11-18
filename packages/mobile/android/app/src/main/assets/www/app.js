@@ -2889,7 +2889,17 @@
       );
       if (seq !== state.chartLoadSeq) return; // Discard stale response from earlier switch
 
-      state.candles = sanitizeChartCandles(data.candles || []);
+      const incomingHistory=sanitizeChartCandles(data.candles || []);
+      if(!incomingHistory.length&&data.providerError){
+        state.chartLoading=false;
+        if(state.chartDataKey!==gid+':'+tf){state.candles=[];candleSeries?.setData([]);}
+        else for(const tick of state.chartPendingTicks||[])if(tick.globalId===gid)reconcileCandleWithTick(tick,false);
+        state.chartPendingTicks=[];
+        document.getElementById('chart-ohlc-legend').textContent='History unavailable: '+data.providerError;
+        document.getElementById('chart-candle-stats').textContent='Tap an interval to retry. Last received bars are preserved when available.';
+        updateChartCountdownUI();return;
+      }
+      state.candles = incomingHistory;state.chartDataKey=gid+':'+tf;
       state.chartLoading=false;
       state.hasMoreHistory = Boolean(data.hasMore);
       state.earliestTime = data.earliestTime;
@@ -3536,7 +3546,7 @@
     if (tickValEl) tickValEl.textContent = `₹${tickValue.toFixed(2)}`;
 
     const unitSpecEl = document.getElementById('ticket-unit-spec');
-    if (unitSpecEl) unitSpecEl.textContent = inst.tradingUnit ? `Unit: ${inst.tradingUnit}` : `Lot: ${inst.lotSize || 1}`;
+    if (unitSpecEl) unitSpecEl.textContent = inst.instrumentType==='EQUITY_STOCK'?'Unit: shares':inst.exchange==='MCX'&&inst.tradingUnit?`Unit: ${inst.tradingUnit}`:`Lot: ${inst.lotSize || 1} units`;
 
     // Dynamic Stop Loss Risk & R:R Calculator
     const slVal = parseFloat(document.getElementById('ticket-input-sl').value);
@@ -4385,7 +4395,18 @@
     pulse();ticketQuoteTimer=setInterval(pulse,1000);
   }
   function getMarketDataDiagnostics(){
-    return [state.activeInstrument,state.orderTicket?.open?state.orderTicket.instrument:null].filter(Boolean).map(i=>({globalId:i.globalId,providerKey:i.upstoxInstrumentKey,expiry:i.expiry,lotSize:i.lotSize,tickSize:i.tickSize,desiredSubscription:collectDesiredSubscriptions().includes(i.globalId),wsConnected:state.wsConnected,lastProviderEventTimestamp:state.quotesMap?.get(i.globalId)?.providerTimestamp,lastTradeTimestamp:state.quotesMap?.get(i.globalId)?.lastTradeTimestamp,backendReceiptTimestamp:state.quotesMap?.get(i.globalId)?.receiveTimestamp,frontendReceiptTimestamp:state.lastTickClientReceiveMs?.[i.globalId],frontendRenderTimestamp:state.lastRenderByInstrument?.[i.globalId],quoteSource:state.quotesMap?.get(i.globalId)?.source,ageMs:quoteFreshnessMs(state.quotesMap?.get(i.globalId)),provider:state.providerDiagnostics?.[i.globalId]}));
+    const offset=serverNowMs()-Date.now();
+    return [state.activeInstrument,state.orderTicket?.open?state.orderTicket.instrument:null].filter(Boolean).map(i=>{
+      const q=state.quotesMap?.get(i.globalId),age=quoteFreshnessMs(q);
+      return {globalId:i.globalId,providerKey:i.upstoxInstrumentKey,expiry:i.expiry,lotSize:i.lotSize,tickSize:i.tickSize,
+        desiredSubscription:collectDesiredSubscriptions().includes(i.globalId),appSocketConnected:state.wsConnected,
+        lastProviderEventTimestamp:q?.providerTimestamp,lastTradeTimestamp:q?.lastTradeTimestamp,backendReceiptTimestamp:q?.receiveTimestamp,
+        frontendReceiptTimestamp:state.lastSeenQuoteReceipt?.[i.globalId]||state.lastTickClientReceiveMs?.[i.globalId],
+        frontendRenderTimestamp:state.lastRenderByInstrument?.[i.globalId],frontendClockOffsetMs:offset,
+        quoteSource:q?.source,timestampSource:q?.timestampSource,ageMs:Number.isFinite(age)?age:null,
+        provider:state.providerDiagnostics?.[i.globalId],chart:state.chartOpen&&state.activeInstrument?.globalId===i.globalId?{
+          timeframe:state.activeTimeframe,barCount:state.candles.length,lastBars:state.candles.slice(-3).map(c=>({...c}))}:null};
+    });
   }
 
   function scheduleWsReconnect() {
