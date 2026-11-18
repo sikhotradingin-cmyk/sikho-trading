@@ -4281,7 +4281,12 @@
     const tickAgeMs = quoteFreshnessMs(state.quotesMap?.get(inst?.globalId));
     if (tickAgeMs > 5000) {
       pill.classList.add('state-warn');
-      pill.textContent = `⚠ Stale Feed • ${timeStr}`;
+      if (!lastInstTickMs || lastInstTickMs === 0 || tickAgeMs > 300000) {
+        pill.textContent = `⏳ Waiting for live prices • ${timeStr}`;
+        if (feed) feed.textContent = 'Waiting for live prices';
+      } else {
+        pill.textContent = `⚠ Stale Feed • ${timeStr}`;
+      }
       return;
     }
 
@@ -4612,6 +4617,20 @@
     state.lastChartAppliedPriceMs=Math.max(state.lastChartAppliedPriceMs||0,tickTimeMs);
   }
 
+  let portfolioUpdateScheduled = false;
+  function schedulePortfolioPnlUpdate() {
+    if (portfolioUpdateScheduled) return;
+    portfolioUpdateScheduled = true;
+    const scheduleFn = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (cb) => setTimeout(cb, 16);
+    scheduleFn(() => {
+      portfolioUpdateScheduled = false;
+      renderAccountBalancesUI();
+      if (state.mainTab === 'portfolio') {
+        renderPortfolioTab();
+      }
+    });
+  }
+
   function handleIncomingQuoteTick(quote,isSnapshot=false) {
     if (!quote || !quote.globalId) return;
     state.lastSeenQuoteReceipt=state.lastSeenQuoteReceipt||{};state.lastSeenQuoteReceipt[quote.globalId]=Date.now();
@@ -4703,10 +4722,7 @@
       const c2 = updatePosList(state.positionsData.activePositions);
       const c3 = updatePosList(state.positionsData.holdings);
       if (c1 || c2 || c3) {
-        renderAccountBalancesUI();
-        if (state.mainTab === 'portfolio') {
-          renderPortfolioTab();
-        }
+        schedulePortfolioPnlUpdate();
       }
     }
 

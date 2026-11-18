@@ -94,7 +94,7 @@ export async function buildServer(
   db: IDatabase;
   billingService: BillingService;
 }> {
-  const app = Fastify({ logger: false });
+  const app = Fastify({ logger: false, trustProxy: true });
 
   const corsOrigin = process.env.CORS_ORIGIN
     ? process.env.CORS_ORIGIN.split(',').map((s) => s.trim())
@@ -102,6 +102,49 @@ export async function buildServer(
   await app.register(cors, { origin: corsOrigin });
   await app.register(jwt, { secret: config.jwtSecret });
   await app.register(websocket);
+
+  // Security Headers: enforce secure framing, transport security, and MIME-type integrity
+  app.addHook('onSend', async (_req, reply, payload) => {
+    reply.header('X-Content-Type-Options', 'nosniff');
+    reply.header('X-Frame-Options', 'DENY');
+    reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    return payload;
+  });
+
+  // Professional Safe Error Handler: Masks internal traces, database names, and raw SQL while returning actionable JSON
+  app.setErrorHandler((error: any, req, reply) => {
+    const statusCode =
+      typeof error.statusCode === 'number' && error.statusCode >= 400 && error.statusCode < 600
+        ? error.statusCode
+        : 500;
+    const requestId = (req.headers['x-auth-request-id'] as string) || req.id || randomUUID();
+
+    if (statusCode === 429) {
+      const retryAfter = error.retryAfter || 60;
+      reply.header('Retry-After', retryAfter);
+      return reply.status(429).send({
+        code: error.code || 'ERR_RATE_LIMIT_EXCEEDED',
+        error: error.message || 'Too many requests. Please wait a moment.',
+        retryAfter,
+        requestId,
+      });
+    }
+
+    if (statusCode >= 400 && statusCode < 500) {
+      return reply.status(statusCode).send({
+        code: error.code || 'ERR_BAD_REQUEST',
+        error: error.message || 'Invalid request.',
+        requestId,
+      });
+    }
+
+    console.error(`[UnhandledError] [${requestId}] ${req.method} ${req.url}:`, error?.stack || error?.message || error);
+    return reply.status(500).send({
+      code: 'ERR_INTERNAL_SERVER_ERROR',
+      error: 'An unexpected error occurred. Please try again shortly.',
+      requestId,
+    });
+  });
 
   // Security: Restrict development access strictly to loopback and RFC 1918 private LAN addresses ONLY in local dev if explicitly requested
   if (process.env.ENFORCE_LOCAL_DEV_IP === 'true') {
@@ -413,6 +456,13 @@ export async function buildServer(
 
   // 2B. Real User Sign-Up (Email + Password + Name)
   app.post('/api/v1/auth/register', async (req, reply) => {
+    const rateKey = `register:${req.ip}`;
+    const rl = checkRateLimit(rateKey, 10, 60000, 300000);
+    if (!rl.allowed) {
+      reply.header('Retry-After', rl.retryAfterSec);
+      return reply.status(429).send({ error: rl.error, code: 'ERR_RATE_LIMIT_EXCEEDED', retryAfter: rl.retryAfterSec });
+    }
+
     const body = (req.body as { email?: string; password?: string; name?: string }) || {};
     const email = (body.email || '').trim().toLowerCase();
     const password = body.password || '';
@@ -476,9 +526,10 @@ export async function buildServer(
       return reply.status(400).send({ error: 'Please enter a valid email address.', code: 'ERR_INVALID_EMAIL' });
     }
 
-    const rateKey = `login:${email}`;
-    const rl = checkRateLimit(rateKey, 5, 60000, 300000);
+    const rateKey = `login:${req.ip}:${email}`;
+    const rl = checkRateLimit(rateKey, 10, 60000, 300000);
     if (!rl.allowed) {
+      reply.header('Retry-After', rl.retryAfterSec);
       return reply.status(429).send({ error: rl.error, code: 'ERR_RATE_LIMIT_EXCEEDED', retryAfter: rl.retryAfterSec });
     }
 
@@ -607,8 +658,9 @@ export async function buildServer(
     }
 
     const rateKey = `google:${req.ip}`;
-    const rl = checkRateLimit(rateKey, 10, 60000, 300000);
+    const rl = checkRateLimit(rateKey, 15, 60000, 300000);
     if (!rl.allowed) {
+      reply.header('Retry-After', rl.retryAfterSec);
       return reply.status(429).send({ error: rl.error, code: 'ERR_RATE_LIMIT_EXCEEDED', retryAfter: rl.retryAfterSec });
     }
 
@@ -713,9 +765,10 @@ export async function buildServer(
       });
     }
 
-    const rateKey = `recover:${email}`;
-    const rl = checkRateLimit(rateKey, 3, 60000, 600000); // 3 attempts per min, 10 min lockout
+    const rateKey = `recover:${req.ip}:${email}`;
+    const rl = checkRateLimit(rateKey, 5, 60000, 600000); // 5 attempts per min, 10 min lockout
     if (!rl.allowed) {
+      reply.header('Retry-After', rl.retryAfterSec);
       return reply.status(429).send({ error: rl.error, code: 'ERR_RATE_LIMIT_EXCEEDED', retryAfter: rl.retryAfterSec });
     }
 
@@ -1067,8 +1120,21 @@ export async function buildServer(
       to?: string;
       range?: any;
     };
-    if (!query.globalId) {
-      return reply.status(400).send({ error: 'Missing globalId query parameter' });
+    const rateKey = `candles:${req.ip}`;
+    const rl = checkRateLimit(rateKey, 120, 60000, 60000);
+    if (!rl.allowed) {
+      reply.header('Retry-After', rl.retryAfterSec);
+      return reply.status(429).send({ error: rl.error, code: 'ERR_RATE_LIMIT_EXCEEDED', retryAfter: rl.retryAfterSec });
+    }
+
+    if (!query.globalId || typeof query.globalId !== 'string' || query.globalId.length > 128) {
+      return reply.status(400).send({ error: 'Missing or invalid globalId query parameter' });
+    }
+
+    const ALLOWED_TIMEFRAMES = new Set(['1m', '5m', '15m', '30m', '1h', '1d']);
+    const timeframe: Timeframe = query.timeframe || '5m';
+    if (!ALLOWED_TIMEFRAMES.has(timeframe)) {
+      return reply.status(400).send({ error: `Unsupported timeframe "${timeframe}". Permitted: 1m, 5m, 15m, 30m, 1h, 1d`, code: 'ERR_INVALID_TIMEFRAME' });
     }
 
     const access = await resolveAccessFromReq(req);
@@ -1086,7 +1152,6 @@ export async function buildServer(
       }
     }
 
-    const timeframe: Timeframe = query.timeframe || '5m';
     const rawLimit = query.limit || query.count;
     const limit = rawLimit ? parseInt(rawLimit, 10) : undefined;
     const before = query.before ? parseInt(query.before, 10) : undefined;
@@ -1144,8 +1209,15 @@ export async function buildServer(
   // 5. Market Data: Current Quote
   app.get('/api/v1/market-data/quote', async (req, reply) => {
     const query = req.query as { globalId?: string };
-    if (!query.globalId) {
-      return reply.status(400).send({ error: 'Missing globalId query parameter' });
+    const rateKey = `quote:${req.ip}`;
+    const rl = checkRateLimit(rateKey, 240, 60000, 60000);
+    if (!rl.allowed) {
+      reply.header('Retry-After', rl.retryAfterSec);
+      return reply.status(429).send({ error: rl.error, code: 'ERR_RATE_LIMIT_EXCEEDED', retryAfter: rl.retryAfterSec });
+    }
+
+    if (!query.globalId || typeof query.globalId !== 'string' || query.globalId.length > 128) {
+      return reply.status(400).send({ error: 'Missing or invalid globalId query parameter' });
     }
 
     const access = await resolveAccessFromReq(req);
@@ -1295,6 +1367,12 @@ export async function buildServer(
 
   app.post('/api/v1/account/reset', { preHandler: [(app as any).authenticate] }, async (req: any, reply) => {
     const accountId = req.user.accountId;
+    const rateKey = `reset:${accountId}`;
+    const rl = checkRateLimit(rateKey, 5, 3600000, 3600000);
+    if (!rl.allowed) {
+      reply.header('Retry-After', rl.retryAfterSec);
+      return reply.status(429).send({ error: rl.error, code: 'ERR_RATE_LIMIT_EXCEEDED', retryAfter: rl.retryAfterSec });
+    }
     const body = (req.body as { startingCapitalINR?: number }) || {};
     const requestedCapitalINR = body.startingCapitalINR ?? 100000;
     if(resolveAccessPolicy(await billingService.getAccountTier(req.user.userId)).accessMode==='FREE_LAUNCH' && !PREMIUM_CAPITAL_PRESETS_INR.includes(requestedCapitalINR))return reply.status(400).send({error:'Choose an approved Free Launch capital preset.',code:'ERR_CAPITAL_PRESET_REQUIRED'});
@@ -1361,9 +1439,46 @@ export async function buildServer(
 
   // 9. Place Simulated Order (with Free vs Pro tier & Discipline checks)
   app.post('/api/v1/orders/place', { preHandler: [(app as any).authenticate] }, async (req: any, reply) => {
-    const body = req.body as PlaceOrderRequest;
     const accountId = req.user.accountId;
     const userId = req.user.userId;
+
+    const rateKey = `order:${accountId}`;
+    const rl = checkRateLimit(rateKey, 20, 10000, 10000);
+    if (!rl.allowed) {
+      reply.header('Retry-After', rl.retryAfterSec);
+      return reply.status(429).send({ error: rl.error, code: 'ERR_RATE_LIMIT_EXCEEDED', retryAfter: rl.retryAfterSec });
+    }
+
+    const body = req.body as PlaceOrderRequest;
+    if (!body || typeof body !== 'object') {
+      return reply.status(400).send({ error: 'Invalid order request payload.', code: 'ERR_INVALID_PAYLOAD' });
+    }
+    const { globalInstrumentId, side, orderType, quantity, requestedPrice, triggerPrice, idempotencyKey } = body;
+    if (!globalInstrumentId || typeof globalInstrumentId !== 'string' || globalInstrumentId.length > 128) {
+      return reply.status(400).send({ error: 'Valid globalInstrumentId is required.', code: 'ERR_INVALID_INSTRUMENT' });
+    }
+    if (!['BUY', 'SELL'].includes(side)) {
+      return reply.status(400).send({ error: 'Side must be BUY or SELL.', code: 'ERR_INVALID_SIDE' });
+    }
+    if (!['MARKET', 'LIMIT', 'STOP_MARKET', 'STOP_LIMIT'].includes(orderType)) {
+      return reply.status(400).send({ error: 'Order type must be MARKET, LIMIT, STOP_MARKET, or STOP_LIMIT.', code: 'ERR_INVALID_ORDER_TYPE' });
+    }
+    if (!Number.isInteger(quantity) || quantity <= 0 || quantity > 10000000) {
+      return reply.status(400).send({ error: 'Quantity must be a positive integer.', code: 'ERR_INVALID_QUANTITY' });
+    }
+    if (['LIMIT', 'STOP_LIMIT'].includes(orderType)) {
+      if (!Number.isFinite(requestedPrice) || requestedPrice! <= 0) {
+        return reply.status(400).send({ error: 'Limit orders require a positive requestedPrice.', code: 'ERR_INVALID_PRICE' });
+      }
+    }
+    if (['STOP_MARKET', 'STOP_LIMIT'].includes(orderType)) {
+      if (!Number.isFinite(triggerPrice) || triggerPrice! <= 0) {
+        return reply.status(400).send({ error: 'Stop orders require a positive triggerPrice.', code: 'ERR_INVALID_TRIGGER_PRICE' });
+      }
+    }
+    if (!idempotencyKey || typeof idempotencyKey !== 'string' || idempotencyKey.length > 128) {
+      return reply.status(400).send({ error: 'Valid idempotencyKey string is required.', code: 'ERR_INVALID_IDEMPOTENCY_KEY' });
+    }
 
     const account = await repo.getAccount(accountId);
     if (!account) return reply.status(404).send({ error: 'Account not found' });
@@ -1701,6 +1816,12 @@ export async function buildServer(
     return {metrics:history.summary,methodology:history.methodology,legacyNote:history.legacyNote};
   });
   app.get('/api/v1/journal/export.csv', {preHandler:[(app as any).authenticate]}, async (req:any,reply) => {
+    const rateKey = `export:${req.user.accountId}`;
+    const rl = checkRateLimit(rateKey, 5, 60000, 300000);
+    if (!rl.allowed) {
+      reply.header('Retry-After', rl.retryAfterSec);
+      return reply.status(429).send({ error: rl.error, code: 'ERR_RATE_LIMIT_EXCEEDED', retryAfter: rl.retryAfterSec });
+    }
     const q={...req.query,limit:100};const initial=await readTradeHistory(db,req.user.accountId,q);
     const cell=(x:any)=>'"'+String(x??'').replace(/"/g,'""')+'"';
     async function* rows(){
@@ -1724,12 +1845,22 @@ export async function buildServer(
     return {sessions:r.rows.map(x=>({id:x.id,startedAt:Number(x.started_at),endedAt:x.ended_at?Number(x.ended_at):null,isActive:x.is_active}))};
   });
   app.get('/api/v1/orders/page', {preHandler:[(app as any).authenticate]}, async (req:any,reply) => {
-    try{const {from,to}=historyBounds(req.query);const limit=40,offset=Math.max(0,Math.min(1000000,Math.floor(Number(req.query.offset)||0)));const status=['EXECUTED','PENDING','CANCELLED','REJECTED','TRIGGERED'].includes(req.query.status)?req.query.status:null;
-    const params:any[]=[req.user.accountId,from,to];const filter=status?' AND status=$4':'';if(status)params.push(status);
-    const count=await db.query('SELECT COUNT(*) as count FROM orders WHERE account_id=$1 AND created_at >= $2 AND created_at < $3'+filter,params);
-    const rows=await db.query('SELECT * FROM orders WHERE account_id=$1 AND created_at >= $2 AND created_at < $3'+filter+' ORDER BY created_at DESC,id DESC LIMIT 40 OFFSET '+offset,params);
-    const statuses=await db.query('SELECT status,COUNT(*) as count FROM orders WHERE account_id=$1 AND created_at >= $2 AND created_at < $3 GROUP BY status',[req.user.accountId,from,to]);
-    return {counts:Object.fromEntries(statuses.rows.map(r=>[r.status,Number(r.count)])),orders:rows.rows.map((o:any)=>({id:o.id,globalInstrumentId:o.global_instrument_id,side:o.side,quantity:o.quantity,orderType:o.order_type,status:o.status,filledQuantity:o.status==='EXECUTED'?o.quantity:0,pendingQuantity:['PENDING','TRIGGERED'].includes(o.status)?o.quantity:0,createdAt:Number(o.created_at),updatedAt:Number(o.updated_at),executedAt:o.executed_at?Number(o.executed_at):null,rejectionReason:o.rejection_reason})),nextOffset:offset+limit<Number(count.rows[0].count)?offset+limit:null,partialFillsSupported:false};
+    try{
+      const {from,to}=historyBounds(req.query);
+      const limit=40;
+      const offset=Math.max(0,Math.min(1000000,Math.floor(Number(req.query.offset)||0)));
+      const status=['EXECUTED','PENDING','CANCELLED','REJECTED','TRIGGERED'].includes(req.query.status)?req.query.status:null;
+      const params:any[]=[req.user.accountId,from,to];
+      const filter=status?' AND status=$4':'';
+      if(status)params.push(status);
+      const count=await db.query('SELECT COUNT(*) as count FROM orders WHERE account_id=$1 AND created_at >= $2 AND created_at < $3'+filter,params);
+      const queryParams = [...params, limit, offset];
+      const rows = await db.query(
+        `SELECT * FROM orders WHERE account_id = $1 AND created_at >= $2 AND created_at < $3${filter} ORDER BY created_at DESC, id DESC LIMIT $${queryParams.length - 1} OFFSET $${queryParams.length}`,
+        queryParams
+      );
+      const statuses=await db.query('SELECT status,COUNT(*) as count FROM orders WHERE account_id=$1 AND created_at >= $2 AND created_at < $3 GROUP BY status',[req.user.accountId,from,to]);
+      return {counts:Object.fromEntries(statuses.rows.map(r=>[r.status,Number(r.count)])),orders:rows.rows.map((o:any)=>({id:o.id,globalInstrumentId:o.global_instrument_id,side:o.side,quantity:o.quantity,orderType:o.order_type,status:o.status,filledQuantity:o.status==='EXECUTED'?o.quantity:0,pendingQuantity:['PENDING','TRIGGERED'].includes(o.status)?o.quantity:0,createdAt:Number(o.created_at),updatedAt:Number(o.updated_at),executedAt:o.executed_at?Number(o.executed_at):null,rejectionReason:o.rejection_reason})),nextOffset:offset+limit<Number(count.rows[0].count)?offset+limit:null,partialFillsSupported:false};
     }catch(e:any){return reply.status(400).send({error:e.message});}
   });
   app.get('/api/v1/history/orders/:id', {preHandler:[(app as any).authenticate]}, async (req:any,reply) => {
@@ -1926,12 +2057,34 @@ export async function buildServer(
   // 15. WebSocket Real-time Channel (with token-based client ownership & entitlement gating)
   app.get('/ws', { websocket: true }, (connection: any) => {
     const ws = (connection.socket || connection) as WebSocket;
-    const clientState: { ws: WebSocket; userId?: string; tier: UserTier; subscriptions: Set<string> } = {
+    const clientState: {
+      ws: WebSocket;
+      userId?: string;
+      tier: UserTier;
+      subscriptions: Set<string>;
+      msgCount: number;
+      msgWindowResetAt: number;
+      authTimer: NodeJS.Timeout | null;
+    } = {
       ws,
       tier: 'FREE',
       subscriptions: new Set<string>(),
+      msgCount: 0,
+      msgWindowResetAt: Date.now() + 1000,
+      authTimer: null,
     };
     wsClients.add(clientState as any);
+
+    // Auth timeout: unauthenticated connections are disconnected after 30 seconds
+    clientState.authTimer = setTimeout(() => {
+      if (!clientState.userId && ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify({ type: 'AUTH_TIMEOUT', error: 'Authentication timeout. Please authenticate within 30 seconds.' }));
+          ws.close(4401, 'Authentication timeout');
+        } catch {}
+      }
+    }, 30000);
+    if (typeof clientState.authTimer.unref === 'function') clientState.authTimer.unref();
 
     for (const inst of instruments) {
       if (isFreeTierAllowedInstrument(inst)) {
@@ -1944,10 +2097,36 @@ export async function buildServer(
 
     const processClientMessage = async (raw: any) => {
       try {
+        const rawBuf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+        if (rawBuf.length > 65536) {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'ERROR', code: 'ERR_PAYLOAD_TOO_LARGE', error: 'Message payload too large (max 64KB).' }));
+          }
+          return;
+        }
+
+        const now = Date.now();
+        if (now > clientState.msgWindowResetAt) {
+          clientState.msgCount = 1;
+          clientState.msgWindowResetAt = now + 1000;
+        } else {
+          clientState.msgCount++;
+          if (clientState.msgCount > 50) {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'ERROR', code: 'ERR_WS_RATE_LIMIT', error: 'Message rate limit exceeded. Max 50 messages per second.' }));
+            }
+            return;
+          }
+        }
+
         const msg = JSON.parse(raw.toString());
         const actionType = (msg.action || msg.type || '').toUpperCase();
 
         if (actionType === 'AUTH' && msg.token) {
+          if (clientState.authTimer) {
+            clearTimeout(clientState.authTimer);
+            clientState.authTimer = null;
+          }
           try {
             const decoded = (app as any).jwt?.verify(msg.token);
             if (decoded && decoded.userId) {
@@ -1993,6 +2172,12 @@ export async function buildServer(
             }
           }
         } else if (actionType === 'SUBSCRIBE' && Array.isArray(msg.symbols)) {
+          if (clientState.subscriptions.size + msg.symbols.length > 150) {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'ERROR', code: 'ERR_SUBSCRIPTION_CAP', error: 'Subscription cap exceeded (maximum 150 symbols per connection).' }));
+            }
+            return;
+          }
           if (clientState.userId) {
             clientState.tier = await billingService.getAccountTier(clientState.userId);
           }
@@ -2091,6 +2276,10 @@ export async function buildServer(
 
     ws.on('close', () => {
       clearInterval(heartbeat);
+      if (clientState.authTimer) {
+        clearTimeout(clientState.authTimer);
+        clientState.authTimer = null;
+      }
       wsClients.delete(clientState as any);
       releaseUnusedEngineSubscriptions().catch(() => {});
     });
