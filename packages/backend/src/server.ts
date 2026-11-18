@@ -2031,6 +2031,7 @@ export async function buildServer(
                   type: 'FORMING_CANDLE_SNAPSHOT',
                   globalId: canonicalId,
                   candles: cachedForming,
+                  priceEventTimestamp:formingTracker.lastPriceEventTimestamp(canonicalId),
                   serverTimestamp: Date.now(),
                 })
               );

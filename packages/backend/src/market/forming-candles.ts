@@ -101,6 +101,7 @@ export interface FormingCandleBar {
 interface InstrumentFormingState {
   exchange: string;
   byTimeframe: Partial<Record<Timeframe, FormingCandleBar>>;
+  lastPriceEventMs:number;
 }
 
 const TRACKED_TIMEFRAMES: Timeframe[] = ['1m', '3m', '5m', '15m', '30m', '1h', '1D'];
@@ -134,9 +135,11 @@ export class FormingCandleTracker {
     const exchange = normaliseExchange(globalId);
     let state = this.instruments.get(globalId);
     if (!state) {
-      state = { exchange, byTimeframe: {} };
+      state = { exchange, byTimeframe: {},lastPriceEventMs:0 };
       this.instruments.set(globalId, state);
     }
+    if(eventTs<state.lastPriceEventMs){this.ticksRejected++;return false;}
+    state.lastPriceEventMs=eventTs;
 
     // Convert cumulative day volume to a per-candle delta.
     let volumeDelta = 0;
@@ -191,6 +194,7 @@ export class FormingCandleTracker {
     }
     return Object.keys(out).length > 0 ? out : null;
   }
+  public lastPriceEventTimestamp(globalId:string):number{return this.instruments.get(globalId)?.lastPriceEventMs||0;}
 
   /** Drops state for instruments that no longer need tracking (e.g. long-closed positions). */
   public forget(globalId: string): void {

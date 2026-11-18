@@ -1119,7 +1119,7 @@
     state.entitlementResolved = false;
     state.access=null;state.quotesMap=new Map();
     state.orderTicket.open=false;clearInterval(ticketQuoteTimer);ticketQuoteTimer=null;
-    state.lastTickTimestamps={};state.lastTickClientReceiveMs={};state.lastRenderByInstrument={};state.wsSubscribed=new Set();
+    state.lastTickTimestamps={};state.lastTickClientReceiveMs={};state.lastSeenQuoteReceipt={};state.lastRenderByInstrument={};state.providerDiagnostics={};state.wsSubscribed=new Set();
     window.SikhoHistory?.clear();
     document.getElementById('modal-history-csv')?.remove();
     stopFeedHealthPolling();
@@ -2872,7 +2872,7 @@
     chartRequestController?.abort();
     chartRequestController=new AbortController();
     const seq = ++state.chartLoadSeq;
-    state.chartLoading=true;state.chartPendingTicks=[];state.chartBarUpdates={};
+    state.chartLoading=true;state.chartPendingTicks=[];state.chartBarUpdates={};state.lastChartAppliedPriceMs=0;
     state.isFetchingOlder = false;
     state.isUserScrolledBack = false;
     document.getElementById('btn-go-latest').style.display = 'none';
@@ -2940,6 +2940,7 @@
       updateChartCountdownUI();
       recalculateAndRenderIndicators();
       renderDrawingsSvgOverlay();
+      sendWsSubscribe([gid]); // Request genuine forming bars after this timeframe's history is ready.
     } catch (err) {
       if(seq===state.chartLoadSeq&&err.name!=='AbortError'){
         state.chartLoading=false;
@@ -3000,7 +3001,7 @@
    * in flight, then restores the user's viewport (unless they are following the latest bar).
    */
   async function recoverChartAfterReconnect() {
-    if (!state.activeInstrument || !candleSeries || state.replayMode) return;
+    if (!state.activeInstrument || !state.chartOpen || !candleSeries || state.replayMode || state.historicalInspection) return;
     const seq = state.chartLoadSeq;
     const gid = state.activeInstrument.globalId;
     const tf = state.activeTimeframe;
@@ -4487,61 +4488,7 @@
             renderCommoditiesList();
             notifyNativeUserTier();
           } else if (msg.type === 'FORMING_CANDLE_SNAPSHOT' && msg.globalId && msg.candles) {
-            if (
-              state.chartOpen &&
-              state.activeInstrument &&
-              state.activeInstrument.globalId === msg.globalId &&
-              candleSeries &&
-              state.candles.length > 0 &&
-              !state.replayMode
-            ) {
-              const tf = state.activeTimeframe || '5m';
-              const intervalSec = getTimeframeIntervalSec(tf);
-              const serverBar = msg.candles[tf];
-              const lastBar = state.candles[state.candles.length - 1];
-              if (serverBar && Number(serverBar.close) > 0) {
-                const serverBarTime = Number(serverBar.time);
-                // The snapshot bar must be aligned to the SAME session-open phase as the loaded
-                // history and must never sit in the future. A mismatch means an older or
-                // misaligned server build: ignore it instead of drawing a phantom candle.
-                const alignedTime = computeCandleBucketSec(serverBarTime * 1000, tf, lastBar.time);
-                const nowBucket = computeCandleBucketSec(serverNowMs(), tf, lastBar.time);
-                const isAligned = Number.isFinite(serverBarTime) && alignedTime === serverBarTime;
-                // A snapshot may legitimately be up to two intervals ahead of loaded history (one
-                // forming bar + one rollover), never more: this also rejects the old +5:30-shifted
-                // server timestamps that used to append a phantom candle.
-                const isPlausible =
-                  serverBarTime >= lastBar.time - intervalSec &&
-                  serverBarTime <= lastBar.time + intervalSec * 2 &&
-                  serverBarTime <= nowBucket + intervalSec;
-                if (!isAligned || !isPlausible) {
-                  console.warn('Ignoring misaligned forming-candle snapshot', {
-                    serverBarTime,
-                    lastBarTime: lastBar.time,
-                    tf,
-                  });
-                } else if (serverBarTime === lastBar.time) {
-                  lastBar.high = Math.max(lastBar.high, serverBar.high);
-                  lastBar.low = Math.min(lastBar.low, serverBar.low);
-                  lastBar.close = serverBar.close;
-                  candleSeries.update({ ...lastBar });
-                  updateIndicatorsForLastBar();
-                  updateChartCountdownUI();
-                } else {
-                  const nextBar = {
-                    time: serverBarTime,
-                    open: serverBar.open,
-                    high: serverBar.high,
-                    low: serverBar.low,
-                    close: serverBar.close,
-                  };
-                  state.candles.push(nextBar);
-                  candleSeries.update(nextBar);
-                  recalculateAndRenderIndicators();
-                  updateChartCountdownUI();
-                }
-              }
-            }
+            applyFormingCandleSnapshot(msg);
           } else if (msg.type === 'QUOTE_TICK' && msg.data) {
             handleIncomingQuoteTick(msg.data,Boolean(msg.isSnapshot));
           }
@@ -4576,6 +4523,16 @@
    * - Starts a new candle at the exact interval boundary when a valid tick for a newer interval arrives
    * - Preserves user zoom, scroll position, and drawings
    */
+  function applyFormingCandleSnapshot(msg){
+    if(!state.chartOpen||state.chartLoading||state.replayMode||state.historicalInspection||!candleSeries||!state.candles.length||state.activeInstrument?.globalId!==msg.globalId)return;
+    const event=Number(msg.priceEventTimestamp),tf=state.activeTimeframe||'5m',last=state.candles.at(-1),bar=msg.candles?.[tf];
+    if(!(event>0)||event>serverNowMs()+1000||event<(state.lastChartAppliedPriceMs||0)||!bar||!(bar.close>0))return;
+    const expected=computeCandleBucketSec(event,tf,last.time),interval=getTimeframeIntervalSec(tf);
+    if(bar.time!==expected||bar.time<last.time||bar.time>last.time+interval*2)return;
+    if(bar.time===last.time){last.high=Math.max(last.high,bar.high);last.low=Math.min(last.low,bar.low);last.close=bar.close;last.volume=Math.max(last.volume||0,bar.volume||0);candleSeries.update({...last});updateIndicatorsForLastBar();}
+    else{const next={time:bar.time,open:bar.open,high:bar.high,low:bar.low,close:bar.close,volume:bar.volume};state.candles.push(next);candleSeries.update(next);recalculateAndRenderIndicators();}
+    state.lastChartAppliedPriceMs=event;state.chartBarUpdates=state.chartBarUpdates||{};state.chartBarUpdates[bar.time]=Date.now();updateChartCountdownUI();
+  }
   function reconcileCandleWithTick(quote, isInitialSnapshot = false) {
     if(quote.isTradeEvent===false&&!isInitialSnapshot)return;
     if(state.chartLoading){state.chartPendingTicks=state.chartPendingTicks||[];if(!isInitialSnapshot){state.chartPendingTicks.push(quote);if(state.chartPendingTicks.length>3000)state.chartPendingTicks.shift();}return;}
@@ -4587,6 +4544,7 @@
     const lastBar = state.candles[state.candles.length - 1];
     const tickTimeMs = Number(quote.lastTradeTimestamp || quote.providerTimestamp || quote.timestamp);
     if(!(tickTimeMs>0))return;
+    if(tickTimeMs<(state.lastChartAppliedPriceMs||0))return;
     const bucketSec = computeCandleBucketSec(tickTimeMs, tf, lastBar.time);
 
     // Compute volume delta from cumulative day volume if available
@@ -4651,6 +4609,7 @@
       }
       renderDrawingsSvgOverlay();
     }
+    state.lastChartAppliedPriceMs=Math.max(state.lastChartAppliedPriceMs||0,tickTimeMs);
   }
 
   function handleIncomingQuoteTick(quote,isSnapshot=false) {

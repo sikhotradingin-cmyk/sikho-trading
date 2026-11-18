@@ -1506,7 +1506,7 @@ export class UpstoxAdapter implements IMarketDataProvider {
       pending.forEach(p=>this.restStatus.set(p.inst.globalId,{http:res.status,at:Date.now()}));
       if(res.status===429){const retry=res.headers.get('retry-after');const seconds=Number(retry),at=retry?Date.parse(retry):NaN;const wait=Number.isFinite(seconds)&&seconds>0?seconds*1000:Number.isFinite(at)?Math.max(0,at-Date.now()):Math.min(300000,30000*2**Math.min(this.rest429Attempts++,4));this.restBlockedUntil=Date.now()+Math.max(30000,wait);return;}
       if(!res.ok)return;
-      this.rest429Attempts=0;
+      this.rest429Attempts=0;this.restBlockedUntil=0;
       const json=await res.json() as any,items=Object.values(json?.data||{}) as any[];
       for(const p of pending){const inst=p.inst,item=items.find(v=>v?.instrument_token===inst.upstoxInstrumentKey);if(!item||!(Number(item.last_price)>0))continue;
         this.isTokenVerified=true;const ltp=Number(item.last_price),ohlc=item.ohlc||{},buy=item.depth?.buy?.[0],sell=item.depth?.sell?.[0];
@@ -1760,7 +1760,7 @@ export class UpstoxAdapter implements IMarketDataProvider {
       try {
         const q = await this.getQuote(globalId);
         if (q) {
-          this.lastTickTime = q.receiveTimestamp;
+          this.lastTickTime = Math.max(this.lastTickTime,q.receiveTimestamp);
           const subs = this.listeners.get(globalId);
           const newRestEvent=q.timestampSource==='UPSTOX_REST_TIMESTAMP'&&q.providerTimestamp>(this.lastPublishedRest.get(globalId)||0);
           const previousTrade=this.lastPublishedTrade.get(globalId)||0;
