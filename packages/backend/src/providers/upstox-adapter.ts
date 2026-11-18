@@ -525,6 +525,11 @@ export class UpstoxAdapter implements IMarketDataProvider {
   private wsResponseId:string|null=null;
   private restStatus=new Map<string,{http:number|null;error?:string;at:number}>();
   private lastPublishedRest=new Map<string,number>();
+  private lastPublishedTrade=new Map<string,number>();
+  private priorityUntil=new Map<string,number>();
+  private pollInFlight=false;
+  private pollCursor=0;
+  public prioritize(globalId:string){this.priorityUntil.set(globalId,Date.now()+90000);}
   private availableFilters = {
     exchanges: ['NSE', 'NFO', 'BSE', 'BFO'],
     segments: ['INDEX_SPOT', 'EQUITY_STOCK', 'FUTIDX', 'OPTIDX', 'FUTSTK', 'OPTSTK'],
@@ -1546,6 +1551,7 @@ export class UpstoxAdapter implements IMarketDataProvider {
             const latest=this.quotes.get(inst.globalId);
             if(latest && latest.providerTimestamp>snap.providerTimestamp)return latest;
             this.quotes.set(inst.globalId, snap);
+            if(!this.lastPublishedTrade.has(inst.globalId))this.lastPublishedTrade.set(inst.globalId,snap.lastTradeTimestamp||0);
             this.lastTickTime=Math.max(this.lastTickTime,snap.receiveTimestamp);
             this.lastSourceEventTimestamp=Math.max(this.lastSourceEventTimestamp,snap.providerTimestamp);
             return snap;
@@ -1786,28 +1792,37 @@ export class UpstoxAdapter implements IMarketDataProvider {
   }
 
   private async pollSubscribedIntradayQuotes(): Promise<void> {
-    if (this.isDisposed) return;
+    if (this.isDisposed||this.pollInFlight) return;
     const activeIds = Array.from(this.listeners.keys()).filter(
       (id) => (this.listeners.get(id)?.size || 0) > 0
     );
     if (activeIds.length === 0) return;
 
     // Poll in reverse registration order so newly subscribed chart/position instruments get highest priority
-    const prioritizedIds = [...activeIds].reverse().filter(id=>{const q=this.quotes.get(id);return !this.isConnected||!q||Date.now()-q.providerTimestamp>5000;}).slice(0, 8);
-    for (const globalId of prioritizedIds) {
+    const stale=activeIds.filter(id=>{const q=this.quotes.get(id);return !this.isConnected||!q||Date.now()-q.providerTimestamp>5000;});
+    const priority=stale.filter(id=>(this.priorityUntil.get(id)||0)>Date.now()).sort((a,b)=>(this.priorityUntil.get(b)||0)-(this.priorityUntil.get(a)||0)).slice(0,8);
+    const background=stale.filter(id=>!priority.includes(id));
+    const rotated=background.length?background.slice(this.pollCursor%background.length).concat(background.slice(0,this.pollCursor%background.length)):[];
+    const prioritizedIds=priority.concat(rotated.slice(0,8-priority.length));this.pollCursor+=Math.max(1,8-priority.length);
+    this.pollInFlight=true;
+    try{await Promise.all(prioritizedIds.map(async(globalId)=>{
       try {
         const q = await this.getQuote(globalId);
         if (q) {
           this.lastTickTime = q.receiveTimestamp;
           const subs = this.listeners.get(globalId);
           const newRestEvent=q.timestampSource==='UPSTOX_REST_TIMESTAMP'&&q.providerTimestamp>(this.lastPublishedRest.get(globalId)||0);
+          const previousTrade=this.lastPublishedTrade.get(globalId)||0;
+          const newTrade=newRestEvent&&previousTrade>0&&(q.lastTradeTimestamp||0)>previousTrade;
           if(newRestEvent)this.lastPublishedRest.set(globalId,q.providerTimestamp);
-          if (subs) subs.forEach((cb) => cb({...q,isSnapshot:!newRestEvent,isTradeEvent:false}));
+          this.lastPublishedTrade.set(globalId,Math.max(previousTrade,q.lastTradeTimestamp||0));
+          // Only a genuinely advanced provider trade can move/roll a candle during REST recovery.
+          if (subs) subs.forEach((cb) => cb({...q,isSnapshot:!newRestEvent,isTradeEvent:newTrade}));
         }
       } catch {
         // Ignore individual quote errors during background polling
       }
-    }
+    }));}finally{this.pollInFlight=false;}
   }
 
   public subscribe(globalId: string, listener: (quote: QuoteSnapshot) => void): () => void {
@@ -1849,6 +1864,7 @@ export class UpstoxAdapter implements IMarketDataProvider {
       this.listeners.get(key)?.delete(listener);
       if (this.listeners.get(key)?.size === 0) {
         this.listeners.delete(key);
+        this.priorityUntil.delete(key);
         if (this.isConnected && this.ws?.readyState === WebSocket.OPEN && inst?.upstoxInstrumentKey) {
           this.ws.send(Buffer.from(JSON.stringify({
             guid: `tz-unsub-${Date.now()}`, method: 'unsub',

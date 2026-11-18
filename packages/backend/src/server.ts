@@ -2021,6 +2021,7 @@ export async function buildServer(
             clientState.subscriptions.add(s);
             clientState.subscriptions.add(canonicalId);
             ensureEngineSubscription(canonicalId);
+            if(Array.isArray(msg.prioritySymbols)&&msg.prioritySymbols.includes(s))(activeProvider as any).prioritize?.(canonicalId);
 
             // Immediately emit initial quote snapshot + forming candle snapshot so active charts & watchlists reconcile after reconnect
             const cachedForming = formingTracker.snapshot(canonicalId);

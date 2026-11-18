@@ -4218,8 +4218,9 @@
   }
 
   function updateChartCountdownUI() {
+    refreshPrioritySubscriptions();
     const feed=document.getElementById('chart-feed-status');
-    if(feed){const q=state.quotesMap?.get(state.activeInstrument?.globalId),age=quoteFreshnessMs(q);feed.textContent=!state.wsConnected?'Disconnected — reconnecting':age>5000?'Data stale — reconnecting':`Feed current · ${Math.round(age)}ms`;}
+    if(feed){const q=state.quotesMap?.get(state.activeInstrument?.globalId),age=quoteFreshnessMs(q);feed.textContent=!state.wsConnected?'Disconnected — reconnecting':age>5000?'Data stale — reconnecting':`${q?.timestampSource==='UPSTOX_REST_TIMESTAMP'?'REST recovery':'Feed current'} · ${Math.round(age)}ms`;}
     if (!state.chartOpen) return;
     // Current IST clock + running-candle window are always refreshed, independent of feed state.
     updateChartTimeStrip();
@@ -4348,10 +4349,14 @@
         action: 'SUBSCRIBE',
         type: 'SUBSCRIBE',
         symbols,
+        prioritySymbols:getPrioritySymbols(),
       }));
       state.wsSubscribed=state.wsSubscribed||new Set();symbols.forEach(s=>state.wsSubscribed.add(s));
     } catch {}
   }
+
+  function getPrioritySymbols(){return [...new Set([state.chartOpen?state.activeInstrument?.globalId:null,state.orderTicket?.open?state.orderTicket.instrument?.globalId:null].filter(Boolean))];}
+  function refreshPrioritySubscriptions(){if(Date.now()-(state.lastPrioritySentAt||0)<30000)return;const ids=getPrioritySymbols();if(ids.length){sendWsSubscribe(ids);state.lastPrioritySentAt=Date.now();}}
 
   function syncLiveSubscriptions(){
     const desired=new Set(collectDesiredSubscriptions()),known=state.wsSubscribed||new Set();
@@ -4376,7 +4381,7 @@
   }
   function startTicketQuoteRecovery(){
     clearInterval(ticketQuoteTimer);
-    const pulse=()=>{if(!state.orderTicket?.open)return;recalcOrderMarginPreview();if(quoteFreshnessMs(state.quotesMap?.get(state.orderTicket.instrument?.globalId))>5000)recoverTicketQuote();};
+    const pulse=()=>{if(!state.orderTicket?.open)return;refreshPrioritySubscriptions();recalcOrderMarginPreview();if(quoteFreshnessMs(state.quotesMap?.get(state.orderTicket.instrument?.globalId))>5000)recoverTicketQuote();};
     pulse();ticketQuoteTimer=setInterval(pulse,1000);
   }
   function getMarketDataDiagnostics(){
