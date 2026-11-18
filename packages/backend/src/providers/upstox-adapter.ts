@@ -1476,7 +1476,8 @@ export class UpstoxAdapter implements IMarketDataProvider {
     if (!inst || !inst.upstoxInstrumentKey) return null;
 
     const cached = this.quotes.get(inst.globalId);
-    if (cached && Date.now() - cached.receiveTimestamp < 2500 && cached.providerTimestamp > 0 && Date.now()-cached.providerTimestamp < 2500) {
+    // Cache window stays below the 2.5s recovery poll so active keys are not skipped every other poll.
+    if (cached && Date.now() - cached.receiveTimestamp < 1500 && cached.providerTimestamp > 0 && Date.now()-cached.providerTimestamp < 1500) {
       return cached;
     }
 
