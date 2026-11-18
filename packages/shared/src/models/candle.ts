@@ -27,6 +27,17 @@ export interface QuoteSnapshot {
   openInterest?: number;
   providerTimestamp: number; // UTC ms when source emitted
   receiveTimestamp: number; // UTC ms when our server ingested
+  lastTradeTimestamp?: number; // UTC ms of actual last trade; distinct from quote/feed event
+  timestampSource?: 'UPSTOX_WS_CURRENT_TS' | 'UPSTOX_REST_TIMESTAMP' | 'LAST_TRADE_FALLBACK';
+  isTradeEvent?: boolean; // false for depth-only/feed refresh; never fabricate candle motion
+  isSnapshot?: boolean;
   source: 'DEMO' | 'SMARTAPI' | 'UPSTOX';
   isSimulated: boolean;
+}
+
+export function quoteFreshnessAgeMs(quote: QuoteSnapshot, now=Date.now()):number {
+  const received=Number(quote.receiveTimestamp),event=Number(quote.providerTimestamp);
+  if(!Number.isFinite(received)||received<=0||received>now+1000)return Infinity;
+  if(!quote.isSimulated&&(!Number.isFinite(event)||event<=0||event>now+1000))return Infinity;
+  return Math.max(0,now-received,quote.isSimulated?0:now-event);
 }

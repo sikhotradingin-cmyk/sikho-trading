@@ -1118,6 +1118,8 @@
     state.subscription = null;
     state.entitlementResolved = false;
     state.access=null;state.quotesMap=new Map();
+    state.orderTicket.open=false;clearInterval(ticketQuoteTimer);ticketQuoteTimer=null;
+    state.lastTickTimestamps={};state.lastTickClientReceiveMs={};state.lastRenderByInstrument={};state.wsSubscribed=new Set();
     window.SikhoHistory?.clear();
     document.getElementById('modal-history-csv')?.remove();
     stopFeedHealthPolling();
@@ -2199,6 +2201,7 @@
   }
 
   function ocIsSymbolUsedElsewhere(gid) {
+    if(state.orderTicket?.open&&state.orderTicket.instrument?.globalId===gid)return true;
     if (gid === state.activeChartSubId) return true;
     if ((state.selectedIndices || []).includes(gid)) return true;
     if ((state.watchlists?.[0]?.instruments || []).includes(gid)) return true;
@@ -2223,7 +2226,7 @@
         wsConn.send(JSON.stringify({ action: 'UNSUBSCRIBE', type: 'UNSUBSCRIBE', symbols: toRemove }));
       } catch { }
     }
-    oc.subscribed = new Set(Array.from(desired).concat(Array.from(oc.subscribed).filter((g) => ocIsSymbolUsedElsewhere(g))));
+    oc.subscribed = desired;
   }
 
   // Follow rows actually visible after scrolling, rather than the most recently fetched page.
@@ -2263,6 +2266,7 @@
       } catch { }
     }
     oc.subscribed = new Set();
+    syncLiveSubscriptions();
   }
 
   async function openOptionChainModal(underlying = 'NIFTY', expiry) {
@@ -2642,14 +2646,14 @@
         (state.positionsData?.positions || []).some(
           (p) => p.globalInstrumentId === state.activeChartSubId && Math.abs(p.quantity || 0) > 0
         );
-      if (!keepPrev && wsConn && wsConn.readyState === WebSocket.OPEN) {
+      if (!keepPrev && !ocIsSymbolUsedElsewhere(state.activeChartSubId) && wsConn && wsConn.readyState === WebSocket.OPEN) {
         try {
           wsConn.send(JSON.stringify({ action: 'UNSUBSCRIBE', type: 'UNSUBSCRIBE', symbols: [state.activeChartSubId] }));
         } catch {}
       }
     }
     state.activeChartSubId = inst.globalId;
-    sendWsSubscribe([inst.globalId]);
+    syncLiveSubscriptions();
     startChartCountdownTimer();
 
     renderChartBottomTradeBar(inst);
@@ -2668,6 +2672,8 @@
     chartRequestController?.abort();
     state.chartLoadSeq++;
     state.chartOpen = false;
+    state.activeChartSubId=null;
+    syncLiveSubscriptions();
     stopChartCountdownTimer();
     document.getElementById('screen-chart').classList.remove('active');
     if (window.TradingzoneNative && typeof window.TradingzoneNative.setSystemBarTheme === 'function') {
@@ -2712,7 +2718,7 @@
   async function tradeIndexFutureDirect(underlying, side) {
     try {
       const res = await apiFetch(`/api/v1/instruments?segment=FUTIDX&underlying=${encodeURIComponent(underlying)}&limit=5`);
-      const fut = res.instruments?.[0];
+      const fut = selectFrontFuture(res.instruments,underlying);
       if (!fut) {
         showBrandedAlert('Futures Unavailable', `No active futures contracts currently available for ${underlying}.`);
         return;
@@ -2730,11 +2736,16 @@
   async function jumpToNearestIndexFuture(underlying) {
     try {
       const res = await apiFetch(`/api/v1/instruments?segment=FUTIDX&underlying=${encodeURIComponent(underlying)}&limit=5`);
-      const first = res.instruments?.[0];
+      const first = selectFrontFuture(res.instruments,underlying);
       if (first) {
         await openChartByGlobalId(first.globalId);
       }
     } catch { }
+  }
+
+  function selectFrontFuture(instruments,underlying){
+    const today=new Date(serverNowMs()+19800000).toISOString().slice(0,10);
+    return (instruments||[]).filter(i=>i.instrumentType==='FUTIDX'&&i.isTradable!==false&&i.lotSize>0&&i.tickSize>0&&i.underlying===underlying&&i.expiry>=today).sort((a,b)=>a.expiry.localeCompare(b.expiry))[0];
   }
 
   function openOptionChainFromChart() {
@@ -2861,6 +2872,7 @@
     chartRequestController?.abort();
     chartRequestController=new AbortController();
     const seq = ++state.chartLoadSeq;
+    state.chartLoading=true;state.chartPendingTicks=[];state.chartBarUpdates={};
     state.isFetchingOlder = false;
     state.isUserScrolledBack = false;
     document.getElementById('btn-go-latest').style.display = 'none';
@@ -2878,6 +2890,7 @@
       if (seq !== state.chartLoadSeq) return; // Discard stale response from earlier switch
 
       state.candles = sanitizeChartCandles(data.candles || []);
+      state.chartLoading=false;
       state.hasMoreHistory = Boolean(data.hasMore);
       state.earliestTime = data.earliestTime;
       state.prevSessionClose = data.prevSessionClose;
@@ -2905,17 +2918,21 @@
           `${state.candles.length} bars • ${data.sessionDateIST || ''}`;
       }
       if (data.latestQuote) {
-        updateChartHeaderQuote(data.latestQuote);
+        const latest=state.quotesMap?.get(gid);
+        updateChartHeaderQuote(latest&&latest.providerTimestamp>data.latestQuote.providerTimestamp?latest:data.latestQuote);
         // Reconcile initial snapshot against the latest loaded candle if snapshot is at or after the latest candle
         if (state.candles.length > 0 && Number(data.latestQuote.ltp) > 0) {
-          reconcileCandleWithTick(data.latestQuote, true);
+          if(!latest||latest.providerTimestamp<=data.latestQuote.providerTimestamp)reconcileCandleWithTick(data.latestQuote, true);
         }
       }
+      for(const tick of state.chartPendingTicks||[])if(tick.globalId===gid)reconcileCandleWithTick(tick,false);
+      state.chartPendingTicks=[];
       updateChartCountdownUI();
       recalculateAndRenderIndicators();
       renderDrawingsSvgOverlay();
     } catch (err) {
       if(seq===state.chartLoadSeq&&err.name!=='AbortError'){
+        state.chartLoading=false;
         document.getElementById('chart-ohlc-legend').textContent='History unavailable. Tap an interval to retry.';
         document.getElementById('chart-candle-stats').textContent='Waiting for verified data';
       }
@@ -2978,6 +2995,7 @@
     const gid = state.activeInstrument.globalId;
     const tf = state.activeTimeframe;
     const intervalSec = getTimeframeIntervalSec(tf);
+    const requestStarted=Date.now();
     let previousVisibleRange = null;
     try {
       previousVisibleRange = tvChart ? tvChart.timeScale().getVisibleRange() : null;
@@ -2991,18 +3009,7 @@
       const history = Array.isArray(data.candles) ? data.candles : [];
       if (history.length === 0) return;
 
-      const byTime = new Map();
-      for (const c of history) byTime.set(c.time, c);
-      const lastHistoryTime = history[history.length - 1].time;
-      // Preserve locally aggregated bars that are genuinely newer than the fetched history.
-      for (const c of state.candles) {
-        if (!byTime.has(c.time) && c.time > lastHistoryTime) {
-          byTime.set(c.time, c);
-        }
-      }
-      const merged = Array.from(byTime.values()).sort((a, b) => a.time - b.time);
-      // Guard against a bogus gap: never introduce bars whose spacing exceeds one interval.
-      const bounded = sanitizeChartCandles(merged.filter((c) => c.time <= lastHistoryTime + intervalSec * 2));
+      const bounded = sanitizeChartCandles(mergeCandleHistory(history,state.candles,state.chartBarUpdates||{},requestStarted));
       state.candles = bounded;
       state.earliestTime = bounded[0]?.time || state.earliestTime;
       candleSeries.setData(state.candles);
@@ -3014,10 +3021,16 @@
         } catch { }
       }
       updateChartCountdownUI();
-      if (data.latestQuote) updateChartHeaderQuote(data.latestQuote);
+      if (data.latestQuote) updateChartHeaderQuote(state.quotesMap?.get(gid)||data.latestQuote);
     } catch {
       // Non-fatal: live ticks continue to update the existing series.
     }
+  }
+
+  function mergeCandleHistory(history,live,changedAt,since){
+    const byTime=new Map(history.map(c=>[c.time,c])),tail=history.at(-1)?.time||0;
+    for(const c of live){if((changedAt[c.time]||0)<since&&c.time<=tail)continue;const old=byTime.get(c.time);byTime.set(c.time,old?{...old,high:Math.max(old.high,c.high),low:Math.min(old.low,c.low),close:c.close,volume:Math.max(old.volume||0,c.volume||0)}:c);}
+    return [...byTime.values()].sort((a,b)=>a.time-b.time).slice(-6000);
   }
 
   function scrollToLatestBar() {
@@ -3355,6 +3368,10 @@
       return;
     }
     state.orderTicket.instrument = inst;
+    state.orderTicket.open=true;
+    state.orderTicket.recoveryAttempts=0;
+    state.orderTicket.nextRecoveryAt=0;
+    syncLiveSubscriptions();
     state.orderTicket.side = side;
     state.orderTicket.productType = inst.instrumentType === 'EQUITY_STOCK' ? 'INTRADAY' : 'MARGIN';
     state.orderTicket.orderType = 'MARKET';
@@ -3393,15 +3410,20 @@
     setOrderType('MARKET');
     recalcOrderMarginPreview();
     document.getElementById('modal-order-ticket').classList.add('active');
+    startTicketQuoteRecovery();
     notifyNativeScreenState();
     apiFetch(`/api/v1/market-data/quote?globalId=${encodeURIComponent(inst.globalId)}`).then((data) => {
-      if (data.quote) handleIncomingQuoteTick(data.quote);
+      noteServerClock(data.serverTimestamp);
+      if (data.quote) handleIncomingQuoteTick(data.quote,true);
       if (state.orderTicket.instrument?.globalId === inst.globalId) recalcOrderMarginPreview();
     }).catch(() => {});
   }
 
   function closeOrderTicket() {
+    state.orderTicket.open=false;
+    clearInterval(ticketQuoteTimer);ticketQuoteTimer=null;
     document.getElementById('modal-order-ticket').classList.remove('active');
+    syncLiveSubscriptions();
     notifyNativeScreenState();
   }
 
@@ -3460,6 +3482,10 @@
   function recalcOrderMarginPreview() {
     const inst = state.orderTicket.instrument;
     if (!inst) return;
+    const currentQuote=state.quotesMap?.get(inst.globalId)||inst.latestQuote;
+    const fresh=quoteFreshnessMs(currentQuote)<=5000;
+    const submit=document.getElementById('ticket-submit-btn');
+    if(submit)submit.disabled=Boolean(state.orderSubmitting)||!fresh;
     const qty = Math.max(1, parseInt(document.getElementById('ticket-input-qty').value || '1', 10));
     const quotePrice = Number(state.quotesMap?.get(inst.globalId)?.ltp || inst.latestQuote?.ltp);
     const sameChart = state.activeInstrument?.globalId === inst.globalId;
@@ -3469,13 +3495,13 @@
     const price = !isNaN(reqPrice) && reqPrice > 0 ? reqPrice : lastClose;
 
     if (!(price > 0)) {
-      document.getElementById('ticket-ltp-sub').textContent = 'Contract quote unavailable • awaiting verified price';
+      document.getElementById('ticket-ltp-sub').textContent = 'Live price unavailable — reconnecting';
       document.getElementById('ticket-margin-req').textContent = '—';
       document.getElementById('ticket-charges-est').textContent = '—';
       return;
     }
 
-    document.getElementById('ticket-ltp-sub').textContent = `Ref LTP: ${fmtINR(lastClose)} • Tick: ${inst.tickSize || 0.05}`;
+    document.getElementById('ticket-ltp-sub').textContent = fresh?`Ref LTP: ${fmtINR(lastClose)} • Tick: ${inst.tickSize || 0.05}`:`Live price unavailable — reconnecting${lastClose>0?' • Last known: '+fmtINR(lastClose):''}`;
 
     const quoteRatio =
       inst.exchange === 'MCX' && inst.priceQuoteMultiplier
@@ -3550,6 +3576,9 @@
     if(state.orderSubmitting)return;
     const inst = state.orderTicket.instrument;
     if (!inst) return;
+    if(quoteFreshnessMs(state.quotesMap?.get(inst.globalId)||inst.latestQuote)>5000){
+      recalcOrderMarginPreview();recoverTicketQuote();return;
+    }
     const errBox = document.getElementById('ticket-error-box');
     errBox.style.display = 'none';
 
@@ -3590,7 +3619,7 @@
       errBox.textContent = err.message;
       errBox.style.display = 'block';
     } finally {
-      state.orderSubmitting=false; submittingButton.disabled=false; submittingButton.removeAttribute('aria-busy'); submittingButton.textContent=previousLabel;
+      state.orderSubmitting=false; submittingButton.removeAttribute('aria-busy'); submittingButton.textContent=previousLabel;recalcOrderMarginPreview();
     }
   }
 
@@ -4189,6 +4218,8 @@
   }
 
   function updateChartCountdownUI() {
+    const feed=document.getElementById('chart-feed-status');
+    if(feed){const q=state.quotesMap?.get(state.activeInstrument?.globalId),age=quoteFreshnessMs(q);feed.textContent=!state.wsConnected?'Disconnected — reconnecting':age>5000?'Data stale — reconnecting':`Feed current · ${Math.round(age)}ms`;}
     if (!state.chartOpen) return;
     // Current IST clock + running-candle window are always refreshed, independent of feed state.
     updateChartTimeStrip();
@@ -4235,10 +4266,8 @@
     const lastInstTickMs = inst?.globalId
       ? (state.lastTickClientReceiveMs?.[inst.globalId] || 0)
       : 0;
-    const tickAgeMs = lastInstTickMs > 0
-      ? (Date.now() - lastInstTickMs)
-      : (state.lastAnyTickReceiveMs > 0 ? Date.now() - state.lastAnyTickReceiveMs : 0);
-    if (tickAgeMs > 20000) {
+    const tickAgeMs = quoteFreshnessMs(state.quotesMap?.get(inst?.globalId));
+    if (tickAgeMs > 5000) {
       pill.classList.add('state-warn');
       pill.textContent = `⚠ Stale Feed • ${timeStr}`;
       return;
@@ -4272,7 +4301,11 @@
       if (!wsConn || wsConn.readyState !== WebSocket.OPEN) {
         state.wsNeedsGapRecovery = true;
         connectRealtimeWebSocket();
+      } else {
+        syncLiveSubscriptions();
+        if(state.chartOpen)recoverChartAfterReconnect();
       }
+      if(state.orderTicket?.open){state.orderTicket.nextRecoveryAt=0;recoverTicketQuote();}
     }
   });
 
@@ -4285,6 +4318,7 @@
     if (state.chartOpen && state.activeInstrument?.globalId) {
       subs.add(state.activeInstrument.globalId);
     }
+    if(state.orderTicket?.open&&state.orderTicket.instrument?.globalId)subs.add(state.orderTicket.instrument.globalId);
     if (state.positionsData?.positions) {
       for (const p of state.positionsData.positions) {
         if (p.globalInstrumentId && Math.abs(p.quantity || 0) > 0) {
@@ -4315,7 +4349,38 @@
         type: 'SUBSCRIBE',
         symbols,
       }));
+      state.wsSubscribed=state.wsSubscribed||new Set();symbols.forEach(s=>state.wsSubscribed.add(s));
     } catch {}
+  }
+
+  function syncLiveSubscriptions(){
+    const desired=new Set(collectDesiredSubscriptions()),known=state.wsSubscribed||new Set();
+    if(wsConn?.readyState!==WebSocket.OPEN)return;
+    const remove=[...known].filter(g=>!desired.has(g));
+    if(remove.length)wsConn.send(JSON.stringify({type:'UNSUBSCRIBE',symbols:remove}));
+    remove.forEach(g=>known.delete(g));state.wsSubscribed=known;
+    sendWsSubscribe([...desired].filter(g=>!known.has(g)));
+  }
+
+  function quoteFreshnessMs(q){
+    const now=serverNowMs(),event=Number(q?.providerTimestamp),received=Number(q?.receiveTimestamp);
+    if(!q||!(received>0)||received>now+1000||(!q.isSimulated&&(!(event>0)||event>now+1000)))return Infinity;
+    return Math.max(0,now-received,q.isSimulated?0:now-event);
+  }
+  let ticketQuoteTimer=null;
+  async function recoverTicketQuote(){
+    const t=state.orderTicket;if(!t?.open||t.recovering||Date.now()<(t.nextRecoveryAt||0))return;
+    const gid=t.instrument?.globalId;if(!gid)return;t.recovering=true;
+    t.recoveryAttempts=(t.recoveryAttempts||0)+1;t.nextRecoveryAt=Date.now()+Math.min(30000,1000*2**Math.min(t.recoveryAttempts-1,5));
+    try{const data=await apiFetch('/api/v1/market-data/quote?globalId='+encodeURIComponent(gid));if(t.open&&t.instrument?.globalId===gid){if(data.diagnostics){state.providerDiagnostics=state.providerDiagnostics||{};state.providerDiagnostics[gid]=data.diagnostics;}if(data.quote)handleIncomingQuoteTick(data.quote,true);}}catch{}finally{t.recovering=false;}
+  }
+  function startTicketQuoteRecovery(){
+    clearInterval(ticketQuoteTimer);
+    const pulse=()=>{if(!state.orderTicket?.open)return;recalcOrderMarginPreview();if(quoteFreshnessMs(state.quotesMap?.get(state.orderTicket.instrument?.globalId))>5000)recoverTicketQuote();};
+    pulse();ticketQuoteTimer=setInterval(pulse,1000);
+  }
+  function getMarketDataDiagnostics(){
+    return [state.activeInstrument,state.orderTicket?.open?state.orderTicket.instrument:null].filter(Boolean).map(i=>({globalId:i.globalId,providerKey:i.upstoxInstrumentKey,expiry:i.expiry,lotSize:i.lotSize,tickSize:i.tickSize,desiredSubscription:collectDesiredSubscriptions().includes(i.globalId),wsConnected:state.wsConnected,lastProviderEventTimestamp:state.quotesMap?.get(i.globalId)?.providerTimestamp,lastTradeTimestamp:state.quotesMap?.get(i.globalId)?.lastTradeTimestamp,backendReceiptTimestamp:state.quotesMap?.get(i.globalId)?.receiveTimestamp,frontendReceiptTimestamp:state.lastTickClientReceiveMs?.[i.globalId],frontendRenderTimestamp:state.lastRenderByInstrument?.[i.globalId],quoteSource:state.quotesMap?.get(i.globalId)?.source,ageMs:quoteFreshnessMs(state.quotesMap?.get(i.globalId)),provider:state.providerDiagnostics?.[i.globalId]}));
   }
 
   function scheduleWsReconnect() {
@@ -4341,6 +4406,7 @@
         if (wsConn !== sock) return;
         wsReconnectAttempts = 0;
         state.wsConnected = true;
+        state.wsSubscribed=new Set();
         if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
         if (state.token) {
           try {
@@ -4363,6 +4429,7 @@
           }
           if(msg.type==='TRADING_CHANGED'){scheduleTradingReconcile();return;}
           if (msg.type === 'AUTH_SUCCESS') {
+            state.wsSubscribed=new Set();
             applyAccessPolicy(msg.access);
             scheduleTradingReconcile();
             noteServerClock(msg.serverTimestamp);
@@ -4484,13 +4551,16 @@
    * - Preserves user zoom, scroll position, and drawings
    */
   function reconcileCandleWithTick(quote, isInitialSnapshot = false) {
+    if(quote.isTradeEvent===false&&!isInitialSnapshot)return;
+    if(state.chartLoading){state.chartPendingTicks=state.chartPendingTicks||[];if(!isInitialSnapshot){state.chartPendingTicks.push(quote);if(state.chartPendingTicks.length>3000)state.chartPendingTicks.shift();}return;}
     if (!candleSeries || state.candles.length === 0 || state.replayMode || state.historicalInspection) return;
     const ltp = Number(quote.ltp);
     if (!ltp || isNaN(ltp) || ltp <= 0) return;
 
     const tf = state.activeTimeframe || '5m';
     const lastBar = state.candles[state.candles.length - 1];
-    const tickTimeMs = Number(quote.providerTimestamp || quote.receiveTimestamp || quote.timestamp || Date.now());
+    const tickTimeMs = Number(quote.lastTradeTimestamp || quote.providerTimestamp || quote.timestamp);
+    if(!(tickTimeMs>0))return;
     const bucketSec = computeCandleBucketSec(tickTimeMs, tf, lastBar.time);
 
     // Compute volume delta from cumulative day volume if available
@@ -4509,6 +4579,7 @@
     if (bucketSec < lastBar.time) {
       return;
     }
+    if(!isInitialSnapshot){state.chartBarUpdates=state.chartBarUpdates||{};state.chartBarUpdates[bucketSec]=Date.now();}
 
     if (bucketSec === lastBar.time) {
       const updatedBar = {
@@ -4558,6 +4629,7 @@
 
   function handleIncomingQuoteTick(quote,isSnapshot=false) {
     if (!quote || !quote.globalId) return;
+    state.lastSeenQuoteReceipt=state.lastSeenQuoteReceipt||{};state.lastSeenQuoteReceipt[quote.globalId]=Date.now();
     state.lastTickTimestamps = state.lastTickTimestamps || {};
     const quoteTime = Number(quote.providerTimestamp || quote.receiveTimestamp || quote.timestamp || Date.now());
     const lastTime = state.lastTickTimestamps[quote.globalId] || 0;
@@ -4633,8 +4705,8 @@
               Math.round(diffPerUnit * multiplier * Math.abs(pos.quantity) * 100) / 100;
             pos.priceSource = 'WEBSOCKET';
             pos.priceTimestamp = Number(quote.providerTimestamp || quote.receiveTimestamp) || Date.now();
-            pos.priceAgeMs = 0;
-            pos.priceStale = false;
+            pos.priceAgeMs = quoteFreshnessMs(quote);
+            pos.priceStale = pos.priceAgeMs>5000;
             pos.pnlTimestamp = Date.now();
             changed = true;
           }
@@ -4655,12 +4727,15 @@
 
     if (state.chartOpen && state.activeInstrument && state.activeInstrument.globalId === quote.globalId) {
       updateChartHeaderQuote(currentQ);
-      reconcileCandleWithTick(quote, false);
+      reconcileCandleWithTick(quote, isSnapshot||Boolean(quote.isSnapshot));
+      if(!isSnapshot&&!quote.isSnapshot)state.lastChartTickAt=Date.now();
+      state.lastRenderByInstrument=state.lastRenderByInstrument||{};state.lastRenderByInstrument[quote.globalId]=Date.now();
       updateChartCountdownUI();
     }
 
     // Update visible CE/PE cells from genuine ticks without re-rendering or jumping scroll.
     updateOptionChainQuote(quote);
+    if(state.orderTicket?.open&&state.orderTicket.instrument?.globalId===quote.globalId){recalcOrderMarginPreview();state.lastRenderByInstrument=state.lastRenderByInstrument||{};state.lastRenderByInstrument[quote.globalId]=Date.now();}
   }
 
   // =========================================================================
@@ -4929,6 +5004,7 @@
     selectDrawingTool,
     clearAllDrawings,
     openOrderTicket,
+    getMarketDataDiagnostics,
     openOrderTicketByGlobalId,
     closeOrderTicket,
     setOrderSide,

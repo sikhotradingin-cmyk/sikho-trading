@@ -118,6 +118,7 @@ export class FormingCandleTracker {
   private ticksRejected = 0;
 
   public applyTick(quote: QuoteSnapshot): boolean {
+    if(quote.isSnapshot||quote.isTradeEvent===false)return false;
     const ltp = Number(quote?.ltp);
     const globalId = quote?.globalId;
     if (!globalId || !Number.isFinite(ltp) || ltp <= 0) {
@@ -125,7 +126,7 @@ export class FormingCandleTracker {
       return false;
     }
 
-    const providerTs = Number(quote.providerTimestamp);
+    const providerTs = Number(quote.lastTradeTimestamp || quote.providerTimestamp);
     const eventTs = Number.isFinite(providerTs) && providerTs > 0
       ? providerTs
       : Number(quote.receiveTimestamp) || Date.now();

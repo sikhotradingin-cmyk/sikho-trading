@@ -45,7 +45,7 @@ if (!(BigInt.prototype as any).toJSON) {
 }
 
 /** Application version advertised by /health (kept in sync with the Android versionName). */
-export const SERVICE_VERSION = '1.0.11';
+export const SERVICE_VERSION = '1.0.12';
 const SERVICE_STARTED_AT = new Date().toISOString();
 
 /** Browser/WebSocket clients must be told the server clock so countdowns can be corrected. */
@@ -1167,7 +1167,7 @@ export async function buildServer(
     if (!quote) {
       return reply.status(404).send({ error: 'Quote not found' });
     }
-    return { quote, feedHealth: activeProvider.getFeedHealth() };
+    return { quote, feedHealth: activeProvider.getFeedHealth(),requestId:req.id,serverTimestamp:Date.now(),diagnostics:(activeProvider as any).getInstrumentTelemetry?.(query.globalId)||null };
   });
 
   // 5B. Per-User Chart Drawings Persistence
@@ -1403,6 +1403,9 @@ export async function buildServer(
       });
     }
 
+    // Subscribe the executable contract before preflight, independently of any spot chart.
+    ensureEngineSubscription(instrument.globalId);
+    const cleanup=setTimeout(()=>{releaseUnusedEngineSubscriptions().catch(()=>{});},10000);cleanup.unref?.();
     const quote = await activeProvider.getQuote(instrument.globalId);
     if (!quote) {
       return reply.status(400).send({ error: 'No live quote available for instrument.' });
@@ -2035,7 +2038,7 @@ export async function buildServer(
               .getQuote(canonicalId)
               .then((snap) => {
                 if (snap && ws.readyState === WebSocket.OPEN && clientState.subscriptions.has(canonicalId)) {
-                  ws.send(JSON.stringify({ type: 'QUOTE_TICK', data: snap }));
+                  ws.send(JSON.stringify({ type: 'QUOTE_TICK', data: snap, isSnapshot:true }));
                   wsTicksEmitted += 1;
                   lastWsEmitTime = Date.now();
                 }

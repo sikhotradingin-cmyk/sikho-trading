@@ -9,6 +9,7 @@ import {
   SimulatedOrder,
   SimulatedPosition,
   getExchangeSessionStatus,
+  quoteFreshnessAgeMs,
 } from '@trading/shared';
 import { randomUUID } from 'node:crypto';
 import { SecurityAirGap } from './security-airgap.js';
@@ -73,13 +74,11 @@ export class SimulationEngine {
       request.productType || (_instrument.instrumentType === 'EQUITY_STOCK' ? 'INTRADAY' : 'MARGIN');
 
     // 3. Stale, Closed-Market, or Unsuitable Quote Defense (5.0 seconds maximum allowable age; no live-feed fills when exchange is closed)
-    const quoteAgeMs = Math.max(
-      Date.now() - quote.receiveTimestamp,
-      !quote.isSimulated && quote.providerTimestamp > 0 ? Date.now() - quote.providerTimestamp : 0
-    );
+    const quoteAgeMs = quoteFreshnessAgeMs(quote);
     const sessionStatus = getExchangeSessionStatus(_instrument.exchange, new Date());
     const isClosedMarketLiveQuote = !quote.isSimulated && !sessionStatus.isOpen;
     if (
+      quote.globalId!==_instrument.globalId ||
       !Number.isFinite(quote.ltp) ||
       quote.ltp <= 0 ||
       isClosedMarketLiveQuote ||
@@ -98,7 +97,7 @@ export class SimulationEngine {
         status: 'REJECTED',
         idempotencyKey: request.idempotencyKey,
         rejectionReason:
-          !Number.isFinite(quote.ltp) || quote.ltp <= 0
+          quote.globalId!==_instrument.globalId || !Number.isFinite(quote.ltp) || quote.ltp <= 0
             ? 'ERR_UNSUITABLE_MARKET_DATA: Quote price is invalid or zero.'
             : isClosedMarketLiveQuote
               ? `ERR_MARKET_CLOSED: ${_instrument.exchange} market is currently closed (${sessionStatus.sessionName}: ${sessionStatus.nextEventDescription}). Normal paper market orders cannot execute against last-session quotes.`
@@ -352,6 +351,7 @@ export class SimulationEngine {
   public onMarketTick(quote: QuoteSnapshot): Promise<ExecutionResult[]> {return this.serialized(()=>this.onMarketTickNow(quote));}
   private async onMarketTickNow(quote: QuoteSnapshot): Promise<ExecutionResult[]> {
     const results: ExecutionResult[] = [];
+    if(quoteFreshnessAgeMs(quote)>5000)return results;
     const remainingPending: SimulatedOrder[] = [];
 
     // Monotonic quote sequencing: discard duplicate or out-of-order ticks to prevent stale triggers
@@ -369,6 +369,8 @@ export class SimulationEngine {
         remainingPending.push(order);
         continue;
       }
+      const pendingInstrument=this.pendingInstruments.get(order.id);
+      if(!quote.isSimulated&&!getExchangeSessionStatus(pendingInstrument?.exchange||'NSE').isOpen){remainingPending.push(order);continue;}
 
       let shouldTrigger = false;
       let gapPrice: number | undefined;
@@ -428,7 +430,7 @@ export class SimulationEngine {
   ): Promise<ExecutionResult> {
     SecurityAirGap.verifySimulatedActionExclusivity('SQUARE_OFF');
 
-    const quoteAgeMs = Date.now() - quote.receiveTimestamp;
+    const quoteAgeMs = quoteFreshnessAgeMs(quote);
     const exchange = instrument?.exchange || (globalInstrumentId.startsWith('MCX') ? 'MCX' : 'NSE');
     const sessionStatus = getExchangeSessionStatus(exchange, new Date());
     const isClosedMarketLiveQuote = !quote.isSimulated && !sessionStatus.isOpen;
