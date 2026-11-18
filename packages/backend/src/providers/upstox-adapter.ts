@@ -1582,28 +1582,9 @@ export class UpstoxAdapter implements IMarketDataProvider {
     if (!this.hasConfiguredToken() || this.isDisposed) return;
     const generation=++this.socketGeneration;
     try {
-      const authRes = await fetch('https://api.upstox.com/v3/feed/market-data-feed/authorize', {
-        headers: this.getAuthHeaders(), signal:AbortSignal.timeout(10000),
-      });
-      this.authHttpStatus=authRes.status;
-      if (!authRes.ok) {
-        this.isConnected = false;
-        this.isTokenVerified = false;
-        this.lastErrorReason = `Upstox Market Data Feed V3 authorization failed (HTTP ${authRes.status}). Verify UPSTOX_ANALYTICS_TOKEN in packages/backend/.env.`;
-        this.scheduleWebSocketReconnect();
-        return;
-      }
-      const authJson = (await authRes.json()) as any;
+      // Match Upstox's official Node V3 feeder: authenticated WSS, automatic redirect.
+      // No reusable signed URI or URL token is retained.
       if(generation!==this.socketGeneration||this.isDisposed)return;
-      const wsUrl = authJson?.data?.authorizedRedirectUri || authJson?.data?.authorized_redirect_uri;
-      if (!wsUrl) {
-        this.isConnected = false;
-        this.lastErrorReason = 'Upstox authorize endpoint did not return an authorizedRedirectUri.';
-        this.scheduleWebSocketReconnect();
-        return;
-      }
-
-      this.isTokenVerified = true;
       if (this.ws) {
         try {
           this.ws.removeAllListeners();
@@ -1611,7 +1592,7 @@ export class UpstoxAdapter implements IMarketDataProvider {
         } catch {}
       }
       this.clearWsHeartbeat();
-      this.ws = new WebSocket(wsUrl, { followRedirects: true });
+      this.ws = new WebSocket('wss://api.upstox.com/v3/feed/market-data-feed', { headers: { Authorization: 'Bearer '+this.cfg.analyticsToken!.trim() }, followRedirects: true, handshakeTimeout:10000 });
       const socket=this.ws;
       socket.on('unexpected-response',(_req,response)=>{
         if(this.ws!==socket){response.resume();return;}
@@ -1626,7 +1607,7 @@ export class UpstoxAdapter implements IMarketDataProvider {
       this.ws.on('open', () => {
         if(this.ws!==socket||generation!==this.socketGeneration)return;
         this.isConnected = true;
-        this.wsHttpStatus=101;
+        this.wsHttpStatus=101;this.isTokenVerified=true;
         this.wsReconnectAttempts = 0;
         this.lastErrorReason = null;
         this.lastPongAt = Date.now();
@@ -1795,7 +1776,7 @@ export class UpstoxAdapter implements IMarketDataProvider {
       lastDecodeAt: this.lastDecodeAt,
       cachedQuotesCount: this.quotes.size,
       wsConnected: this.isConnected,
-      decodeErrors:this.decodeErrors,subscriptionErrors:this.subscriptionErrors,authHttpStatus:this.authHttpStatus,wsHttpStatus:this.wsHttpStatus,wsErrorCode:this.wsErrorCode,wsResponseId:this.wsResponseId,
+      decodeErrors:this.decodeErrors,subscriptionErrors:this.subscriptionErrors,authHttpStatus:this.authHttpStatus,connectionFlow:'DIRECT_AUTHENTICATED_V3',wsHttpStatus:this.wsHttpStatus,wsErrorCode:this.wsErrorCode,wsResponseId:this.wsResponseId,
     };
   }
 
