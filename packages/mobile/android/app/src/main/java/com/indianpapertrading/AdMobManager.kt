@@ -134,6 +134,9 @@ class AdMobManager(
     private var lastInterstitialResponseId: String? = null
     private var lastInterstitialShownAt: Long = 0L
     private var interstitialShownCount = 0
+    private var interstitialDisplayCount = 0
+    private var interstitialDismissalCount = 0
+    private var interstitialDisplayError: String? = null
 
     private var appOpenAd: AppOpenAd? = null
     private var appOpenUnitId = BuildConfig.APP_OPEN_AD_UNIT_ID
@@ -339,7 +342,7 @@ class AdMobManager(
         }
         currentUserTier = cleanTier
         currentUserId = cleanUserId
-        Log.i(TAG, "Updated user tier to $currentUserTier for user $currentUserId")
+        Log.i(TAG, "Ad entitlement tier=$currentUserTier accountChanged=$accountChanged generation=$entitlementGeneration")
 
         activity.runOnUiThread {
             if (accountChanged) {
@@ -576,6 +579,7 @@ class AdMobManager(
 
     private fun preloadInterstitialIfEligible() {
         if (currentUserTier != "FREE") return
+        if (fullscreenShowing) return
         if (System.currentTimeMillis() < nextInterstitialRetryAt || interstitialRetryAttempt > INTERSTITIAL_RETRY_DELAYS_MS.size) {
             lastPreloadBlockedReason = "REASON_RETRY_BACKOFF_OR_EXHAUSTED"; return
         }
@@ -611,6 +615,7 @@ class AdMobManager(
                     ad.fullScreenContentCallback = object : FullScreenContentCallback() {
                         override fun onAdDismissedFullScreenContent() {
                             fullscreenShowing=false
+                            interstitialDismissalCount++
                             Log.i(TAG, "Interstitial dismissed by user.")
                             interstitialAd = null
                             preloadInterstitialIfEligible()
@@ -618,12 +623,15 @@ class AdMobManager(
 
                         override fun onAdFailedToShowFullScreenContent(adError: com.google.android.gms.ads.AdError) {
                             fullscreenShowing=false
+                            interstitialDisplayError = "code=${adError.code}; domain=${adError.domain}; message=${adError.message}"
                             Log.w(TAG, "Interstitial failed to show: ${adError.message}")
                             interstitialAd = null
                             preloadInterstitialIfEligible()
                         }
 
                         override fun onAdShowedFullScreenContent() {
+                            interstitialDisplayCount++
+                            interstitialDisplayError = null
                             Log.i(TAG, "Interstitial displayed on screen.")
                         }
 
@@ -769,6 +777,33 @@ class AdMobManager(
     // Diagnostics
     // =============================================================================
 
+    /** QA-only load/retry probe. Never alters consent, entitlement, eligibility or caps. */
+    fun reloadTestAds(): Boolean {
+        if (!BuildConfig.DEBUG || currentUserTier != "FREE" || consentUpdateInFlight || fullscreenShowing || !canShowAdsNow()) return false
+        activity.runOnUiThread {
+            if (currentUserTier != "FREE" || consentUpdateInFlight || fullscreenShowing || !canShowAdsNow()) return@runOnUiThread
+            // Invalidate earlier loads before issuing the explicitly requested test loads.
+            entitlementGeneration++
+            retryHandler.removeCallbacksAndMessages(null)
+            destroyBanner()
+            interstitialAd = null
+            isInterstitialLoading = false
+            appOpenAd = null
+            appOpenLoading = false
+            bannerRetryAttempt = 0
+            interstitialRetryAttempt = 0
+            appOpenRetry = 0
+            nextBannerRetryAt = 0L
+            nextInterstitialRetryAt = 0L
+            appOpenNextRetry = 0L
+            Log.i(TAG, "QA manual reload: test units only; consent/entitlement/caps unchanged")
+            updateBannerVisibility()
+            preloadInterstitialIfEligible()
+            preloadAppOpen()
+        }
+        return true
+    }
+
     private fun manifestAdMobAppId(): String = try {
         val info = activity.packageManager.getApplicationInfo(
             activity.packageName,
@@ -830,6 +865,10 @@ class AdMobManager(
             put("lastInterstitialLoadError", lastInterstitialLoadError ?: JSONObject.NULL)
             put("lastInterstitialResponseId", lastInterstitialResponseId ?: JSONObject.NULL)
             put("interstitialShownCount", interstitialShownCount)
+            put("interstitialDisplayCount", interstitialDisplayCount)
+            put("interstitialDismissalCount", interstitialDismissalCount)
+            put("interstitialDisplayError", interstitialDisplayError ?: JSONObject.NULL)
+            put("fullscreenShowing", fullscreenShowing)
             put("sessionInterstitialCount", sessionInterstitialCount)
             put("maxSessionInterstitials", MAX_INTERSTITIALS_PER_SESSION)
             put("recent24hCount", getRecent24hImpressionsCount())
@@ -878,7 +917,7 @@ class AdMobManager(
         preloadAppOpen()
     }
     private fun preloadAppOpen(){
-        if(currentUserTier!="FREE" || !canShowAdsNow() || appOpenLoading || appOpenAd!=null)return
+        if(currentUserTier!="FREE" || fullscreenShowing || !canShowAdsNow() || appOpenLoading || appOpenAd!=null)return
         if(appOpenUnitId.isBlank()){appOpenBlock="PRODUCTION_APP_OPEN_UNIT_NOT_CONFIGURED";return}
         if(prefs.getInt("completed_browsing",0)<3){appOpenBlock="INITIAL_USE_ONBOARDING";return}
         if(System.currentTimeMillis()<appOpenNextRetry || appOpenRetry>3 || foregroundStartedAt==0L)return
@@ -908,8 +947,8 @@ class AdMobManager(
         val blocked=when{
             externalAuthentication -> "AUTHENTICATION_RETURN"
             left==0L || android.os.SystemClock.elapsedRealtime()-left<30000L -> "NOT_A_NEW_FOREGROUND_VISIT"
-            !safe || currentUserTier!="FREE" || isTradingWorkspaceOpen || hasOpenPositions || hasPendingOrders -> "UNSAFE_OR_AD_FREE"
-            activity.isFinishing || activity.isDestroyed || !activity.hasWindowFocus() -> "ACTIVITY_NOT_READY"
+            !safe || currentUserTier!="FREE" || consentUpdateInFlight || isTradingWorkspaceOpen || hasOpenPositions || hasPendingOrders -> "UNSAFE_OR_AD_FREE"
+            activity.isFinishing || activity.isDestroyed || foregroundStartedAt==0L -> "ACTIVITY_NOT_READY"
             (activity.getSystemService(Context.KEYGUARD_SERVICE) as android.app.KeyguardManager).isKeyguardLocked -> "DEVICE_LOCKED"
             fullscreenShowing || now-prefs.getLong("last_fullscreen_impression",0L)<MIN_FOREGROUND_MS -> "SHARED_FULLSCREEN_COOLDOWN"
             sessionInterstitialCount>=MAX_INTERSTITIALS_PER_SESSION || getRecent24hImpressionsCount()>=MAX_INTERSTITIALS_PER_24H -> "SHARED_FULLSCREEN_CAP"
@@ -935,7 +974,10 @@ class AdMobManager(
         if (foregroundStartedAt == 0L) foregroundStartedAt = android.os.SystemClock.elapsedRealtime()
         foregroundAuthentication=externalAuthentication
         foregroundOpportunityUntil=if(userLeftAt>0L)android.os.SystemClock.elapsedRealtime()+2000L else 0L
-        if(activity.hasWindowFocus())onForegroundWindowReady()
+        // A resumed Activity is the SDK's display host; window focus can arrive late on
+        // slower phones. Decide here, before the user can navigate, rather than queueing
+        // an ad behind a later focus callback (or an account-picker/dialog return).
+        onForegroundWindowReady()
         bannerAdView?.resume()
         updateBannerVisibility()
     }

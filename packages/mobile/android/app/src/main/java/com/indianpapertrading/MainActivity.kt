@@ -609,6 +609,12 @@ class MainActivity : AppCompatActivity() {
         }
 
         @JavascriptInterface
+        fun reloadTestAds(): Boolean {
+            if (!BuildConfig.DEBUG || !verifyCallerIsTrusted()) return false
+            return if (::adMobManager.isInitialized) adMobManager.reloadTestAds() else false
+        }
+
+        @JavascriptInterface
         fun getAdDiagnostics(): String {
             if (!verifyCallerIsTrusted()) return "{}"
             return if (::adMobManager.isInitialized) {

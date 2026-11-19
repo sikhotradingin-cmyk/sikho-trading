@@ -9,8 +9,8 @@ android {
         applicationId "com.indianpapertrading"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 23
-        versionName "1.0.13"
+        versionCode 24
+        versionName "1.0.14"
     }
 
     buildFeatures {
@@ -23,6 +23,8 @@ android {
     buildTypes {
         debug {
             applicationIdSuffix ".debug"
+            versionNameSuffix "-ads-qa"
+            resValue "string", "app_name", "Sikho Trading Ads QA"
             debuggable true
             buildConfigField "String", "APP_OPEN_AD_UNIT_ID", "\"ca-app-pub-3940256099942544/9257395921\""
             manifestPlaceholders = [
@@ -36,6 +38,9 @@ android {
         release {
             signingConfig signingConfigs.debug
             def appOpenUnit = System.getenv("APP_OPEN_AD_UNIT_ID") ?: ""
+            if (appOpenUnit.startsWith("ca-app-pub-3940256099942544/")) {
+                throw new GradleException("Google demo ad units must not be used in release builds")
+            }
             buildConfigField "String", "APP_OPEN_AD_UNIT_ID", "\"${appOpenUnit}\""
             minifyEnabled false
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
