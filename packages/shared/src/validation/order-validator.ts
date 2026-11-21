@@ -151,14 +151,94 @@ export class OrderValidator {
       };
     }
 
+    if (request.orderType === 'STOP_LIMIT') {
+      if (request.triggerPrice === undefined || request.triggerPrice <= 0) {
+        return {
+          isValid: false,
+          errorCode: 'ERR_MISSING_TRIGGER_PRICE',
+          errorMessage: 'Stop-Limit orders require a valid triggerPrice.',
+        };
+      }
+      if (request.requestedPrice === undefined || request.requestedPrice <= 0) {
+        return {
+          isValid: false,
+          errorCode: 'ERR_MISSING_LIMIT_PRICE',
+          errorMessage: 'Stop-Limit orders require a valid requestedPrice.',
+        };
+      }
+    }
+
     // 6. Margin Calculation & Balance Validation
-    const effectivePrice = request.requestedPrice ?? currentMarketPrice;
+    const effectivePrice = request.requestedPrice ?? request.triggerPrice ?? currentMarketPrice;
     if (effectivePrice <= 0) {
       return {
         isValid: false,
         errorCode: 'ERR_NO_VALID_PRICE',
         errorMessage: 'Cannot evaluate margin: market price is zero or unavailable.',
       };
+    }
+
+    // Validate attached Stop Loss / Target prices if provided
+    if (request.stopLossPrice !== undefined) {
+      if (!Number.isFinite(request.stopLossPrice) || request.stopLossPrice <= 0) {
+        return {
+          isValid: false,
+          errorCode: 'ERR_INVALID_STOP_LOSS',
+          errorMessage: 'Stop Loss price must be strictly greater than zero.',
+        };
+      }
+      if (!this.isAlignedToTick(request.stopLossPrice, tick)) {
+        return {
+          isValid: false,
+          errorCode: 'ERR_OFF_TICK_PRICE',
+          errorMessage: `Stop Loss price ${request.stopLossPrice} does not align with instrument tick size ${tick}.`,
+        };
+      }
+      if (request.side === 'BUY' && request.stopLossPrice >= effectivePrice) {
+        return {
+          isValid: false,
+          errorCode: 'ERR_INVALID_STOP_LOSS',
+          errorMessage: `Stop Loss (${request.stopLossPrice}) for a BUY order must be below entry reference price (${effectivePrice}).`,
+        };
+      }
+      if (request.side === 'SELL' && request.stopLossPrice <= effectivePrice) {
+        return {
+          isValid: false,
+          errorCode: 'ERR_INVALID_STOP_LOSS',
+          errorMessage: `Stop Loss (${request.stopLossPrice}) for a SELL order must be above entry reference price (${effectivePrice}).`,
+        };
+      }
+    }
+
+    if (request.targetPrice !== undefined) {
+      if (!Number.isFinite(request.targetPrice) || request.targetPrice <= 0) {
+        return {
+          isValid: false,
+          errorCode: 'ERR_INVALID_TARGET',
+          errorMessage: 'Target price must be strictly greater than zero.',
+        };
+      }
+      if (!this.isAlignedToTick(request.targetPrice, tick)) {
+        return {
+          isValid: false,
+          errorCode: 'ERR_OFF_TICK_PRICE',
+          errorMessage: `Target price ${request.targetPrice} does not align with instrument tick size ${tick}.`,
+        };
+      }
+      if (request.side === 'BUY' && request.targetPrice <= effectivePrice) {
+        return {
+          isValid: false,
+          errorCode: 'ERR_INVALID_TARGET',
+          errorMessage: `Target (${request.targetPrice}) for a BUY order must be above entry reference price (${effectivePrice}).`,
+        };
+      }
+      if (request.side === 'SELL' && request.targetPrice >= effectivePrice) {
+        return {
+          isValid: false,
+          errorCode: 'ERR_INVALID_TARGET',
+          errorMessage: `Target (${request.targetPrice}) for a SELL order must be below entry reference price (${effectivePrice}).`,
+        };
+      }
     }
 
     const existingPosQty = options?.existingPositionQuantity ?? 0;

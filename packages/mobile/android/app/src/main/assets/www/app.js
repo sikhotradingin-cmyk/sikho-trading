@@ -210,6 +210,121 @@
     return (pct>0?'+':'')+pct.toFixed(2)+'%';
   }
 
+  function formatPointsAndPct(quote) {
+    const chg = calcChange(quote);
+    if (!chg.available) return { text: 'Unavailable', cls: 'val-neutral', available: false, diff: null, pct: null };
+    const absPts = Math.abs(chg.diff);
+    const ptsStr = `${chg.diff > 0 ? '+' : chg.diff < 0 ? '-' : ''}${fmtNum(absPts)}`;
+    const pctStr = formatChangePct(chg.pct);
+    const cls = chg.diff > 0 ? 'val-pos' : chg.diff < 0 ? 'val-neg' : 'val-neutral';
+    return { text: `${ptsStr} (${pctStr})`, cls, available: true, diff: chg.diff, pct: chg.pct };
+  }
+
+  // =========================================================================
+  // COMPLETE DAY / NIGHT / SYSTEM THEME ENGINE (PRIORITY 5)
+  // =========================================================================
+  const THEME_STORAGE_KEY = 'sikho_theme_pref';
+  let systemThemeMedia = null;
+
+  function getThemePreference() {
+    try {
+      const v = localStorage.getItem(THEME_STORAGE_KEY);
+      if (v === 'light' || v === 'dark' || v === 'system') return v;
+    } catch {}
+    return 'light';
+  }
+
+  function resolveEffectiveTheme(pref) {
+    const p = pref || getThemePreference();
+    if (p === 'dark') return 'dark';
+    if (p === 'light') return 'light';
+    try {
+      return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    } catch {
+      return 'light';
+    }
+  }
+
+  function syncNativeSystemBarTheme() {
+    if (!window.TradingzoneNative || typeof window.TradingzoneNative.setSystemBarTheme !== 'function') return;
+    const isAuthScreen = document.getElementById('screen-auth')?.classList.contains('active');
+    if (isAuthScreen) {
+      window.TradingzoneNative.setSystemBarTheme(false, '#080C12');
+      return;
+    }
+    const isLight = resolveEffectiveTheme() === 'light';
+    window.TradingzoneNative.setSystemBarTheme(isLight, isLight ? '#FFFFFF' : '#080C12');
+  }
+
+  function getChartThemeOptions(effectiveTheme) {
+    const isDark = (effectiveTheme || resolveEffectiveTheme()) === 'dark';
+    return isDark
+      ? {
+          layout: { background: { type: 'solid', color: '#080C12' }, textColor: '#CBD5E1', fontSize: 11 },
+          grid: { vertLines: { color: 'rgba(148, 163, 184, 0.08)' }, horzLines: { color: 'rgba(148, 163, 184, 0.08)' } },
+          rightPriceScale: { borderColor: '#1E293B' },
+          timeScale: { borderColor: '#1E293B' },
+          candle: { upColor: '#22C55E', downColor: '#EF4444', borderUpColor: '#22C55E', borderDownColor: '#EF4444', wickUpColor: '#22C55E', wickDownColor: '#EF4444', priceLineColor: '#94A3B8' },
+        }
+      : {
+          layout: { background: { type: 'solid', color: '#FFFFFF' }, textColor: '#334155', fontSize: 11 },
+          grid: { vertLines: { color: 'rgba(15, 23, 42, 0.06)' }, horzLines: { color: 'rgba(15, 23, 42, 0.06)' } },
+          rightPriceScale: { borderColor: '#E2E8F0' },
+          timeScale: { borderColor: '#E2E8F0' },
+          candle: { upColor: '#0D9456', downColor: '#D92D45', borderUpColor: '#0D9456', borderDownColor: '#D92D45', wickUpColor: '#0D9456', wickDownColor: '#D92D45', priceLineColor: '#475569' },
+        };
+  }
+
+  function applyChartTheme(effectiveTheme) {
+    if (!tvChart) return;
+    const opts = getChartThemeOptions(effectiveTheme);
+    try {
+      tvChart.applyOptions({
+        layout: opts.layout,
+        grid: opts.grid,
+        rightPriceScale: opts.rightPriceScale,
+        timeScale: opts.timeScale,
+      });
+      if (candleSeries) {
+        candleSeries.applyOptions(opts.candle);
+      }
+    } catch {}
+  }
+
+  function applyTheme(pref, persist = false) {
+    const validPref = pref === 'dark' || pref === 'system' ? pref : 'light';
+    if (persist) {
+      try { localStorage.setItem(THEME_STORAGE_KEY, validPref); } catch {}
+    }
+    const effective = resolveEffectiveTheme(validPref);
+    document.documentElement.setAttribute('data-theme', effective);
+    const icon = effective === 'dark' ? '☀' : '🌙';
+    const headerBtn = document.getElementById('header-theme-btn');
+    const chartBtn = document.getElementById('chart-theme-btn');
+    if (headerBtn) headerBtn.textContent = icon;
+    if (chartBtn) chartBtn.textContent = icon;
+    document.getElementById('theme-opt-light')?.classList.toggle('active', validPref === 'light');
+    document.getElementById('theme-opt-dark')?.classList.toggle('active', validPref === 'dark');
+    document.getElementById('theme-opt-system')?.classList.toggle('active', validPref === 'system');
+    const statusEl = document.getElementById('prof-theme-status');
+    if (statusEl) {
+      statusEl.textContent = validPref === 'system'
+        ? `Following system (${effective === 'dark' ? 'Night' : 'Day'})`
+        : effective === 'dark' ? 'Night mode active' : 'Day mode active';
+    }
+    applyChartTheme(effective);
+    syncNativeSystemBarTheme();
+  }
+
+  function setThemePreference(pref) {
+    applyTheme(pref, true);
+  }
+
+  function toggleThemeQuick() {
+    const next = resolveEffectiveTheme() === 'dark' ? 'light' : 'dark';
+    applyTheme(next, true);
+  }
+
   function quoteTimestamp(q) {
     return Number(q?.providerTimestamp || q?.receiveTimestamp || 0);
   }
@@ -394,6 +509,8 @@
 
   function isGlobalIdRestrictedForFree(globalId) {
     if (!globalId || hasFullFeatureAccess()) return false;
+    // Never falsely show Pro lock while server access policy is still loading or transiently retrying
+    if (!state.accessResolved) return false;
     const access = window.TzFreeAccess;
     if (!access) return true; // fail closed if the access-matrix asset is missing
     return !access.isFreeTierAllowedGlobalId(globalId);
@@ -402,13 +519,20 @@
   function isInstrumentRestrictedForFree(inst) {
     if (!inst) return false;
     if (hasFullFeatureAccess()) return false;
+    // Never falsely show Pro lock while server access policy is still loading or transiently retrying
+    if (!state.accessResolved) return false;
     const access = window.TzFreeAccess;
     if (!access) return true; // fail closed if the access-matrix asset is missing
     return !access.isFreeTierAllowedInstrument(inst);
   }
 
   function showSubscriptionUpgradePrompt(symbol) {
-    if(state.access?.accessMode==='FREE_LAUNCH')return;
+    if (state.access?.accessMode === 'FREE_LAUNCH') return;
+    if (!state.accessResolved) {
+      window.SikhoUX?.notify('Checking account access…');
+      pollAccessPolicy();
+      return;
+    }
     showBrandedAlert(
       'Premium Pro Required',
       `${symbol || 'This instrument'} is exclusive to Sikho Trading Premium. Upgrade now to unlock BSE SENSEX, Equities, and MCX Commodities.`
@@ -668,7 +792,7 @@
         });
       }
 
-      completeAuthenticatedSession(res.token, res.user, res.account, true, res.entitlement);
+      completeAuthenticatedSession(res.token, res.user, res.account, true, res.entitlement, res.access);
     } catch (err) {
       showAuthError(err.message || 'Authentication failed.');
     } finally {
@@ -809,7 +933,7 @@
       recordGoogleStage('JS_BACKEND_RESPONSE', reqId, 'status=200 tier=' + String(res.user?.tier || 'unknown'));
       if (res && res.token) {
         document.getElementById('auth-error-msg').style.display = 'none';
-        const saved = completeAuthenticatedSession(res.token, res.user, res.account, true, res.entitlement);
+        const saved = completeAuthenticatedSession(res.token, res.user, res.account, true, res.entitlement, res.access);
         recordGoogleStage(saved ? 'JS_SESSION_SAVED' : 'JS_SESSION_SAVE_FAILED', reqId, 'secureSessionWrite=' + Boolean(saved) + ' tier=' + String(res.user?.tier || 'unknown'));
       } else {
         recordGoogleStage('JS_SESSION_MISSING_TOKEN', reqId, '');
@@ -1073,10 +1197,13 @@
     updateServerDisplay();
   }
 
-  function completeAuthenticatedSession(token, user, account, isFreshLogin, entitlement) {
+  function completeAuthenticatedSession(token, user, account, isFreshLogin, entitlement, accessPolicy) {
     // Strip any legacy PIN/biometric flags and never trust cached client-side PRO tier until server verifies entitlement
-    state.previousAccessMode=account?.access?.accessMode || null;
-    state.access = null;
+    state.sessionGen = (state.sessionGen || 0) + 1;
+    state.accessSeq = (state.accessSeq || 0) + 1;
+    state.previousAccessMode = accessPolicy?.accessMode || account?.access?.accessMode || null;
+    state.access = accessPolicy || null;
+    state.accessResolved = Boolean(accessPolicy && typeof accessPolicy.fullFeatureAccess === 'boolean');
     state.indicators={sma20:false,ema50:false,bb20:false,vwap:false,rsi14:false};
     const resolvedTier = (isFreshLogin && entitlement && entitlement.tier === 'PRO') ? 'PRO' : 'FREE';
     const cleanUser = Object.assign({}, user || {}, {
@@ -1089,9 +1216,9 @@
     if (!saved) {
       showAuthError('Secure session storage failed on this device. Please sign in again.');
       clearSessionSecure();
-    if (window.TradingzoneNative && typeof window.TradingzoneNative.clearNativeGoogleCredentialState === 'function') {
-      try { window.TradingzoneNative.clearNativeGoogleCredentialState(); } catch { }
-    }
+      if (window.TradingzoneNative && typeof window.TradingzoneNative.clearNativeGoogleCredentialState === 'function') {
+        try { window.TradingzoneNative.clearNativeGoogleCredentialState(); } catch { }
+      }
       showTopScreen('screen-auth');
       return false;
     }
@@ -1103,26 +1230,31 @@
       state.entitlementResolved = true;
     } else {
       state.subscription = null;
-    state.access = null;
-    window.SikhoHistory?.clear();
+      window.SikhoHistory?.clear();
       state.entitlementResolved = false;
     }
+    if (accessPolicy) applyAccessPolicy(accessPolicy, state.accessSeq);
     enterMainWorkspace();
     return true;
   }
 
   function signOut(optionalNotice) {
+    state.sessionGen = (state.sessionGen || 0) + 1;
+    state.accessSeq = (state.accessSeq || 0) + 1;
     state.token = null;
     state.user = null;
     state.account = null;
     state.subscription = null;
     state.entitlementResolved = false;
-    state.access=null;state.quotesMap=new Map();
+    state.access = null;
+    state.accessResolved = false;
+    state.quotesMap = new Map();
     state.orderTicket.open=false;clearInterval(ticketQuoteTimer);ticketQuoteTimer=null;
     state.lastTickTimestamps={};state.lastTickClientReceiveMs={};state.lastSeenQuoteReceipt={};state.lastRenderByInstrument={};state.providerDiagnostics={};state.wsSubscribed=new Set();
     window.SikhoHistory?.clear();
     document.getElementById('modal-history-csv')?.remove();
     stopFeedHealthPolling();
+    clearTimeout(accessRetryTimer); accessRetryTimer = null;
     serverClockOffsetMs = 0;
     state.positionsData = { positions: [], holdings: [], activePositions: [], closedPositions: [] };
     state.orders = [];
@@ -1142,31 +1274,82 @@
     toggleAuthMode('login');
     if (optionalNotice) showAuthError(optionalNotice);
     showTopScreen('screen-auth');
+    syncNativeSystemBarTheme();
   }
 
   // =========================================================================
   // 2. MAIN WORKSPACE INITIALIZATION & REAL-TIME WEBSOCKET
   // =========================================================================
-  let tradingReconcileTimer,accessPollTimer;
+  let tradingReconcileTimer, accessPollTimer, accessRetryTimer;
   function scheduleTradingReconcile(){
     clearTimeout(tradingReconcileTimer);tradingReconcileTimer=setTimeout(async()=>{if(!state.token)return;await refreshAccountAndPortfolio();if(state.mainTab==='history')window.SikhoHistory?.show(apiFetch);},180);
   }
-  function applyAccessPolicy(policy){
-    if(!policy)return;
-    if(typeof policy.appOpenAdUnitId==='string')window.TradingzoneNative?.configureAppOpenUnit?.(policy.appOpenAdUnitId);
-    const previous=state.access?.accessMode||state.previousAccessMode;state.access=policy;state.previousAccessMode=policy.accessMode;
-    if(previous&&previous!==policy.accessMode){
-      if(policy.accessMode==='STANDARD'){
-        const exposure=(state.positionsData?.positions||[]).some(p=>p.globalInstrumentId===state.activeInstrument?.globalId&&p.quantity!==0);
-        if(state.chartOpen&&isInstrumentRestrictedForFree(state.activeInstrument)&&!exposure)closeChartWorkspace();
-        if(state.optionChain&&!optionChainFreeAllowed(state.optionChain.underlying))closeOptionChainModal();
+  function applyAccessPolicy(policy, seq) {
+    if (!policy) return;
+    if (seq && seq < (state.accessSeq || 0)) return;
+    // Never let an unauthenticated fallback overwrite an authenticated FREE_LAUNCH session
+    if (state.token && policy.accessMode === 'FREE_LAUNCH' && !policy.fullFeatureAccess) return;
+    if (seq) state.accessSeq = seq;
+    if (typeof policy.appOpenAdUnitId === 'string') window.TradingzoneNative?.configureAppOpenUnit?.(policy.appOpenAdUnitId);
+    const wasFullAccess = Boolean(state.access?.fullFeatureAccess);
+    const wasResolved = Boolean(state.accessResolved);
+    const previousMode = state.access?.accessMode || state.previousAccessMode;
+    state.access = policy;
+    state.accessResolved = true;
+    state.previousAccessMode = policy.accessMode;
+    const modeChanged = Boolean(previousMode && previousMode !== policy.accessMode);
+    const accessChanged = !wasResolved || wasFullAccess !== Boolean(policy.fullFeatureAccess);
+    if (modeChanged) {
+      if (policy.accessMode === 'STANDARD') {
+        const exposure = (state.positionsData?.positions || []).some(p => p.globalInstrumentId === state.activeInstrument?.globalId && p.quantity !== 0);
+        if (state.chartOpen && isInstrumentRestrictedForFree(state.activeInstrument) && !exposure) closeChartWorkspace();
+        if (state.optionChain && !optionChainFreeAllowed(state.optionChain.underlying)) closeOptionChainModal();
       }
-      state.quotesMap=new Map();window.SikhoUX.notify(policy.accessMode==='FREE_LAUNCH'?'Free Launch — all features unlocked':'Introductory access has ended. Existing positions can still be viewed and reduced.');
-      renderExploreStocksList();renderExploreFnoLists();renderCommoditiesList();renderWatchlistsTab();
+      state.quotesMap = new Map();
+      window.SikhoUX?.notify(policy.accessMode === 'FREE_LAUNCH' ? 'Free Launch — all features unlocked' : 'Introductory access has ended. Existing positions can still be viewed and reduced.');
     }
-    const label=document.getElementById('launch-access-label');if(label){label.textContent=policy.label;label.hidden=policy.accessMode!=='FREE_LAUNCH';}
+    if (modeChanged || accessChanged) {
+      renderBenchmarkIndexStrip();
+      renderExploreStocksList();
+      renderExploreFnoLists();
+      renderCommoditiesList();
+      renderWatchlistsTab();
+    }
+    const label = document.getElementById('launch-access-label');
+    if (label) {
+      label.textContent = policy.label;
+      label.hidden = policy.accessMode !== 'FREE_LAUNCH';
+    }
   }
-  async function pollAccessPolicy(){if(!state.token)return;const token=state.token;try{const r=await apiFetch('/api/v1/access');if(token===state.token){applyAccessPolicy(r.access);if(r.entitlement){state.subscription=r.entitlement;state.entitlementResolved=true;if(state.user)state.user.tier=r.entitlement.tier;notifyNativeUserTier();}renderProfileStatsUI();}}catch{}}
+  async function pollAccessPolicy() {
+    if (!state.token) return;
+    const token = state.token;
+    const gen = state.sessionGen;
+    const reqSeq = (state.accessSeq || 0) + 1;
+    try {
+      const r = await apiFetch('/api/v1/access');
+      if (token !== state.token || gen !== state.sessionGen) return;
+      if (r && r.access) {
+        applyAccessPolicy(r.access, reqSeq);
+      }
+      if (r && r.entitlement && (r.entitlement.tier === 'PRO' || r.entitlement.tier === 'FREE')) {
+        state.subscription = r.entitlement;
+        state.entitlementResolved = true;
+        if (state.user) state.user.tier = r.entitlement.tier;
+        notifyNativeUserTier();
+      } else if (r && r.entitlementResolved === false) {
+        state.entitlementResolved = false;
+        notifyNativeUserTier();
+      }
+      renderProfileStatsUI();
+    } catch {
+      // Transient error: keep existing access policy, never falsely lock; retry shortly if still unresolved
+      if (!state.accessResolved && token === state.token && gen === state.sessionGen) {
+        clearTimeout(accessRetryTimer);
+        accessRetryTimer = setTimeout(() => { pollAccessPolicy(); }, 5000);
+      }
+    }
+  }
   async function clearCurrentWatchlist(){
     const list=state.watchlists[0];if(!list)return;
     if(!await new Promise(resolve=>showConfirmSheet('Clear watchlist','Remove all instruments from this watchlist? Positions and trading history are preserved.',resolve)))return;
@@ -1567,12 +1750,11 @@
           `;
         }
         const q = (inst.globalId && state.quotesMap?.get(inst.globalId)) || inst.latestQuote;
-        const { diff, pct, sign } = calcChange(q);
-        const cls = diff >= 0 ? 'val-pos-dark' : 'val-neg';
+        const ptsPct = formatPointsAndPct(q);
         const isDerivative = inst.instrumentType === 'FUTIDX' || inst.instrumentType === 'OPTIDX';
         const eBadge = isDerivative && inst.expiry ? `<span class="expiry-e-badge">${inst.expiry}</span>` : '';
         const ltpDisplay = q && q.ltp !== undefined && q.ltp !== null && q.ltp > 0 ? fmtNum(q.ltp) : '—';
-        const chgDisplay = q && q.ltp !== undefined && q.ltp !== null && q.ltp > 0 ? formatChangePct(pct) : '';
+        const chgDisplay = q && q.ltp !== undefined && q.ltp !== null && q.ltp > 0 ? ptsPct.text : '';
         return `
           <div class="index-card-mini" onclick="window.TZApp.openChartByGlobalId('${inst.globalId}')">
             <div class="idx-card-top">
@@ -1584,7 +1766,7 @@
             </div>
             <div class="idx-card-bottom">
               <span class="idx-ltp" data-ltp-id="${inst.globalId}">${ltpDisplay}</span>
-              <span class="idx-chg ${cls}" data-chg-id="${inst.globalId}">${chgDisplay}</span>
+              <span class="idx-chg ${ptsPct.cls}" data-chg-id="${inst.globalId}">${chgDisplay}</span>
             </div>
           </div>
         `;
@@ -1933,7 +2115,7 @@
   function renderInstrumentRowHTML(inst, showChainBtn = false, options = {}) {
  const isRestricted = !isProUser() && isInstrumentRestrictedForFree(inst);
  const q = pickQuote(inst); const {diff,pct,sign}=calcChange(q);
- return window.SikhoUX.row(inst, {restricted:isRestricted,avatar:window.InstrumentIdentity.renderInstrumentAvatar(inst,40),price:q?.ltp>0?fmtINR(q.ltp):'—',change:q?.ltp>0?formatChangePct(pct):'',changeClass:diff>=0?'val-pos-dark':'val-neg',showChain:showChainBtn,search:options.search});
+ return window.SikhoUX.row(inst, {restricted:isRestricted,avatar:window.InstrumentIdentity.renderInstrumentAvatar(inst,40),price:q?.ltp>0?fmtINR(q.ltp):'—',change:q?.ltp>0?formatPointsAndPct(q).text:'',changeClass:formatPointsAndPct(q).cls,showChain:showChainBtn,search:options.search});
 }
 
   function renderExploreStocksList() {
@@ -2625,9 +2807,7 @@
     closeOptionChainModal();
     state.chartOpen = true;
     document.getElementById('screen-chart').classList.add('active');
-    if (window.TradingzoneNative && typeof window.TradingzoneNative.setSystemBarTheme === 'function') {
-      window.TradingzoneNative.setSystemBarTheme(false, '#0D1117');
-    }
+    syncNativeSystemBarTheme();
     notifyNativeScreenState();
 
     state.activeInstrument = inst;
@@ -2676,9 +2856,7 @@
     syncLiveSubscriptions();
     stopChartCountdownTimer();
     document.getElementById('screen-chart').classList.remove('active');
-    if (window.TradingzoneNative && typeof window.TradingzoneNative.setSystemBarTheme === 'function') {
-      window.TradingzoneNative.setSystemBarTheme(true, '#FFFFFF');
-    }
+    syncNativeSystemBarTheme();
     notifyNativeScreenState();
   }
 
@@ -2796,23 +2974,17 @@
       return;
     }
 
+    const chartTheme = getChartThemeOptions();
     tvChart = LightweightCharts.createChart(container, {
       width: container.clientWidth || 380,
       height: container.clientHeight || 420,
       localization:{locale:'en-IN',timeFormatter:t=>formatChartTime(t,true)},
-      layout: {
-        background: { type: 'solid', color: '#080C12' },
-        textColor: '#AAB4C2',
-        fontSize: 11,
-      },
-      grid: {
-        vertLines: { color: 'rgba(255, 255, 255, 0.05)' },
-        horzLines: { color: 'rgba(255, 255, 255, 0.05)' },
-      },
+      layout: chartTheme.layout,
+      grid: chartTheme.grid,
       crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-      rightPriceScale: { borderColor: '#1E293B', autoScale: true, scaleMargins:{top:.1,bottom:.1} },
+      rightPriceScale: { borderColor: chartTheme.rightPriceScale.borderColor, autoScale: true, scaleMargins:{top:.1,bottom:.1} },
       timeScale: {
-        borderColor: '#1E293B',
+        borderColor: chartTheme.timeScale.borderColor,
         timeVisible: true,
         secondsVisible: false,
         rightOffset: 5,
@@ -2822,13 +2994,8 @@
     });
 
     candleSeries = tvChart.addCandlestickSeries({
-      upColor: '#22C55E',
-      downColor: '#D92D45',
-      borderUpColor: '#22C55E',
-      borderDownColor: '#D92D45',
-      wickUpColor: '#22C55E',
-      wickDownColor: '#D92D45',
-      priceLineColor:'#7792ad',priceLineStyle:2,
+      ...chartTheme.candle,
+      priceLineStyle: 2,
     });
 
     tvChart.subscribeCrosshairMove((param) => {
@@ -3460,18 +3627,28 @@
 
   function setOrderType(type) {
     state.orderTicket.orderType = type;
-    document.getElementById('ticket-type-market').classList.toggle('active', type === 'MARKET');
-    document.getElementById('ticket-type-limit').classList.toggle('active', type === 'LIMIT');
-    document.getElementById('ticket-type-sl').classList.toggle('active', type === 'STOP_MARKET');
+    document.getElementById('ticket-type-market')?.classList.toggle('active', type === 'MARKET');
+    document.getElementById('ticket-type-limit')?.classList.toggle('active', type === 'LIMIT');
+    document.getElementById('ticket-type-sl')?.classList.toggle('active', type === 'STOP_MARKET');
+    document.getElementById('ticket-type-sll')?.classList.toggle('active', type === 'STOP_LIMIT');
 
     const priceIn = document.getElementById('ticket-input-price');
+    const triggerRow = document.getElementById('ticket-trigger-row');
+    const triggerIn = document.getElementById('ticket-input-trigger');
     const inst = state.orderTicket.instrument;
     const lastClose = Number(state.quotesMap?.get(inst?.globalId)?.ltp || inst?.latestQuote?.ltp) ||
       (state.activeInstrument?.globalId === inst?.globalId ? state.candles[state.candles.length - 1]?.close : null);
+    if (triggerRow) triggerRow.style.display = type === 'STOP_LIMIT' ? 'block' : 'none';
     if (type === 'MARKET') {
       priceIn.disabled = true;
       priceIn.value = '';
       priceIn.placeholder = 'Market Price';
+      document.getElementById('ticket-price-label').textContent = 'Execution Price';
+    } else if (type === 'STOP_LIMIT') {
+      priceIn.disabled = false;
+      priceIn.value = lastClose > 0 ? String(lastClose) : '';
+      if (triggerIn) triggerIn.value = lastClose > 0 ? String(lastClose) : '';
+      document.getElementById('ticket-price-label').textContent = 'Limit Price (₹)';
     } else {
       priceIn.disabled = false;
       priceIn.value = lastClose > 0 ? String(lastClose) : '';
@@ -3595,6 +3772,7 @@
 
     const qty = parseInt(document.getElementById('ticket-input-qty').value || '0', 10);
     const rawPrice = parseFloat(document.getElementById('ticket-input-price').value);
+    const rawTrigger = parseFloat(document.getElementById('ticket-input-trigger')?.value || '');
     const slVal = parseFloat(document.getElementById('ticket-input-sl').value);
     const tpVal = parseFloat(document.getElementById('ticket-input-target').value);
 
@@ -3609,6 +3787,10 @@
 
     if (state.orderTicket.orderType === 'LIMIT') payload.requestedPrice = rawPrice;
     if (state.orderTicket.orderType === 'STOP_MARKET') payload.triggerPrice = rawPrice;
+    if (state.orderTicket.orderType === 'STOP_LIMIT') {
+      payload.requestedPrice = rawPrice;
+      payload.triggerPrice = rawTrigger;
+    }
     if (!isNaN(slVal) && slVal > 0) payload.stopLossPrice = slVal;
     if (!isNaN(tpVal) && tpVal > 0) payload.targetPrice = tpVal;
 
@@ -4038,9 +4220,7 @@
     if (tab === 'portfolio' || tab === 'orders' || tab === 'profile') {
       refreshAccountAndPortfolio();
     }
-    if (window.TradingzoneNative && typeof window.TradingzoneNative.setSystemBarTheme === 'function') {
-      window.TradingzoneNative.setSystemBarTheme(true, '#FFFFFF');
-    }
+    syncNativeSystemBarTheme();
     notifyNativeScreenState();
     if (changed) recordEligibleAction('switch_tab_' + activeTab);
   }
@@ -4680,13 +4860,13 @@
       }
     });
 
-    // Update DOM change % elements matching data-chg-id
-    const { diff, pct, sign } = calcChange(currentQ);
-    const cls = diff >= 0 ? 'val-pos-dark' : 'val-neg';
+    // Update DOM change elements matching data-chg-id (consistent points + percentage)
+    const ptsPct = formatPointsAndPct(currentQ);
     document.querySelectorAll(`[data-chg-id="${quote.globalId}"]`).forEach((el) => {
       if (currentQ.ltp !== undefined && currentQ.ltp !== null && currentQ.ltp > 0) {
-        el.textContent = formatChangePct(pct);
-        el.className = `idx-chg ${cls}`;
+        el.textContent = ptsPct.text;
+        const baseCls = el.classList.contains('inst-chg-val') ? 'inst-chg-val' : 'idx-chg';
+        el.className = `${baseCls} ${ptsPct.cls}`;
       }
     });
 
@@ -5042,15 +5222,30 @@
     applyServerPreset,
     testServerConnection,
     saveServerConfig,
+    setThemePreference,
+    toggleThemeQuick,
   };
 
   window.addEventListener('DOMContentLoaded', () => {
+    applyTheme(getThemePreference(), false);
+    try {
+      systemThemeMedia = window.matchMedia('(prefers-color-scheme: dark)');
+      systemThemeMedia.addEventListener('change', () => {
+        if (getThemePreference() === 'system') applyTheme('system', false);
+      });
+    } catch {}
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && state.token) {
+        pollAccessPolicy();
+      }
+    });
     probeAndSelectServer();
     const saved = readSessionSecure();
     if (saved && saved.token && saved.user) {
       completeAuthenticatedSession(saved.token, saved.user, saved.account);
     } else {
       showTopScreen('screen-auth');
+      syncNativeSystemBarTheme();
     }
   });
 })();

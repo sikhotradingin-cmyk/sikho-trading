@@ -631,7 +631,9 @@ class MainActivity : AppCompatActivity() {
                 try {
                     val parsedColor = Color.parseColor(colorHex)
                     window.decorView.setBackgroundColor(parsedColor)
-                    if(::appRoot.isInitialized)appRoot.setBackgroundColor(parsedColor)
+                    if (::appRoot.isInitialized) appRoot.setBackgroundColor(parsedColor)
+                    if (::bannerContainer.isInitialized) bannerContainer.setBackgroundColor(parsedColor)
+                    if (::webView.isInitialized) webView.setBackgroundColor(parsedColor)
                     val insetsController = WindowCompat.getInsetsController(window, window.decorView)
                     insetsController.isAppearanceLightStatusBars = isLight
                     insetsController.isAppearanceLightNavigationBars = isLight

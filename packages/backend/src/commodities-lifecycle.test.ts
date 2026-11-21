@@ -105,7 +105,9 @@ describe('MCX Commodities Paper Trading & Contract Lifecycle', () => {
     });
     assert.strictEqual(searchRes.statusCode, 200);
     const searchBody = JSON.parse(searchRes.payload);
-    const crudeInst = searchBody.instruments.find((i: any) => i.instrumentType === 'FUTCOM' && i.exchange === 'MCX');
+    const crudeInst = searchBody.instruments.find(
+      (i: any) => i.instrumentType === 'FUTCOM' && i.exchange === 'MCX' && (!i.expiry || new Date(i.expiry).getTime() + 86400000 > Date.now())
+    );
     assert.ok(crudeInst, 'Crude Oil FUTCOM instrument must be discovered');
 
     // Seed a simulated quote snapshot in the provider cache to simulate market reception

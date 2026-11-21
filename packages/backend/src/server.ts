@@ -967,8 +967,24 @@ export async function buildServer(
     };
   });
 
-  const resolveAccessFromReq=async(req:any)=>{
-    try{const decoded=(app as any).jwt.verify((req.headers.authorization||'').replace(/^Bearer /,''));return resolveAccessPolicy(await billingService.getAccountTier(decoded.userId));}catch{return resolveAccessPolicy('FREE',false);}
+  const resolveAccessFromReq = async (req: any) => {
+    const rawAuth = (req.headers.authorization || '').replace(/^Bearer /, '');
+    if (!rawAuth) return resolveAccessPolicy('FREE', false);
+    let decoded: any;
+    try {
+      decoded = (app as any).jwt.verify(rawAuth);
+    } catch {
+      return resolveAccessPolicy('FREE', false);
+    }
+    if (!decoded || !decoded.userId) return resolveAccessPolicy('FREE', false);
+    try {
+      const tier = await billingService.getAccountTier(decoded.userId);
+      return resolveAccessPolicy(tier, true);
+    } catch {
+      // Transient billing DB error must NEVER downgrade an authenticated user's FREE_LAUNCH access.
+      // Under STANDARD mode, tier fails closed to FREE (ads/pro protected).
+      return resolveAccessPolicy('FREE', true);
+    }
   };
   app.addHook('onSend',async(req,reply,payload)=>{
     if(!/^\/api\/v1\/(instruments|indices|commodities|watchlists|user\/preferences\/indices)/.test(req.url)||typeof payload!=='string')return payload;
@@ -976,9 +992,30 @@ export async function buildServer(
     const policy=await resolveAccessFromReq(req);if(policy.fullFeatureAccess)return payload;
     try{const data=JSON.parse(payload);const scrub=(node:any):void=>{if(!node||typeof node!=='object')return;if(node.globalId&&node.instrumentType&&!isFreeTierAllowedInstrument(node))node.latestQuote=null;for(const val of Object.values(node))if(val&&typeof val==='object')Array.isArray(val)?val.forEach(scrub):scrub(val);};scrub(data);reply.header('Cache-Control','private, no-store');return JSON.stringify(data);}catch{return payload;}
   });
-  app.get('/api/v1/access', async (req,reply) => {
-    reply.header('Cache-Control','private, no-store');
-    try{const decoded=(app as any).jwt.verify((req.headers.authorization||'').replace(/^Bearer /,''));const entitlement=await billingService.resolveEntitlement(decoded.userId);return {access:resolveAccessPolicy(entitlement.tier),entitlement};}catch{return {access:resolveAccessPolicy('FREE',false)};}
+  app.get('/api/v1/access', async (req, reply) => {
+    reply.header('Cache-Control', 'private, no-store');
+    const rawAuth = (req.headers.authorization || '').replace(/^Bearer /, '');
+    if (!rawAuth) return { access: resolveAccessPolicy('FREE', false) };
+    let decoded: any;
+    try {
+      decoded = (app as any).jwt.verify(rawAuth);
+    } catch {
+      return { access: resolveAccessPolicy('FREE', false) };
+    }
+    if (!decoded || !decoded.userId) return { access: resolveAccessPolicy('FREE', false) };
+    try {
+      const entitlement = await billingService.resolveEntitlement(decoded.userId);
+      return { access: resolveAccessPolicy(entitlement.tier, true), entitlement, entitlementResolved: true };
+    } catch {
+      const launchPolicy = resolveAccessPolicy('FREE', true);
+      if (launchPolicy.accessMode === 'FREE_LAUNCH') {
+        return { access: launchPolicy, entitlementResolved: false };
+      }
+      return reply.status(503).send({
+        code: 'ERR_ENTITLEMENT_UNAVAILABLE',
+        error: 'Membership status is temporarily unavailable. Retrying.',
+      });
+    }
   });
 
   const canViewExposure = async (req: any, gid: string): Promise<boolean> => {
@@ -1603,6 +1640,10 @@ export async function buildServer(
           estimatedChargesINR: Money.toRupees(result.order.estimatedChargesPaise),
           requiredMarginINR: Money.toRupees(validation.requiredMarginPaise),
         },
+        attachedOrders: result.attachedOrders?.map((ao) => ({
+          ...ao,
+          estimatedChargesINR: Money.toRupees(ao.estimatedChargesPaise),
+        })),
         position: result.position
           ? {
             ...result.position,
@@ -2127,51 +2168,67 @@ export async function buildServer(
             clearTimeout(clientState.authTimer);
             clientState.authTimer = null;
           }
-          try {
-            const decoded = (app as any).jwt?.verify(msg.token);
-            if (decoded && decoded.userId) {
-              clientState.userId = decoded.userId;
-              clientTokens.set(ws, msg.token);
-              clientState.tier = await billingService.getAccountTier(decoded.userId);
-              // Auto-subscribe client to their open positions so live P&L streams even when chart is closed
-              const accountId = decoded.accountId || (await repo.provisionInitialAccount(decoded.userId))?.id;
-              (clientState as any).accountId=accountId;
-              if (accountId) {
-                const userPositions = await repo.getPositions(accountId);
-                for (const pos of userPositions) {
-                  if (pos.quantity !== 0) {
-                    clientState.subscriptions.add(pos.globalInstrumentId);
-                    ensureEngineSubscription(pos.globalInstrumentId);
-                    activeProvider
-                      .getQuote(pos.globalInstrumentId)
-                      .then((snap) => {
-                        if (snap && ws.readyState === WebSocket.OPEN && clientState.subscriptions.has(pos.globalInstrumentId)) {
-                          ws.send(JSON.stringify({ type: 'QUOTE_TICK', data: snap, isSnapshot:true }));
-                          wsTicksEmitted += 1;
-                          lastWsEmitTime = Date.now();
-                        }
-                      })
-                      .catch(() => {});
-                  }
+          const runAuth = async () => {
+            try {
+              const decoded = (app as any).jwt?.verify(msg.token);
+              if (decoded && decoded.userId) {
+                clientState.userId = decoded.userId;
+                clientTokens.set(ws, msg.token);
+                try {
+                  clientState.tier = await billingService.getAccountTier(decoded.userId);
+                } catch {
+                  clientState.tier = 'FREE';
+                }
+                // Auto-subscribe client to their open positions & pending orders so live P&L and fills stream even when chart is closed
+                let accountId = decoded.accountId;
+                try {
+                  if (!accountId) accountId = (await repo.provisionInitialAccount(decoded.userId))?.id;
+                } catch { }
+                (clientState as any).accountId = accountId;
+                if (accountId) {
+                  try {
+                    const userPositions = await repo.getPositions(accountId);
+                    for (const pos of userPositions) {
+                      if (pos.quantity !== 0) {
+                        clientState.subscriptions.add(pos.globalInstrumentId);
+                        ensureEngineSubscription(pos.globalInstrumentId);
+                        activeProvider
+                          .getQuote(pos.globalInstrumentId)
+                          .then((snap) => {
+                            if (snap && ws.readyState === WebSocket.OPEN && clientState.subscriptions.has(pos.globalInstrumentId)) {
+                              ws.send(JSON.stringify({ type: 'QUOTE_TICK', data: snap, isSnapshot: true }));
+                              wsTicksEmitted += 1;
+                              lastWsEmitTime = Date.now();
+                            }
+                          })
+                          .catch(() => {});
+                      }
+                    }
+                  } catch { }
+                }
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(
+                    JSON.stringify({
+                      type: 'AUTH_SUCCESS',
+                      access: resolveAccessPolicy(clientState.tier, true),
+                      tier: clientState.tier,
+                      serverTimestamp: Date.now(),
+                    })
+                  );
                 }
               }
+            } catch {
               if (ws.readyState === WebSocket.OPEN) {
-                ws.send(
-                  JSON.stringify({
-                    type: 'AUTH_SUCCESS',
-                    access: resolveAccessPolicy(clientState.tier),
-                    tier: clientState.tier,
-                    serverTimestamp: Date.now(),
-                  })
-                );
+                ws.send(JSON.stringify({ type: 'AUTH_ERROR', error: 'Invalid token' }));
               }
             }
-          } catch {
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'AUTH_ERROR', error: 'Invalid token' }));
-            }
-          }
+          };
+          (clientState as any).authPromise = runAuth();
+          await (clientState as any).authPromise;
         } else if (actionType === 'SUBSCRIBE' && Array.isArray(msg.symbols)) {
+          if ((clientState as any).authPromise) {
+            try { await (clientState as any).authPromise; } catch { }
+          }
           if (clientState.subscriptions.size + msg.symbols.length > 150) {
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: 'ERROR', code: 'ERR_SUBSCRIPTION_CAP', error: 'Subscription cap exceeded (maximum 150 symbols per connection).' }));
@@ -2179,7 +2236,9 @@ export async function buildServer(
             return;
           }
           if (clientState.userId) {
-            clientState.tier = await billingService.getAccountTier(clientState.userId);
+            try {
+              clientState.tier = await billingService.getAccountTier(clientState.userId);
+            } catch { }
           }
           for (const s of msg.symbols) {
             if (!s || typeof s !== 'string') continue;

@@ -1715,3 +1715,325 @@ button:focus-visible,[role=button]:focus-visible { outline:2px solid #2275c9; ou
 .history-summary-grid>div {min-width:0;overflow-wrap:anywhere;line-height:1.5;}
 .chart-top-bar>div:first-child {min-width:0;flex:1;}
 @media(max-width:360px){.history-summary-grid {grid-template-columns:repeat(2,minmax(0,1fr));}}
+
+/* ==========================================================================
+   COMPLETE DAY / NIGHT THEME TOKENS & READABLE PRICES (PRIORITIES 3, 4, 5)
+   ========================================================================== */
+:root {
+  --bg-app: #F8FAFC;
+  --bg-surface: #FFFFFF;
+  --bg-surface-secondary: #F1F5F9;
+  --bg-elevated: #FFFFFF;
+  --bg-input: #FFFFFF;
+  --bg-header: #FFFFFF;
+  --bg-chart: #FFFFFF;
+  --bg-chart-bar: #F8FAFC;
+  --border-subtle: #E2E8F0;
+  --border-strong: #CBD5E1;
+  --text-primary: #0F172A;
+  --text-secondary: #475569;
+  --text-muted: #64748B;
+  --price-primary: #0F172A;
+  --positive-text: #0B7A47;
+  --negative-text: #C81E37;
+  --positive-bg: #ECFDF5;
+  --negative-bg: #FEF2F2;
+  --chip-bg: #F1F5F9;
+  --chip-text: #334155;
+  --chip-border: #CBD5E1;
+  --chip-active-bg: #0F172A;
+  --chip-active-text: #FFFFFF;
+  --launch-bg: #E7F3ED;
+  --launch-text: #154A31;
+}
+
+[data-theme="dark"] {
+  --bg-app: #080C12;
+  --bg-surface: #111824;
+  --bg-surface-secondary: #182232;
+  --bg-elevated: #161F2E;
+  --bg-input: #0D1420;
+  --bg-header: #0D131D;
+  --bg-chart: #080C12;
+  --bg-chart-bar: #0F1622;
+  --border-subtle: #1E293B;
+  --border-strong: #334155;
+  --text-primary: #F8FAFC;
+  --text-secondary: #CBD5E1;
+  --text-muted: #94A3B8;
+  --price-primary: #F8FAFC;
+  --positive-text: #4ADE80;
+  --negative-text: #FB7185;
+  --positive-bg: rgba(34, 197, 94, 0.14);
+  --negative-bg: rgba(244, 63, 94, 0.16);
+  --chip-bg: #161F2E;
+  --chip-text: #CBD5E1;
+  --chip-border: #273449;
+  --chip-active-bg: #C7F542;
+  --chip-active-text: #080C12;
+  --launch-bg: #102A1E;
+  --launch-text: #86EFAC;
+}
+
+/* Global Day/Night Surface Bindings */
+html, body, #app-root, #screen-main {
+  background-color: var(--bg-app);
+  color: var(--text-primary);
+}
+.top-dark-header {
+  background-color: var(--bg-header) !important;
+  border-bottom: 1px solid var(--border-subtle) !important;
+  color: var(--text-primary) !important;
+}
+.search-pill-trigger {
+  background: var(--bg-surface-secondary) !important;
+  border: 1px solid var(--border-subtle) !important;
+  color: var(--text-secondary) !important;
+}
+.theme-toggle-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface-secondary);
+  color: var(--text-primary);
+  font-size: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.launch-label {
+  background: var(--launch-bg) !important;
+  color: var(--launch-text) !important;
+}
+.white-content-scroll {
+  background: var(--bg-app) !important;
+  color: var(--text-primary) !important;
+}
+.section-header-white, .explore-mode-bar {
+  background: var(--bg-app) !important;
+}
+.section-title-dark, .inst-symbol, .idx-name {
+  color: var(--text-primary) !important;
+}
+.section-sub-dark, .inst-name-sub, .summary-label {
+  color: var(--text-secondary) !important;
+}
+.profile-surface-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+/* Priority 3 & 4: Benchmark Index Cards (3-Line Layout + Readable Prices) */
+.index-strip-bar {
+  background: var(--bg-app) !important;
+  border-bottom: 1px solid var(--border-subtle) !important;
+}
+.index-card-mini {
+  min-width: 158px;
+  background: var(--bg-surface) !important;
+  border: 1px solid var(--border-subtle) !important;
+  color: var(--text-primary) !important;
+}
+.idx-card-bottom {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: flex-start !important;
+  gap: 2px !important;
+}
+.idx-ltp, .inst-ltp-val, .price-val, #chart-ltp-display {
+  color: var(--price-primary) !important;
+  font-variant-numeric: tabular-nums;
+}
+.idx-chg, .inst-chg-val, #chart-chg-display {
+  font-size: 11.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.val-pos, .val-pos-dark, .idx-chg.val-pos, .idx-chg.val-pos-dark {
+  color: var(--positive-text) !important;
+}
+.val-neg, .idx-chg.val-neg {
+  color: var(--negative-text) !important;
+}
+.val-neutral, .idx-chg.val-neutral {
+  color: var(--text-muted) !important;
+}
+.customize-indices-pill-card {
+  background: var(--bg-surface) !important;
+  border: 1px solid var(--border-subtle) !important;
+  color: var(--text-primary) !important;
+}
+
+/* Instrument Rows, Filter Chips, Segmented Pills, Bottom Nav */
+.instrument-row-white {
+  background: var(--bg-surface) !important;
+  border-bottom: 1px solid var(--border-subtle) !important;
+  color: var(--text-primary) !important;
+}
+.inst-avatar-box, .inst-badge-icon {
+  background: var(--bg-surface-secondary) !important;
+  border-color: var(--border-subtle) !important;
+  color: var(--text-primary) !important;
+}
+.tag-exch {
+  color: var(--text-secondary) !important;
+}
+.row-action, .row-retry {
+  background: var(--bg-surface-secondary) !important;
+  border-color: var(--border-strong) !important;
+  color: var(--text-primary) !important;
+}
+.segmented-pill-group {
+  background: var(--bg-surface-secondary) !important;
+  border: 1px solid var(--border-subtle);
+}
+.seg-pill-btn {
+  color: var(--text-secondary) !important;
+}
+.seg-pill-btn.active {
+  background: var(--chip-active-bg) !important;
+  color: var(--chip-active-text) !important;
+}
+.filter-chip {
+  background: var(--chip-bg) !important;
+  color: var(--chip-text) !important;
+  border-color: var(--chip-border) !important;
+}
+.filter-chip.active {
+  background: var(--chip-active-bg) !important;
+  color: var(--chip-active-text) !important;
+  border-color: var(--chip-active-bg) !important;
+}
+.bottom-nav-bar {
+  background: var(--bg-header) !important;
+  border-top: 1px solid var(--border-subtle) !important;
+}
+.nav-tab-btn {
+  color: var(--text-muted) !important;
+}
+.nav-tab-btn.active {
+  color: var(--text-primary) !important;
+}
+
+/* Priority 5: Genuine Day & Night Chart Workspace */
+.chart-overlay-screen {
+  background: var(--bg-chart) !important;
+  color: var(--text-primary) !important;
+}
+.chart-top-bar, .chart-controls-strip, .range-footer-strip, .chart-bottom-bar {
+  background: var(--bg-chart-bar) !important;
+  border-color: var(--border-subtle) !important;
+  color: var(--text-primary) !important;
+}
+.chart-back-btn, .tool-action-pill, .tf-pill {
+  background: var(--chip-bg) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--chip-border) !important;
+}
+.tf-pill.active, .tool-action-pill.active {
+  background: var(--chip-active-bg) !important;
+  color: var(--chip-active-text) !important;
+  border-color: var(--chip-active-bg) !important;
+}
+.chart-meta-chip {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  background: var(--chip-bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.chart-feed-status-text {
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+.candle-countdown-pill {
+  background: var(--chip-bg) !important;
+  border-color: var(--border-strong) !important;
+  color: var(--text-primary) !important;
+}
+.ohlc-floating-legend {
+  background: var(--bg-surface) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border-subtle) !important;
+  opacity: 0.92;
+}
+.chart-indicator-label {
+  background: var(--bg-surface) !important;
+  color: var(--text-secondary) !important;
+  border: 1px solid var(--border-subtle);
+  padding: 2px 6px;
+  border-radius: 6px;
+  opacity: 0.92;
+}
+
+/* Modals, Bottom Sheets, Forms, Option Chain, History */
+.white-bottom-sheet, .modal-card, .pre-trade-risk-box {
+  background: var(--bg-surface) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border-subtle) !important;
+}
+.form-label {
+  color: var(--text-secondary) !important;
+}
+.form-input {
+  background: var(--bg-input) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border-strong) !important;
+}
+.option-chain-table, .oc-row, .oc-header {
+  background: var(--bg-surface) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border-subtle) !important;
+}
+.oc-strike-cell {
+  background: var(--bg-surface-secondary) !important;
+  color: var(--text-primary) !important;
+}
+.history-heading h2, .history-summary-grid b, .history-card, .history-detail {
+  color: var(--text-primary) !important;
+}
+.history-card {
+  background: var(--bg-surface) !important;
+  border-color: var(--border-subtle) !important;
+}
+.history-filters {
+  background: var(--bg-surface-secondary) !important;
+}
+.history-filters label, .history-heading p, .history-note, .history-card p, .history-summary-grid, .history-method {
+  color: var(--text-secondary) !important;
+}
+.history-filters input, .history-filters select, .history-session select, .history-detail input {
+  background: var(--bg-input) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border-strong) !important;
+}
+.list-state {
+  color: var(--text-secondary) !important;
+}
+[data-theme="dark"] .dark-summary-card {
+  background: #141E2E !important;
+  border: 1px solid #26354C;
+}
+[data-theme="dark"] .pin-key {
+  background: var(--bg-surface-secondary) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border-subtle);
+}
+[data-theme="dark"] #tab-profile button {
+  background: var(--bg-surface) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border-subtle) !important;
+}
+[data-theme="dark"] #tab-profile button[onclick*="signOut"] {
+  color: #FB7185 !important;
+  border-color: #FB7185 !important;
+}
+

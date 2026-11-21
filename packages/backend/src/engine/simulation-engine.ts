@@ -20,6 +20,7 @@ export interface ExecutionResult {
   position?: SimulatedPosition;
   realizedPnlPaise?: Paise;
   chargesPaise?: Paise;
+  attachedOrders?: SimulatedOrder[];
 }
 
 export class SimulationEngine {
@@ -27,9 +28,15 @@ export class SimulationEngine {
   private lockedOrderMargins: Map<string, Paise> = new Map();
   private latestTickTimestamps: Map<string, number> = new Map();
   private pendingInstruments = new Map<string, InstrumentMetadata>();
-  public async restorePendingOrders(){
-    for(const {order,context} of await this.repo.getPendingExecutionContexts()){
-      this.pendingOrders.push(order);this.lockedOrderMargins.set(order.id,BigInt(context.requiredMarginPaise));this.pendingInstruments.set(order.id,context.instrument);
+  public async restorePendingOrders() {
+    for (const { order, context } of await this.repo.getPendingExecutionContexts()) {
+      if (this.pendingOrders.some((o) => o.id === order.id)) continue;
+      if (context.stopLossPrice !== undefined) order.stopLossPrice = Number(context.stopLossPrice);
+      if (context.targetPrice !== undefined) order.targetPrice = Number(context.targetPrice);
+      if (context.isProtectiveExit) order.isProtectiveExit = true;
+      this.pendingOrders.push(order);
+      this.lockedOrderMargins.set(order.id, BigInt(context.requiredMarginPaise || '0'));
+      if (context.instrument) this.pendingInstruments.set(order.id, context.instrument);
     }
   }
 
@@ -122,6 +129,8 @@ export class SimulationEngine {
       quantity: request.quantity,
       requestedPrice: request.requestedPrice,
       triggerPrice: request.triggerPrice,
+      stopLossPrice: request.stopLossPrice,
+      targetPrice: request.targetPrice,
       status: 'PENDING',
       idempotencyKey: request.idempotencyKey,
       estimatedChargesPaise,
@@ -130,8 +139,17 @@ export class SimulationEngine {
     };
 
     // 5. Margin Reservation in PostgreSQL (ensure account has requiredMarginPaise + estimatedChargesPaise)
-    Object.defineProperty(order,'executionContext',{value:{instrument:_instrument,requiredMarginPaise:requiredMarginPaise.toString()},configurable:true});
-    this.pendingInstruments.set(order.id,_instrument);
+    Object.defineProperty(order, 'executionContext', {
+      value: {
+        instrument: _instrument,
+        requiredMarginPaise: requiredMarginPaise.toString(),
+        stopLossPrice: request.stopLossPrice,
+        targetPrice: request.targetPrice,
+        isProtectiveExit: false,
+      },
+      configurable: true,
+    });
+    this.pendingInstruments.set(order.id, _instrument);
     const acc = await this.repo.getAccount(request.accountId);
     if (!acc || acc.availableBalancePaise < requiredMarginPaise + estimatedChargesPaise) {
       order.status = 'REJECTED';
@@ -164,6 +182,21 @@ export class SimulationEngine {
       );
       await this.repo.saveOrder(res.order);
       if (res.position) {
+        if (res.position.quantity === 0) {
+          await this.cancelProtectiveOrdersForPosition(
+            request.accountId,
+            request.globalInstrumentId,
+            'POSITION_CLOSED: Protective order cancelled because position closed.'
+          );
+        } else if (request.stopLossPrice !== undefined || request.targetPrice !== undefined) {
+          res.attachedOrders = await this.spawnProtectiveOrders(
+            res.order,
+            res.position,
+            _instrument,
+            request.stopLossPrice,
+            request.targetPrice
+          );
+        }
         await this.repo.saveOrUpdatePosition(res.position);
       }
       return res;
@@ -177,13 +210,142 @@ export class SimulationEngine {
     }
   }
 
+  private async spawnProtectiveOrders(
+    entryOrder: SimulatedOrder,
+    position: SimulatedPosition,
+    instrument: InstrumentMetadata,
+    stopLossPrice?: number,
+    targetPrice?: number
+  ): Promise<SimulatedOrder[]> {
+    const exitSide: OrderSide = position.quantity > 0 ? 'SELL' : 'BUY';
+    const exitQty = Math.min(entryOrder.quantity, Math.abs(position.quantity));
+    if (exitQty <= 0) return [];
+
+    const now = Date.now();
+    const quoteRatio =
+      instrument.exchange === 'MCX' && instrument.priceQuoteMultiplier
+        ? instrument.priceQuoteMultiplier / (instrument.lotSize || 1)
+        : 1;
+    const spawned: SimulatedOrder[] = [];
+    let slOrder: SimulatedOrder | undefined;
+    let tpOrder: SimulatedOrder | undefined;
+
+    if (stopLossPrice !== undefined && Number.isFinite(stopLossPrice) && stopLossPrice > 0) {
+      const estCharges = Money.fromRupees(Math.max(20, stopLossPrice * quoteRatio * exitQty * 0.0002));
+      slOrder = {
+        id: randomUUID(),
+        accountId: entryOrder.accountId,
+        globalInstrumentId: entryOrder.globalInstrumentId,
+        side: exitSide,
+        orderType: 'STOP_MARKET',
+        productType: position.productType || entryOrder.productType || 'INTRADAY',
+        quantity: exitQty,
+        triggerPrice: stopLossPrice,
+        status: 'PENDING',
+        idempotencyKey: `sl-${entryOrder.id}-${now}`,
+        positionId: position.id,
+        isProtectiveExit: true,
+        estimatedChargesPaise: estCharges,
+        createdAt: now,
+        updatedAt: now,
+      };
+      position.stopLossPrice = stopLossPrice;
+      position.stopOrderId = slOrder.id;
+    }
+
+    if (targetPrice !== undefined && Number.isFinite(targetPrice) && targetPrice > 0) {
+      const estCharges = Money.fromRupees(Math.max(20, targetPrice * quoteRatio * exitQty * 0.0002));
+      tpOrder = {
+        id: randomUUID(),
+        accountId: entryOrder.accountId,
+        globalInstrumentId: entryOrder.globalInstrumentId,
+        side: exitSide,
+        orderType: 'LIMIT',
+        productType: position.productType || entryOrder.productType || 'INTRADAY',
+        quantity: exitQty,
+        requestedPrice: targetPrice,
+        status: 'PENDING',
+        idempotencyKey: `tp-${entryOrder.id}-${now}`,
+        positionId: position.id,
+        isProtectiveExit: true,
+        estimatedChargesPaise: estCharges,
+        createdAt: now,
+        updatedAt: now,
+      };
+      position.targetPrice = targetPrice;
+      position.targetOrderId = tpOrder.id;
+    }
+
+    if (slOrder && tpOrder) {
+      slOrder.ocoCompanionOrderId = tpOrder.id;
+      tpOrder.ocoCompanionOrderId = slOrder.id;
+    }
+
+    for (const child of [slOrder, tpOrder]) {
+      if (!child) continue;
+      Object.defineProperty(child, 'executionContext', {
+        value: {
+          instrument,
+          requiredMarginPaise: '0',
+          isProtectiveExit: true,
+        },
+        configurable: true,
+      });
+      await this.repo.saveOrder(child);
+      this.pendingOrders.push(child);
+      this.pendingInstruments.set(child.id, instrument);
+      spawned.push(child);
+    }
+
+    return spawned;
+  }
+
+  private async cancelProtectiveOrdersForPosition(
+    accountId: string,
+    globalInstrumentId: string,
+    reason: string
+  ): Promise<void> {
+    const toCancel = this.pendingOrders.filter(
+      (o) =>
+        o.accountId === accountId &&
+        o.globalInstrumentId === globalInstrumentId &&
+        (o.status === 'PENDING' || o.status === 'TRIGGERED') &&
+        Boolean(o.isProtectiveExit || o.ocoCompanionOrderId || o.positionId)
+    );
+    for (const o of toCancel) {
+      o.status = 'CANCELLED';
+      o.rejectionReason = reason;
+      o.updatedAt = Date.now();
+      await this.repo.updateOrder(o);
+      const locked = this.lockedOrderMargins.get(o.id);
+      if (locked && locked > 0n) {
+        await this.repo.releaseMargin(accountId, locked);
+        this.lockedOrderMargins.delete(o.id);
+      }
+      this.pendingInstruments.delete(o.id);
+    }
+    if (toCancel.length > 0) {
+      this.pendingOrders = this.pendingOrders.filter((o) => o.status === 'PENDING' || o.status === 'TRIGGERED');
+    }
+  }
+
   private computeFillPrice(
     side: OrderSide,
     quote: QuoteSnapshot,
-    _type: OrderType,
+    type: OrderType,
     gapPrice?: number,
-    tickSize: number = 0.05
+    tickSize: number = 0.05,
+    limitPrice?: number
   ): number {
+    if ((type === 'LIMIT' || type === 'TARGET' || type === 'STOP_LIMIT') && limitPrice !== undefined && limitPrice > 0) {
+      if (side === 'BUY') {
+        const bestAsk = quote.askPrice !== undefined && quote.askPrice > 0 ? quote.askPrice : quote.ltp;
+        return Number(Math.min(limitPrice, bestAsk).toFixed(2));
+      } else {
+        const bestBid = quote.bidPrice !== undefined && quote.bidPrice > 0 ? quote.bidPrice : quote.ltp;
+        return Number(Math.max(limitPrice, bestBid).toFixed(2));
+      }
+    }
     if (gapPrice !== undefined) {
       return gapPrice;
     }
@@ -351,8 +513,8 @@ export class SimulationEngine {
   public onMarketTick(quote: QuoteSnapshot): Promise<ExecutionResult[]> {return this.serialized(()=>this.onMarketTickNow(quote));}
   private async onMarketTickNow(quote: QuoteSnapshot): Promise<ExecutionResult[]> {
     const results: ExecutionResult[] = [];
-    if(quoteFreshnessAgeMs(quote)>5000)return results;
-    const remainingPending: SimulatedOrder[] = [];
+    if (!Number.isFinite(quote.ltp) || quote.ltp <= 0) return results;
+    if (quoteFreshnessAgeMs(quote) > 5000) return results;
 
     // Monotonic quote sequencing: discard duplicate or out-of-order ticks to prevent stale triggers
     const quoteTime = quote.providerTimestamp || (quote as any).timestamp || 0;
@@ -364,65 +526,163 @@ export class SimulationEngine {
       this.latestTickTimestamps.set(quote.globalId, quoteTime);
     }
 
-    for (const order of this.pendingOrders) {
-      if (order.globalInstrumentId !== quote.globalId) {
-        remainingPending.push(order);
+    const snapshotOrders = [...this.pendingOrders];
+    const newlySpawned: SimulatedOrder[] = [];
+
+    for (const order of snapshotOrders) {
+      if (order.status !== 'PENDING' && order.status !== 'TRIGGERED') {
         continue;
       }
-      const pendingInstrument=this.pendingInstruments.get(order.id);
-      if(!quote.isSimulated&&!getExchangeSessionStatus(pendingInstrument?.exchange||'NSE').isOpen){remainingPending.push(order);continue;}
+      if (order.globalInstrumentId !== quote.globalId) {
+        continue;
+      }
+      const pendingInstrument = this.pendingInstruments.get(order.id);
+      if (!quote.isSimulated && !getExchangeSessionStatus(pendingInstrument?.exchange || 'NSE').isOpen) {
+        continue;
+      }
 
-      let shouldTrigger = false;
+      let shouldFill = false;
       let gapPrice: number | undefined;
 
-      if (order.orderType === 'LIMIT' && order.requestedPrice !== undefined) {
+      if ((order.orderType === 'LIMIT' || order.orderType === 'TARGET') && order.requestedPrice !== undefined) {
         if (order.side === 'BUY' && quote.ltp <= order.requestedPrice) {
-          shouldTrigger = true;
+          shouldFill = true;
         } else if (order.side === 'SELL' && quote.ltp >= order.requestedPrice) {
-          shouldTrigger = true;
+          shouldFill = true;
         }
-      }
-
-      if (order.orderType === 'STOP_MARKET' && order.triggerPrice !== undefined) {
+      } else if (order.orderType === 'STOP_MARKET' && order.triggerPrice !== undefined) {
         if (order.side === 'SELL' && quote.ltp <= order.triggerPrice) {
-          shouldTrigger = true;
+          shouldFill = true;
           if (quote.ltp < order.triggerPrice) gapPrice = quote.ltp;
         } else if (order.side === 'BUY' && quote.ltp >= order.triggerPrice) {
-          shouldTrigger = true;
+          shouldFill = true;
           if (quote.ltp > order.triggerPrice) gapPrice = quote.ltp;
         }
-      }
-
-      if (shouldTrigger) {
-        if (order.ocoCompanionOrderId) {
-          const comp = this.pendingOrders.find((o) => o.id === order.ocoCompanionOrderId);
-          if (comp && comp.status === 'PENDING') {
-            comp.status = 'CANCELLED';
-            comp.rejectionReason = `OCO_TRIGGERED: Cancelled because companion order ${order.id} executed.`;
-            await this.repo.updateOrder(comp);
+      } else if (order.orderType === 'STOP_LIMIT' && order.triggerPrice !== undefined && order.requestedPrice !== undefined) {
+        if (order.status === 'PENDING') {
+          const breached =
+            (order.side === 'SELL' && quote.ltp <= order.triggerPrice) ||
+            (order.side === 'BUY' && quote.ltp >= order.triggerPrice);
+          if (breached) {
+            order.status = 'TRIGGERED';
+            order.updatedAt = Date.now();
+            await this.repo.updateOrder(order);
           }
         }
-
-        const instrument = this.pendingInstruments.get(order.id);
-        const fillPrice = this.computeFillPrice(order.side, quote, order.orderType, gapPrice, instrument?.tickSize);
-        this.lockedOrderMargins.delete(order.id);
-        const res = await this.executeFill(order, fillPrice, quote, 0n, instrument);
-        this.pendingInstruments.delete(order.id);
-        await this.repo.updateOrder(res.order);
-        if (res.position) {
-          await this.repo.saveOrUpdatePosition(res.position);
+        if (order.status === 'TRIGGERED') {
+          if (order.side === 'BUY' && quote.ltp <= order.requestedPrice) {
+            shouldFill = true;
+          } else if (order.side === 'SELL' && quote.ltp >= order.requestedPrice) {
+            shouldFill = true;
+          }
         }
-        results.push(res);
-      } else {
-        remainingPending.push(order);
       }
+
+      if (!shouldFill) continue;
+
+      // Protective exit safety: never flip into reverse exposure if position was already reduced/closed
+      if (order.isProtectiveExit || order.ocoCompanionOrderId) {
+        const positions = await this.repo.getPositions(order.accountId);
+        const openPos = positions.find((p) => p.globalInstrumentId === order.globalInstrumentId && p.quantity !== 0);
+        const isValidExit =
+          openPos &&
+          ((openPos.quantity > 0 && order.side === 'SELL') || (openPos.quantity < 0 && order.side === 'BUY'));
+        if (!isValidExit) {
+          order.status = 'CANCELLED';
+          order.rejectionReason = 'POSITION_CLOSED: Protective order cancelled because position is already closed.';
+          order.updatedAt = Date.now();
+          await this.repo.updateOrder(order);
+          const locked = this.lockedOrderMargins.get(order.id);
+          if (locked && locked > 0n) {
+            await this.repo.releaseMargin(order.accountId, locked);
+            this.lockedOrderMargins.delete(order.id);
+          }
+          this.pendingInstruments.delete(order.id);
+          continue;
+        }
+        if (Math.abs(openPos.quantity) < order.quantity) {
+          order.quantity = Math.abs(openPos.quantity);
+        }
+      }
+
+      // Atomically cancel OCO sibling before executing fill
+      if (order.ocoCompanionOrderId) {
+        const comp = this.pendingOrders.find((o) => o.id === order.ocoCompanionOrderId);
+        if (comp && (comp.status === 'PENDING' || comp.status === 'TRIGGERED')) {
+          comp.status = 'CANCELLED';
+          comp.rejectionReason = `OCO_TRIGGERED: Cancelled because companion order ${order.id} executed.`;
+          comp.updatedAt = Date.now();
+          await this.repo.updateOrder(comp);
+          const compLocked = this.lockedOrderMargins.get(comp.id);
+          if (compLocked && compLocked > 0n) {
+            await this.repo.releaseMargin(comp.accountId, compLocked);
+            this.lockedOrderMargins.delete(comp.id);
+          }
+          this.pendingInstruments.delete(comp.id);
+        }
+      }
+
+      const instrument = this.pendingInstruments.get(order.id);
+      const fillPrice = this.computeFillPrice(
+        order.side,
+        quote,
+        order.orderType,
+        gapPrice,
+        instrument?.tickSize,
+        order.requestedPrice
+      );
+      const lockedForOrder = this.lockedOrderMargins.get(order.id) || 0n;
+      this.lockedOrderMargins.delete(order.id);
+      const res = await this.executeFill(
+        order,
+        fillPrice,
+        quote,
+        lockedForOrder,
+        instrument,
+        order.stopLossPrice,
+        order.targetPrice
+      );
+      this.pendingInstruments.delete(order.id);
+      await this.repo.updateOrder(res.order);
+
+      if (res.position) {
+        if (res.position.quantity === 0) {
+          res.position.stopOrderId = undefined;
+          res.position.targetOrderId = undefined;
+          await this.cancelProtectiveOrdersForPosition(
+            order.accountId,
+            order.globalInstrumentId,
+            'POSITION_CLOSED: Protective order cancelled because position closed.'
+          );
+        } else if (instrument && (order.stopLossPrice !== undefined || order.targetPrice !== undefined)) {
+          const spawned = await this.spawnProtectiveOrders(
+            res.order,
+            res.position,
+            instrument,
+            order.stopLossPrice,
+            order.targetPrice
+          );
+          res.attachedOrders = spawned;
+          newlySpawned.push(...spawned);
+        }
+        await this.repo.saveOrUpdatePosition(res.position);
+      }
+      results.push(res);
     }
 
-    this.pendingOrders = remainingPending;
+    this.pendingOrders = this.pendingOrders.filter((o) => o.status === 'PENDING' || o.status === 'TRIGGERED');
+    for (const s of newlySpawned) {
+      if (!this.pendingOrders.some((o) => o.id === s.id)) {
+        this.pendingOrders.push(s);
+      }
+    }
     return results;
   }
 
-  public async squareOffPosition(
+  public squareOffPosition(...args: Parameters<SimulationEngine['squareOffPositionNow']>): Promise<ExecutionResult> {
+    return this.serialized(() => this.squareOffPositionNow(...args));
+  }
+  private async squareOffPositionNow(
     accountId: string,
     globalInstrumentId: string,
     quote: QuoteSnapshot,
@@ -474,18 +734,28 @@ export class SimulationEngine {
     const res = await this.executeFill(closeOrder, fillPrice, quote, 0n, instrument);
     await this.repo.saveOrder(res.order);
     if (res.position) {
+      res.position.stopOrderId = undefined;
+      res.position.targetOrderId = undefined;
+      await this.cancelProtectiveOrdersForPosition(
+        accountId,
+        globalInstrumentId,
+        'POSITION_SQUARED_OFF: Cancelled because position was squared off manually.'
+      );
       await this.repo.saveOrUpdatePosition(res.position);
     }
     return res;
   }
 
-  public async cancelOrder(accountId: string, orderId: string): Promise<SimulatedOrder> {
+  public cancelOrder(accountId: string, orderId: string): Promise<SimulatedOrder> {
+    return this.serialized(() => this.cancelOrderNow(accountId, orderId));
+  }
+  private async cancelOrderNow(accountId: string, orderId: string): Promise<SimulatedOrder> {
     SecurityAirGap.verifySimulatedActionExclusivity('CANCEL');
 
     const orders = await this.repo.getOrders(accountId);
     const order = orders.find((o) => o.id === orderId);
     if (!order) throw new Error(`Order ${orderId} not found.`);
-    if (order.status !== 'PENDING') {
+    if (order.status !== 'PENDING' && order.status !== 'TRIGGERED') {
       throw new Error(`Cannot cancel order in status ${order.status}.`);
     }
 
@@ -494,6 +764,7 @@ export class SimulationEngine {
     order.updatedAt = Date.now();
     await this.repo.updateOrder(order);
     this.pendingOrders = this.pendingOrders.filter((o) => o.id !== orderId);
+    this.pendingInstruments.delete(orderId);
 
     const lockedMargin = this.lockedOrderMargins.get(orderId);
     if (lockedMargin && lockedMargin > 0n) {

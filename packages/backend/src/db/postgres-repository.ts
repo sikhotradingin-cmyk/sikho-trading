@@ -805,8 +805,8 @@ export class PostgresRepository {
     } else {
       await this.db.query(
         `UPDATE positions 
-         SET product_type = $1, quantity = $2, average_entry_price = $3, realized_pnl_paise = $4, stop_loss_price = $5, target_price = $6, updated_at = $7
-         WHERE account_id = $8 AND global_instrument_id = $9`,
+         SET product_type = $1, quantity = $2, average_entry_price = $3, realized_pnl_paise = $4, stop_loss_price = $5, target_price = $6, stop_order_id = $7, target_order_id = $8, updated_at = $9
+         WHERE account_id = $10 AND global_instrument_id = $11`,
         [
           position.productType || 'INTRADAY',
           position.quantity,
@@ -814,6 +814,8 @@ export class PostgresRepository {
           position.realizedPnlPaise.toString(),
           position.stopLossPrice ?? null,
           position.targetPrice ?? null,
+          position.stopOrderId ?? null,
+          position.targetOrderId ?? null,
           position.updatedAt,
           position.accountId,
           position.globalInstrumentId,
@@ -832,7 +834,7 @@ export class PostgresRepository {
   }
 
   public async getPendingExecutionContexts() {
-    const result=await this.db.query("SELECT o.*,c.payload_json FROM orders o JOIN order_execution_context c ON c.order_id=o.id WHERE o.status='PENDING'");
+    const result=await this.db.query("SELECT o.*,c.payload_json FROM orders o JOIN order_execution_context c ON c.order_id=o.id WHERE o.status IN ('PENDING', 'TRIGGERED')");
     return result.rows.map(row=>({order:this.mapOrder(row),context:JSON.parse(row.payload_json)}));
   }
 
@@ -855,7 +857,7 @@ export class PostgresRepository {
 
   public async getAllOpenPositionInstrumentIds(): Promise<string[]> {
     const posRes = await this.db.query('SELECT DISTINCT global_instrument_id FROM positions WHERE quantity != 0');
-    const ordRes = await this.db.query("SELECT DISTINCT global_instrument_id FROM orders WHERE status = 'PENDING'");
+    const ordRes = await this.db.query("SELECT DISTINCT global_instrument_id FROM orders WHERE status IN ('PENDING', 'TRIGGERED')");
     const set = new Set<string>();
     for (const r of posRes.rows) set.add(r.global_instrument_id);
     for (const r of ordRes.rows) set.add(r.global_instrument_id);

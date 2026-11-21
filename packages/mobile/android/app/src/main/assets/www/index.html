@@ -127,7 +127,8 @@
             </button>
           </div>
 
-          <div class="header-actions-right">
+          <div class="header-actions-right" style="display:flex;align-items:center;gap:8px;">
+            <button id="header-theme-btn" class="theme-toggle-btn" onclick="window.TZApp.toggleThemeQuick()" aria-label="Toggle Day/Night theme" title="Toggle Day / Night theme">🌙</button>
             <button id="header-avatar-btn" class="avatar-circle-btn" onclick="window.TZApp.switchMainTab('profile')">T</button>
           </div>
         </div>
@@ -338,28 +339,43 @@
           </div>
         </div>
 
+        <!-- Appearance / Theme Setting Card -->
+        <div class="profile-surface-card" style="margin:0 16px 14px;border-radius:14px;padding:16px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+            <div>
+              <div class="section-title-dark" style="font-size:13px;text-transform:uppercase;letter-spacing:0.5px;">Appearance (Day / Night)</div>
+              <div id="prof-theme-status" class="section-sub-dark" style="margin-top:2px;">Applies immediately across screens and charts</div>
+            </div>
+          </div>
+          <div class="segmented-pill-group" style="width:100%;display:grid;grid-template-columns:repeat(3,1fr);">
+            <button id="theme-opt-light" class="seg-pill-btn active" onclick="window.TZApp.setThemePreference('light')">☀ Light</button>
+            <button id="theme-opt-dark" class="seg-pill-btn" onclick="window.TZApp.setThemePreference('dark')">🌙 Dark</button>
+            <button id="theme-opt-system" class="seg-pill-btn" onclick="window.TZApp.setThemePreference('system')">⚙ System</button>
+          </div>
+        </div>
+
         <!-- Immutable Lifetime Performance Card -->
-        <div style="margin:0 16px 14px;background:#FFFFFF;border:1px solid #E2E8F0;border-radius:14px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+        <div class="profile-surface-card" style="margin:0 16px 14px;border-radius:14px;padding:16px;">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-            <div style="font-size:13px;font-weight:700;color:#0F172A;text-transform:uppercase;letter-spacing:0.5px;">Lifetime Track Record</div>
-            <span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:6px;background:#F1F5F9;color:#64748B;">IMMUTABLE</span>
+            <div class="section-title-dark" style="font-size:13px;text-transform:uppercase;letter-spacing:0.5px;">Lifetime Track Record</div>
+            <span class="tag-exch">IMMUTABLE</span>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
             <div>
-              <div class="summary-label" style="color:#64748B;">Lifetime Net Trading P&amp;L</div>
-              <div id="prof-lifetime-pnl" class="tabular-nums" style="font-size:16px;font-weight:700;color:#0F172A;margin-top:2px;">₹0.00</div>
+              <div class="summary-label">Lifetime Net Trading P&amp;L</div>
+              <div id="prof-lifetime-pnl" class="tabular-nums price-val" style="font-size:16px;font-weight:700;margin-top:2px;">₹0.00</div>
             </div>
             <div>
-              <div class="summary-label" style="color:#64748B;">Lifetime Charges Paid</div>
-              <div id="prof-lifetime-charges" class="tabular-nums" style="font-size:16px;font-weight:700;color:#0F172A;margin-top:2px;">₹0.00</div>
+              <div class="summary-label">Lifetime Charges Paid</div>
+              <div id="prof-lifetime-charges" class="tabular-nums price-val" style="font-size:16px;font-weight:700;margin-top:2px;">₹0.00</div>
             </div>
             <div>
-              <div class="summary-label" style="color:#64748B;">Total Completed Trades</div>
-              <div id="prof-lifetime-trades" class="tabular-nums" style="font-size:16px;font-weight:700;color:#0F172A;margin-top:2px;">0</div>
+              <div class="summary-label">Total Completed Trades</div>
+              <div id="prof-lifetime-trades" class="tabular-nums price-val" style="font-size:16px;font-weight:700;margin-top:2px;">0</div>
             </div>
             <div>
-              <div class="summary-label" style="color:#64748B;">Overall Win Rate</div>
-              <div id="prof-lifetime-winrate" class="tabular-nums" style="font-size:16px;font-weight:700;color:#0F172A;margin-top:2px;">0.0%</div>
+              <div class="summary-label">Overall Win Rate</div>
+              <div id="prof-lifetime-winrate" class="tabular-nums price-val" style="font-size:16px;font-weight:700;margin-top:2px;">0.0%</div>
             </div>
           </div>
         </div>
@@ -474,17 +490,18 @@
               <span id="chart-seg-badge" class="paper-badge-header">INDEX</span>
             </div>
             <div style="display:flex;align-items:center;gap:8px;margin-top:2px;flex-wrap:wrap;">
-              <span id="chart-ltp-display" class="tabular-nums" style="font-size:14px;font-weight:700;">—</span>
+              <span id="chart-ltp-display" class="tabular-nums price-val" style="font-size:14px;font-weight:700;">—</span>
               <span id="chart-chg-display" class="tabular-nums" style="font-size:11.5px;font-weight:600;">—</span>
-              <span id="chart-ist-clock" class="tabular-nums" title="Current time in India Standard Time (UTC+5:30)" style="font-size:10.5px;font-weight:700;color:#AAB4C2;background:#161C26;border:1px solid #273244;border-radius:999px;padding:2px 8px;">--:--:-- IST</span>
-              <span id="chart-candle-window" class="tabular-nums" title="Running candle interval in IST" style="font-size:10.5px;font-weight:700;color:#AAB4C2;background:#161C26;border:1px solid #273244;border-radius:999px;padding:2px 8px;">—</span>
+              <span id="chart-ist-clock" class="chart-meta-chip tabular-nums" title="Current time in India Standard Time (UTC+5:30)">--:--:-- IST</span>
+              <span id="chart-candle-window" class="chart-meta-chip tabular-nums" title="Running candle interval in IST">—</span>
               <span id="chart-candle-countdown" class="candle-countdown-pill tabular-nums" title="Time remaining in the running candle">⏱ —</span>
-              <span id="chart-feed-status" role="status" style="font-size:10.5px;color:#AAB4C2;">Awaiting instrument feed</span>
+              <span id="chart-feed-status" class="chart-feed-status-text" role="status">Awaiting instrument feed</span>
             </div>
           </div>
         </div>
 
         <div style="display:flex;align-items:center;gap:6px;">
+          <button id="chart-theme-btn" class="tool-action-pill" onclick="window.TZApp.toggleThemeQuick()" aria-label="Toggle Day/Night theme" title="Toggle Day / Night theme">🌙</button>
           <button id="chart-btn-option-chain" class="tool-action-pill" onclick="window.TZApp.openOptionChainFromChart()">
             <span>Option Chain</span>
           </button>
@@ -753,10 +770,11 @@
         <!-- Order Type Selector -->
         <div class="form-group">
           <label class="form-label">Order Type</label>
-          <div class="segmented-pill-group" style="width:100%;display:grid;grid-template-columns:repeat(3,1fr);">
+          <div class="segmented-pill-group" style="width:100%;display:grid;grid-template-columns:repeat(4,1fr);">
             <button id="ticket-type-market" class="seg-pill-btn active" onclick="window.TZApp.setOrderType('MARKET')">Market</button>
             <button id="ticket-type-limit" class="seg-pill-btn" onclick="window.TZApp.setOrderType('LIMIT')">Limit</button>
-            <button id="ticket-type-sl" class="seg-pill-btn" onclick="window.TZApp.setOrderType('STOP_MARKET')">Stop (SL-M)</button>
+            <button id="ticket-type-sl" class="seg-pill-btn" onclick="window.TZApp.setOrderType('STOP_MARKET')">SL-M</button>
+            <button id="ticket-type-sll" class="seg-pill-btn" onclick="window.TZApp.setOrderType('STOP_LIMIT')">SL-L</button>
           </div>
         </div>
 
@@ -775,6 +793,12 @@
             <label id="ticket-price-label" class="form-label" for="ticket-input-price">Execution Price</label>
             <input id="ticket-input-price" class="form-input tabular-nums" type="number" step="0.05" disabled placeholder="Market" oninput="window.TZApp.recalcOrderMarginPreview()" />
           </div>
+        </div>
+
+        <!-- Stop-Limit Trigger Price (shown only for STOP_LIMIT) -->
+        <div id="ticket-trigger-row" class="form-group" style="display:none;">
+          <label class="form-label" for="ticket-input-trigger">Stop Trigger Price (₹)</label>
+          <input id="ticket-input-trigger" class="form-input tabular-nums" type="number" step="0.05" placeholder="Trigger Price" oninput="window.TZApp.recalcOrderMarginPreview()" />
         </div>
 
         <!-- Optional SL / Target with dynamic Risk Calculator -->
