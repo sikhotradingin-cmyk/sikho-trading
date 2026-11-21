@@ -1900,10 +1900,20 @@ html, body, #app-root, #screen-main {
   background: var(--chip-active-bg) !important;
   color: var(--chip-active-text) !important;
 }
+.filter-chips-scroll {
+  background: var(--bg-app) !important;
+  border-bottom: 1px solid var(--border-subtle) !important;
+}
 .filter-chip {
   background: var(--chip-bg) !important;
   color: var(--chip-text) !important;
   border-color: var(--chip-border) !important;
+}
+#explore-avail-balance, .link-btn {
+  color: var(--text-primary) !important;
+}
+[data-theme="dark"] .link-btn {
+  color: #93C5FD !important;
 }
 .filter-chip.active {
   background: var(--chip-active-bg) !important;
