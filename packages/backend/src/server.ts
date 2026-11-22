@@ -99,7 +99,7 @@ export async function buildServer(
   const corsOrigin = process.env.CORS_ORIGIN
     ? process.env.CORS_ORIGIN.split(',').map((s) => s.trim())
     : true;
-  await app.register(cors, { origin: corsOrigin });
+  await app.register(cors, { origin: corsOrigin, exposedHeaders: ['Retry-After'] });
   await app.register(jwt, { secret: config.jwtSecret });
   await app.register(websocket);
 
@@ -365,8 +365,11 @@ export async function buildServer(
 
   // Lightweight Health Check (for device connectivity & auto-discovery probes)
   app.get('/health', async () => {
+    const maintenanceActive = process.env.SIKHO_MAINTENANCE_MODE === 'true';
+    const minSupportedCode = Number(process.env.SIKHO_MIN_VERSION_CODE || 0) || null;
+    const latestCode = Number(process.env.SIKHO_LATEST_VERSION_CODE || 0) || null;
     return {
-      status: 'ok',
+      status: maintenanceActive ? 'maintenance' : 'ok',
       serverTimestamp: Date.now(),
       mode: activeProvider.providerId,
       // Deployment identity so the delivered revision can be verified independently of a
@@ -374,6 +377,21 @@ export async function buildServer(
       revision: (process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || 'unknown').trim(),
       version: SERVICE_VERSION,
       startedAt: SERVICE_STARTED_AT,
+      maintenance: {
+        active: maintenanceActive,
+        message: maintenanceActive
+          ? (process.env.SIKHO_MAINTENANCE_MSG || 'Scheduled maintenance is in progress. Your virtual balance and history remain safe.')
+          : null,
+        expectedReturnIso: maintenanceActive ? (process.env.SIKHO_MAINTENANCE_UNTIL || null) : null,
+      },
+      clientVersion: (minSupportedCode || latestCode)
+        ? {
+            minSupportedCode,
+            latestCode,
+            releaseNotes: process.env.SIKHO_UPDATE_NOTES || null,
+            updateUrl: process.env.SIKHO_UPDATE_URL || 'https://sikhotrading.in/',
+          }
+        : null,
     };
   });
 
@@ -1743,6 +1761,29 @@ export async function buildServer(
     );
     const pending=await db.query("SELECT COUNT(*) as count FROM orders WHERE account_id=$1 AND status IN ('PENDING','TRIGGERED')",[req.user.accountId]);
     return { orders: enriched,hasPendingOrders:Number(pending.rows[0].count)>0 };
+  });
+
+  // 11B. Account-Scoped Idempotency Status Lookup (State 18: Safe Timeout Resolution without duplicate submission)
+  app.get('/api/v1/orders/by-idempotency/:key', { preHandler: [(app as any).authenticate] }, async (req: any, reply) => {
+    const key = String((req.params as any)?.key || '').trim();
+    if (!key || key.length > 128) {
+      return reply.status(400).send({ error: 'Valid idempotency key is required.', code: 'ERR_INVALID_IDEMPOTENCY_KEY' });
+    }
+    const order = await repo.getOrderByAccountAndIdempotency(req.user.accountId, key);
+    if (!order) {
+      return { found: false, order: null };
+    }
+    const inst = activeProvider.getInstrumentById
+      ? await activeProvider.getInstrumentById(order.globalInstrumentId)
+      : undefined;
+    return {
+      found: true,
+      order: {
+        ...order,
+        symbol: inst?.symbol || order.globalInstrumentId.split(':')[1] || order.globalInstrumentId,
+        estimatedChargesINR: Money.toRupees(order.estimatedChargesPaise),
+      },
+    };
   });
 
   app.get('/api/v1/positions', { preHandler: [(app as any).authenticate] }, async (req: any) => {

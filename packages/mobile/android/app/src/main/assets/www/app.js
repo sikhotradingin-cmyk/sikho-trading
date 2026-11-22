@@ -398,14 +398,19 @@
     const data = await res.json().catch(() => ({}));
     if(state.token!==requestToken)throw new DOMException('Response belongs to a previous session','AbortError');
     if (res.status === 401 && state.token && state.token===requestToken && !path.startsWith('/api/v1/auth/')) {
-      signOut('Your session has expired. Please sign in again.');
+      const expiredEmail = state.user?.email || '';
+      signOut('Your session expired for your security. Please sign in again to continue.', { preserveEmail: expiredEmail });
       throw new Error(data.error || 'Session expired');
     }
     if (!res.ok) {
       const err = new Error(data.error || data.message || `Request failed (${res.status})`);
       err.code = data.code;
-      // Preserve the HTTP status so callers (e.g. Google sign-in) can report backend response codes.
       err.status = res.status;
+      if (res.status === 429) {
+        const retryHeader = res.headers?.get?.('Retry-After');
+        const parsedSec = Number(retryHeader);
+        err.retryAfterSec = Number.isFinite(parsedSec) && parsedSec > 0 ? parsedSec : 60;
+      }
       throw err;
     }
     return data;
@@ -794,10 +799,16 @@
 
       completeAuthenticatedSession(res.token, res.user, res.account, true, res.entitlement, res.access);
     } catch (err) {
+      if (err && err.status === 429 && err.retryAfterSec && submitBtn && window.SikhoUX?.startRateLimitCountdown) {
+        window.SikhoUX.startRateLimitCountdown(submitBtn, document.getElementById('auth-error-msg'), err.retryAfterSec, originalText);
+        return;
+      }
       showAuthError(err.message || 'Authentication failed.');
     } finally {
-      if (submitBtn) submitBtn.disabled = false;
-      if (submitText) submitText.textContent = originalText;
+      if (submitBtn && !(submitBtn.textContent || '').startsWith('Retry in ')) {
+        submitBtn.disabled = false;
+        if (submitText) submitText.textContent = originalText;
+      }
     }
   }
 
@@ -1238,7 +1249,7 @@
     return true;
   }
 
-  function signOut(optionalNotice) {
+  function signOut(optionalNotice, opts = {}) {
     state.sessionGen = (state.sessionGen || 0) + 1;
     state.accessSeq = (state.accessSeq || 0) + 1;
     state.token = null;
@@ -1272,9 +1283,146 @@
     notifyNativeUserTier();
     notifyNativeScreenState();
     toggleAuthMode('login');
+    const emailEl = document.getElementById('auth-email');
+    const passEl = document.getElementById('auth-password');
+    if (emailEl && opts.preserveEmail) emailEl.value = opts.preserveEmail;
+    if (passEl) passEl.value = '';
     if (optionalNotice) showAuthError(optionalNotice);
     showTopScreen('screen-auth');
     syncNativeSystemBarTheme();
+  }
+
+  // =========================================================================
+  // GLOBAL CONNECTIVITY / FRESHNESS / MAINTENANCE / UPDATE BANNER & ONBOARDING
+  // =========================================================================
+  let reconnectBannerTimer = null;
+  function updateAppStatusBanner() {
+    const el = document.getElementById('app-connectivity-banner');
+    if (!el) return;
+    const esc = window.SikhoUX?.escape || ((s) => String(s ?? ''));
+    // Priority precedence: Maintenance > Device Offline > Reconnecting > Provider Stale > Optional/Mandatory Update
+    if (state.maintenance?.active) {
+      el.className = 'app-status-banner is-maintenance';
+      const eta = state.maintenance.expectedReturnIso ? ` Expected return: ${new Date(state.maintenance.expectedReturnIso).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })} IST.` : '';
+      el.innerHTML = `<span>Scheduled maintenance: ${esc(state.maintenance.message || 'Upgrading infrastructure.')}${esc(eta)}</span><button type="button" class="app-status-banner-btn" onclick="window.TZApp.checkServerHealthStatus()">Retry</button>`;
+      el.hidden = false;
+      return;
+    }
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      const lastTs = state.lastAnyTickReceiveMs ? ` (last updated ${new Date(state.lastAnyTickReceiveMs).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })} IST)` : '';
+      el.className = 'app-status-banner is-offline';
+      el.innerHTML = `<span>You are offline — showing cached data${esc(lastTs)}.</span><button type="button" class="app-status-banner-btn" onclick="window.TZApp.retryConnectivityNow()">Check</button>`;
+      el.hidden = false;
+      return;
+    }
+    if (state.token && !state.wsConnected && wsReconnectAttempts > 0) {
+      el.className = 'app-status-banner is-reconnecting';
+      el.innerHTML = `<span>Reconnecting to live feed (Attempt ${wsReconnectAttempts})…</span><button type="button" class="app-status-banner-btn" onclick="window.TZApp.retryConnectivityNow()">Retry now</button>`;
+      el.hidden = false;
+      return;
+    }
+    if (state.token && state.wsConnected && state.feedHealth?.marketSession?.isMarketOpen && state.lastAnyTickReceiveMs && (Date.now() - state.lastAnyTickReceiveMs > 15000)) {
+      el.className = 'app-status-banner is-stale';
+      el.innerHTML = `<span>Live prices delayed — showing last received quotes.</span><button type="button" class="app-status-banner-btn" onclick="window.TZApp.retryExploreData()">Refresh</button>`;
+      el.hidden = false;
+      return;
+    }
+    const cv = state.clientVersion;
+    const currentCode = Number(window.TradingzoneNative?.getVersionCode?.() || 26);
+    if (cv && !state.updateBannerDismissed && ((cv.minSupportedCode && cv.minSupportedCode > currentCode) || (cv.latestCode && cv.latestCode > currentCode))) {
+      const isMandatory = Boolean(cv.minSupportedCode && cv.minSupportedCode > currentCode);
+      el.className = 'app-status-banner is-update';
+      const url = cv.updateUrl || 'https://sikhotrading.in/';
+      el.innerHTML = `<span>${isMandatory ? 'Update required to continue.' : 'A newer version of Sikho Trading is available.'}</span><span style="display:flex;gap:6px;"><a class="app-status-banner-btn" href="${esc(url)}" target="_blank" rel="noopener">Update</a>${isMandatory ? '' : '<button type="button" class="app-status-banner-btn" onclick="window.TZApp.dismissUpdateBanner()">Later</button>'}</span>`;
+      el.hidden = false;
+      return;
+    }
+    el.hidden = true;
+  }
+
+  function retryConnectivityNow() {
+    wsReconnectAttempts = 0;
+    connectRealtimeWebSocket();
+    checkServerHealthStatus();
+    if (state.token) {
+      pollAccessPolicy();
+      refreshAccountAndPortfolio();
+    }
+    updateAppStatusBanner();
+  }
+
+  function dismissUpdateBanner() {
+    state.updateBannerDismissed = true;
+    updateAppStatusBanner();
+  }
+
+  async function checkServerHealthStatus() {
+    try {
+      const res = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(6000) });
+      const data = await res.json().catch(() => null);
+      if (data) {
+        state.maintenance = data.maintenance || { active: false };
+        state.clientVersion = data.clientVersion || null;
+        updateAppStatusBanner();
+      }
+    } catch {}
+  }
+
+  function getOnboardingKey() {
+    const uid = state.user?.userId || state.user?.id;
+    return uid ? `sikho_onboarding_${uid}` : null;
+  }
+
+  function markOnboardingStep(stepKey) {
+    const key = getOnboardingKey();
+    if (!key) return;
+    try {
+      const cur = JSON.parse(localStorage.getItem(key) || '{}');
+      if (cur.dismissed || cur[stepKey]) return;
+      cur[stepKey] = true;
+      localStorage.setItem(key, JSON.stringify(cur));
+      renderOnboardingCard();
+    } catch {}
+  }
+
+  function dismissOnboardingCard() {
+    const key = getOnboardingKey();
+    if (!key) return;
+    try {
+      const cur = JSON.parse(localStorage.getItem(key) || '{}');
+      cur.dismissed = true;
+      localStorage.setItem(key, JSON.stringify(cur));
+    } catch {}
+    const slot = document.getElementById('onboarding-card-slot');
+    if (slot) slot.innerHTML = '';
+  }
+
+  function renderOnboardingCard() {
+    const slot = document.getElementById('onboarding-card-slot');
+    if (!slot || !state.user) return;
+    const key = getOnboardingKey();
+    if (!key) { slot.innerHTML = ''; return; }
+    let prog = {};
+    try { prog = JSON.parse(localStorage.getItem(key) || '{}'); } catch {}
+    if (prog.dismissed) { slot.innerHTML = ''; return; }
+    const hasTrades = (state.orders || []).length > 0;
+    const hasWl = (state.watchlists?.[0]?.instruments || []).length > 0;
+    const s1 = Boolean(prog.chart || hasTrades);
+    const s2 = Boolean(prog.watchlist || hasWl);
+    const s3 = Boolean(prog.trade || hasTrades);
+    const allDone = s1 && s2 && s3;
+    const esc = window.SikhoUX?.escape || ((s) => String(s ?? ''));
+    const firstName = (state.user.name || 'Trader').split(' ')[0];
+    if (allDone) {
+      slot.innerHTML = `<div class="onboarding-card" role="status"><div class="onboarding-header"><strong>✓ All 3 setup steps complete!</strong><button type="button" class="link-btn" style="font-size:12px;" onclick="window.TZApp.dismissOnboardingCard()">Dismiss</button></div><div class="section-sub-dark">Your Sikho Trading workspace is ready for practice.</div></div>`;
+      return;
+    }
+    const nextAction = !s1
+      ? `<button type="button" class="ux-state-cta" style="margin-top:0;width:100%;" onclick="window.TZApp.openChartByGlobalId('NSE:NIFTY50')">Open NIFTY 50 Chart</button>`
+      : !s2
+        ? `<button type="button" class="ux-state-cta" style="margin-top:0;width:100%;" onclick="window.TZApp.openSearchModal()">Add a Symbol to Watchlist</button>`
+        : `<button type="button" class="ux-state-cta" style="margin-top:0;width:100%;" onclick="window.TZApp.switchMainTab('explore')">Place Your First Paper Trade</button>`;
+    slot.innerHTML = `<div class="onboarding-card"><div class="onboarding-header"><strong>Welcome, ${esc(firstName)}!</strong><button type="button" class="link-btn" style="font-size:12px;" onclick="window.TZApp.dismissOnboardingCard()">Skip for now</button></div><div class="onboarding-steps"><div class="onboarding-step ${s1 ? 'is-done' : ''}"><span>${s1 ? '✓' : '1.'}</span><span>Explore a live chart</span></div><div class="onboarding-step ${s2 ? 'is-done' : ''}"><span>${s2 ? '✓' : '2.'}</span><span>Add a symbol to Watchlist</span></div><div class="onboarding-step ${s3 ? 'is-done' : ''}"><span>${s3 ? '✓' : '3.'}</span><span>Place your first paper trade</span></div></div>${nextAction}</div>`;
   }
 
   // =========================================================================
@@ -1365,12 +1513,16 @@
     updateProfileHeaderUI();
     connectRealtimeWebSocket();
     startFeedHealthPolling();
+    checkServerHealthStatus();
+    updateAppStatusBanner();
     await Promise.all([
       refreshFeedHealth(),
       refreshAccountAndPortfolio(),
       loadExploreData(),
       loadWatchlists(),
     ]);
+    renderOnboardingCard();
+    updateAppStatusBanner();
   }
 
   function updateProfileHeaderUI() {
@@ -2115,7 +2267,7 @@
   function renderInstrumentRowHTML(inst, showChainBtn = false, options = {}) {
  const isRestricted = !isProUser() && isInstrumentRestrictedForFree(inst);
  const q = pickQuote(inst); const {diff,pct,sign}=calcChange(q);
- return window.SikhoUX.row(inst, {restricted:isRestricted,avatar:window.InstrumentIdentity.renderInstrumentAvatar(inst,40),price:q?.ltp>0?fmtINR(q.ltp):'—',change:q?.ltp>0?formatPointsAndPct(q).text:'',changeClass:formatPointsAndPct(q).cls,showChain:showChainBtn,search:options.search});
+ return window.SikhoUX.row(inst, {restricted:isRestricted,avatar:window.InstrumentIdentity.renderInstrumentAvatar(inst,40),price:q?.ltp>0?fmtINR(q.ltp):'—',change:q?.ltp>0?formatPointsAndPct(q).text:'',changeClass:formatPointsAndPct(q).cls,showChain:showChainBtn,search:options.search,removable:options.removable});
 }
 
   function renderExploreStocksList() {
@@ -2698,14 +2850,21 @@
 
   function renderWatchlistsTab() {
     const container = document.getElementById('watchlist-items-container');
+    if (!container) return;
     const wl = state.watchlists[0];
     if (!wl || !wl.hydratedInstruments || wl.hydratedInstruments.length === 0) {
-      container.innerHTML =
-        '<div style="padding:32px 16px;text-align:center;color:var(--text-on-white-secondary);">Your watchlist is empty. Tap "+ Add Symbol" to add stocks or F&O contracts.</div>';
+      container.innerHTML = window.SikhoUX?.emptyPanel
+        ? window.SikhoUX.emptyPanel({
+            title: 'No watchlist symbols yet',
+            subtitle: 'Track NSE equities, F&O contracts, and MCX commodities in one place.',
+            actionLabel: '+ Add Symbol',
+            actionOnClick: 'window.TZApp.openSearchModal()',
+          })
+        : '<div style="padding:32px 16px;text-align:center;">Your watchlist is empty.</div>';
       return;
     }
     container.innerHTML = wl.hydratedInstruments
-      .map((inst) => renderInstrumentRowHTML(inst, inst.instrumentType !== 'EQUITY_STOCK'))
+      .map((inst) => renderInstrumentRowHTML(inst, inst.instrumentType !== 'EQUITY_STOCK', { removable: true }))
       .join('');
   }
 
@@ -2718,10 +2877,56 @@
         method: 'POST',
         body: JSON.stringify({ id: wl.id, name: wl.name, instruments: list }),
       });
+      markOnboardingStep('watchlist');
       await loadWatchlists();
       closeSearchModal();
       switchMainTab('watchlists');
-    } catch { }
+    } catch (err) {
+      window.SikhoUX?.notify(err?.message || 'Could not add symbol to watchlist.');
+    }
+  }
+
+  async function removeSymbolFromWatchlist(globalId, symbol) {
+    const wl = state.watchlists[0];
+    if (!wl) return;
+    const prevIds = [...(wl.instruments || [])];
+    const prevHydrated = [...(wl.hydratedInstruments || [])];
+    const nextIds = prevIds.filter((id) => id !== globalId);
+    const nextHydrated = prevHydrated.filter((i) => i.globalId !== globalId);
+    // Optimistic update for reversible non-financial watchlist removal
+    wl.instruments = nextIds;
+    wl.hydratedInstruments = nextHydrated;
+    renderWatchlistsTab();
+
+    let undone = false;
+    const persistList = async (ids, fallbackIds, fallbackHydrated) => {
+      try {
+        await apiFetch('/api/v1/watchlists', {
+          method: 'POST',
+          body: JSON.stringify({ id: wl.id, name: wl.name, instruments: ids }),
+        });
+      } catch {
+        wl.instruments = fallbackIds;
+        wl.hydratedInstruments = fallbackHydrated;
+        renderWatchlistsTab();
+        window.SikhoUX?.notify('Could not sync watchlist change — restored.');
+      }
+    };
+
+    window.SikhoUX?.notifyWithUndo?.(
+      `${symbol || globalId.split(':')[1] || 'Symbol'} removed from watchlist`,
+      () => {
+        undone = true;
+        wl.instruments = prevIds;
+        wl.hydratedInstruments = prevHydrated;
+        renderWatchlistsTab();
+        persistList(prevIds, nextIds, nextHydrated);
+      },
+      6000
+    );
+
+    await persistList(nextIds, prevIds, prevHydrated);
+    if (undone) renderWatchlistsTab();
   }
 
   // =========================================================================
@@ -2806,6 +3011,7 @@
     closeAllIndicesModal();
     closeOptionChainModal();
     state.chartOpen = true;
+    markOnboardingStep('chart');
     document.getElementById('screen-chart').classList.add('active');
     syncNativeSystemBarTheme();
     notifyNativeScreenState();
@@ -3672,8 +3878,25 @@
     if (!inst) return;
     const currentQuote=state.quotesMap?.get(inst.globalId)||inst.latestQuote;
     const fresh=quoteFreshnessMs(currentQuote)<=5000;
+    const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+    const isTimedOut = Boolean(state.orderTicket.timedOutKey);
     const submit=document.getElementById('ticket-submit-btn');
-    if(submit)submit.disabled=Boolean(state.orderSubmitting)||!fresh;
+    const hintEl = document.getElementById('ticket-disabled-hint');
+    if (submit) submit.disabled = Boolean(state.orderSubmitting) || !fresh || isOffline || isTimedOut;
+    if (hintEl) {
+      if (isTimedOut) {
+        hintEl.textContent = 'Check the timed-out order status above before placing another order.';
+        hintEl.style.display = 'block';
+      } else if (isOffline) {
+        hintEl.textContent = 'You are offline — reconnect to submit a paper order.';
+        hintEl.style.display = 'block';
+      } else if (!fresh) {
+        hintEl.textContent = 'Waiting for a fresh live quote (≤ 5s) before submission.';
+        hintEl.style.display = 'block';
+      } else {
+        hintEl.style.display = 'none';
+      }
+    }
     const qty = Math.max(1, parseInt(document.getElementById('ticket-input-qty').value || '1', 10));
     const quotePrice = Number(state.quotesMap?.get(inst.globalId)?.ltp || inst.latestQuote?.ltp);
     const sameChart = state.activeInstrument?.globalId === inst.globalId;
@@ -3782,8 +4005,9 @@
       orderType: state.orderTicket.orderType,
       productType: state.orderTicket.productType,
       quantity: qty,
-      idempotencyKey: `ord_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      idempotencyKey: state.orderTicket.pendingIdempotencyKey || `ord_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     };
+    state.orderTicket.pendingIdempotencyKey = payload.idempotencyKey;
 
     if (state.orderTicket.orderType === 'LIMIT') payload.requestedPrice = rawPrice;
     if (state.orderTicket.orderType === 'STOP_MARKET') payload.triggerPrice = rawPrice;
@@ -3794,25 +4018,83 @@
     if (!isNaN(slVal) && slVal > 0) payload.stopLossPrice = slVal;
     if (!isNaN(tpVal) && tpVal > 0) payload.targetPrice = tpVal;
 
+    const timeoutBox = document.getElementById('ticket-timeout-box');
+    if (timeoutBox) timeoutBox.style.display = 'none';
+    state.orderTicket.timedOutKey = null;
+
     state.orderSubmitting=true;
     const submittingButton=document.getElementById('ticket-submit-btn');
     submittingButton.disabled=true; submittingButton.setAttribute('aria-busy','true');
     const previousLabel=submittingButton.textContent; submittingButton.textContent='Placing simulated order…';
     try {
-      await apiFetch('/api/v1/orders/place', {
+      const res = await apiFetch('/api/v1/orders/place', {
         method: 'POST',
         body: JSON.stringify(payload),
       });
-      window.SikhoUX.notify('Simulated order placed.');
+      state.orderTicket.pendingIdempotencyKey = null;
+      state.orderTicket.timedOutKey = null;
+      markOnboardingStep('trade');
+      const ordStatus = res?.order?.status || 'ACCEPTED';
+      const extra = Array.isArray(res?.attachedOrders) && res.attachedOrders.length ? ` (+${res.attachedOrders.length} SL/TP)` : '';
+      window.SikhoUX.notify(`Order ${ordStatus}: ${inst.symbol} × ${qty}${extra}`);
       closeOrderTicket();
       closeChartWorkspace();
       await refreshAccountAndPortfolio();
       switchMainTab(state.orderTicket.productType === 'DELIVERY' ? 'portfolio' : 'orders');
     } catch (err) {
-      errBox.textContent = err.message;
-      errBox.style.display = 'block';
+      if (err && (err.code === 'ERR_SERVER_TIMEOUT' || err.code === 'ERR_SERVER_UNREACHABLE')) {
+        // State 18 Trading Safety: never blindly resubmit as a new order or assume cancelled
+        state.orderTicket.timedOutKey = payload.idempotencyKey;
+        if (timeoutBox) {
+          const detail = document.getElementById('ticket-timeout-detail');
+          if (detail) detail.textContent = `Request timed out for ref ${payload.idempotencyKey.slice(-8)}. Do not re-submit until checking server status.`;
+          timeoutBox.style.display = 'block';
+        }
+      } else if (err && err.status === 429 && err.retryAfterSec && window.SikhoUX?.startRateLimitCountdown) {
+        window.SikhoUX.startRateLimitCountdown(submittingButton, errBox, err.retryAfterSec, previousLabel);
+      } else {
+        state.orderTicket.pendingIdempotencyKey = null;
+        errBox.textContent = err.message;
+        errBox.style.display = 'block';
+      }
     } finally {
-      state.orderSubmitting=false; submittingButton.removeAttribute('aria-busy'); submittingButton.textContent=previousLabel;recalcOrderMarginPreview();
+      state.orderSubmitting=false; submittingButton.removeAttribute('aria-busy');
+      if (!(submittingButton.textContent || '').startsWith('Retry in ')) {
+        submittingButton.textContent = previousLabel;
+      }
+      recalcOrderMarginPreview();
+    }
+  }
+
+  async function checkTimedOutOrderStatus() {
+    const key = state.orderTicket.timedOutKey;
+    if (!key) return;
+    const btn = document.getElementById('ticket-check-status-btn');
+    const detail = document.getElementById('ticket-timeout-detail');
+    if (btn) { btn.disabled = true; btn.textContent = 'Checking server status…'; }
+    try {
+      const res = await apiFetch(`/api/v1/orders/by-idempotency/${encodeURIComponent(key)}`);
+      if (res && res.found && res.order) {
+        state.orderTicket.timedOutKey = null;
+        state.orderTicket.pendingIdempotencyKey = null;
+        const timeoutBox = document.getElementById('ticket-timeout-box');
+        if (timeoutBox) timeoutBox.style.display = 'none';
+        window.SikhoUX?.notify(`Confirmed from server: Order ${res.order.status} (${res.order.symbol || ''} × ${res.order.quantity})`);
+        closeOrderTicket();
+        closeChartWorkspace();
+        await refreshAccountAndPortfolio();
+        switchMainTab('orders');
+      } else {
+        state.orderTicket.timedOutKey = null;
+        const timeoutBox = document.getElementById('ticket-timeout-box');
+        if (timeoutBox) timeoutBox.style.display = 'none';
+        window.SikhoUX?.notify('Order was not received by server. You may safely retry with the same reference.');
+        recalcOrderMarginPreview();
+      }
+    } catch (err) {
+      if (detail) detail.textContent = `Still unable to verify status (${err.message}). Keep checking — do not place a duplicate order.`;
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Check Order Status'; }
     }
   }
 
@@ -4618,6 +4900,8 @@
         if (wsConn !== sock) return;
         wsReconnectAttempts = 0;
         state.wsConnected = true;
+        clearTimeout(reconnectBannerTimer);
+        updateAppStatusBanner();
         state.wsSubscribed=new Set();
         if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
         if (state.token) {
@@ -4691,6 +4975,8 @@
           updateChartCountdownUI();
         }
         scheduleWsReconnect();
+        clearTimeout(reconnectBannerTimer);
+        reconnectBannerTimer = setTimeout(() => updateAppStatusBanner(), 1500);
       };
 
       sock.onerror = () => {
@@ -4920,59 +5206,153 @@
   }
 
   // =========================================================================
-  // TRADE JOURNAL & PERFORMANCE LOG
+  // TRADE JOURNAL & PERFORMANCE LOG (States 01, 03, 14, 32)
   // =========================================================================
+  function getJournalDraftKey() {
+    const uid = state.user?.userId || state.user?.id;
+    return uid ? `sikho_journal_draft_${uid}` : null;
+  }
+
+  function setJournalSyncPill(text, cls = '') {
+    const pill = document.getElementById('journal-sync-status');
+    if (!pill) return;
+    pill.textContent = text;
+    pill.className = `sync-status-pill ${cls}`.trim();
+  }
+
+  function onJournalDraftInput() {
+    const key = getJournalDraftKey();
+    const tag = document.getElementById('journal-input-tag')?.value || '';
+    const ref = document.getElementById('journal-input-ref')?.value || '';
+    const notes = document.getElementById('journal-input-notes')?.value || '';
+    if (key) {
+      try {
+        if (tag || ref || notes) {
+          localStorage.setItem(key, JSON.stringify({ tag, ref, notes, savedAt: Date.now() }));
+          setJournalSyncPill('Local draft (unsaved)');
+        } else {
+          localStorage.removeItem(key);
+          setJournalSyncPill('✓ Synced to cloud', 'is-synced');
+        }
+      } catch {}
+    }
+  }
+
+  function requestCloseJournalModal() {
+    const modal = document.getElementById('modal-journal');
+    if (!modal) return;
+    const notes = (document.getElementById('journal-input-notes')?.value || '').trim();
+    if (notes.length > 0) {
+      showConfirmSheet(
+        'Unsaved Journal Draft',
+        'You have unsaved notes in your trade journal. Your local draft is kept safe, or you can discard it.',
+        (discard) => {
+          if (discard) {
+            const key = getJournalDraftKey();
+            if (key) try { localStorage.removeItem(key); } catch {}
+            const n = document.getElementById('journal-input-notes');
+            if (n) n.value = '';
+            modal.classList.remove('active');
+            notifyNativeScreenState();
+          }
+        }
+      );
+      return;
+    }
+    modal.classList.remove('active');
+    notifyNativeScreenState();
+  }
+
   async function openTradeJournalModal() {
     const modal = document.getElementById('modal-journal');
     if (!modal) return;
+    const key = getJournalDraftKey();
+    if (key) {
+      try {
+        const draft = JSON.parse(localStorage.getItem(key) || 'null');
+        if (draft) {
+          if (document.getElementById('journal-input-tag')) document.getElementById('journal-input-tag').value = draft.tag || '';
+          if (document.getElementById('journal-input-ref')) document.getElementById('journal-input-ref').value = draft.ref || '';
+          if (document.getElementById('journal-input-notes')) document.getElementById('journal-input-notes').value = draft.notes || '';
+          setJournalSyncPill('Local draft restored');
+        } else {
+          setJournalSyncPill('✓ Synced to cloud', 'is-synced');
+        }
+      } catch {}
+    }
     modal.classList.add('active');
+    notifyNativeScreenState();
     await loadJournalEntries();
   }
 
   async function loadJournalEntries() {
     const container = document.getElementById('journal-entries-container');
     if (!container) return;
+    if (window.SikhoUX?.skeleton) container.innerHTML = window.SikhoUX.skeleton(3);
     try {
       const res = await apiFetch('/api/v1/journal/entries');
       state.journalEntries = res.entries || [];
       if (state.journalEntries.length === 0) {
-        container.innerHTML = `
-          <div style="padding:32px;text-align:center;color:var(--text-on-white-secondary);">
-            No journal entries yet. Log your trade rationale, lessons, or psychology notes above!
-          </div>
-        `;
+        container.innerHTML = window.SikhoUX?.emptyPanel
+          ? window.SikhoUX.emptyPanel({
+              title: 'No journal entries yet',
+              subtitle: 'Log your trade rationale, strategy tags, or lessons above to build a disciplined review habit.',
+            })
+          : '<div style="padding:32px;text-align:center;">No journal entries yet.</div>';
         return;
       }
+      const esc = window.SikhoUX?.escape || ((s) => String(s ?? ''));
       container.innerHTML = state.journalEntries.map((e) => `
         <div class="journal-card">
           <div class="journal-header">
-            <span class="strategy-tag-pill">${e.strategyTag || 'Untagged'}</span>
-            <span style="font-size:11px;color:var(--text-on-white-secondary);">${new Date(Number(e.createdAt)).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}</span>
+            <span class="strategy-tag-pill">${esc(e.strategyTag || 'Untagged')}</span>
+            <span style="font-size:11px;color:var(--text-secondary);">${new Date(Number(e.createdAt)).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}</span>
           </div>
-          ${e.referenceId ? `<div style="font-size:11px;font-weight:600;color:var(--text-on-white-secondary);margin-top:2px;">Ref: ${e.referenceId}</div>` : ''}
-          <div class="journal-notes-text">${e.notes}</div>
+          ${e.referenceId ? `<div style="font-size:11px;font-weight:600;color:var(--text-secondary);margin-top:2px;">Ref: ${esc(e.referenceId)}</div>` : ''}
+          <div class="journal-notes-text">${esc(e.notes)}</div>
         </div>
       `).join('');
     } catch (err) {
-      container.innerHTML = `<div style="padding:20px;text-align:center;color:var(--negative-red);">Failed to load journal entries: ${err.message}</div>`;
+      container.innerHTML = window.SikhoUX?.errorPanel
+        ? window.SikhoUX.errorPanel({ title: 'Could not load journal', message: err.message, retryOnClick: 'window.TZApp.openTradeJournalModal()' })
+        : `<div style="padding:20px;text-align:center;color:var(--negative-red);">Failed to load journal entries: ${err.message}</div>`;
     }
   }
 
   async function submitJournalEntry() {
-    const tag = (document.getElementById('journal-input-tag').value || '').trim();
-    const ref = (document.getElementById('journal-input-ref').value || '').trim();
-    const notes = (document.getElementById('journal-input-notes').value || '').trim();
-    if (!notes) return;
+    const tagEl = document.getElementById('journal-input-tag');
+    const refEl = document.getElementById('journal-input-ref');
+    const notesEl = document.getElementById('journal-input-notes');
+    const saveBtn = document.getElementById('btn-journal-save');
+    const tag = (tagEl?.value || '').trim();
+    const ref = (refEl?.value || '').trim();
+    const notes = (notesEl?.value || '').trim();
+    if (!notes) {
+      window.SikhoUX?.setFieldError?.(notesEl, 'Write a brief note before saving.');
+      return;
+    }
+    window.SikhoUX?.clearFieldError?.(notesEl);
+    if (saveBtn) { saveBtn.disabled = true; saveBtn.setAttribute('aria-busy', 'true'); saveBtn.textContent = 'Saving to cloud…'; }
+    setJournalSyncPill('Syncing…');
 
     try {
       await apiFetch('/api/v1/journal/notes', {
         method: 'POST',
         body: JSON.stringify({ strategyTag: tag || 'General Note', referenceId: ref, notes }),
       });
-      document.getElementById('journal-input-notes').value = '';
+      if (notesEl) notesEl.value = '';
+      if (tagEl) tagEl.value = '';
+      if (refEl) refEl.value = '';
+      const key = getJournalDraftKey();
+      if (key) try { localStorage.removeItem(key); } catch {}
+      setJournalSyncPill('✓ Synced to cloud', 'is-synced');
+      window.SikhoUX?.notify('Journal note saved to cloud.');
       await loadJournalEntries();
     } catch (err) {
-      alert('Error saving note: ' + err.message);
+      setJournalSyncPill('Sync failed — draft kept', 'is-error');
+      window.SikhoUX?.notify('Could not sync note. Your local draft is safe.');
+    } finally {
+      if (saveBtn) { saveBtn.disabled = false; saveBtn.removeAttribute('aria-busy'); saveBtn.textContent = 'Save Journal Note'; }
     }
   }
 
@@ -5224,10 +5604,20 @@
     saveServerConfig,
     setThemePreference,
     toggleThemeQuick,
+    removeSymbolFromWatchlist,
+    checkTimedOutOrderStatus,
+    onJournalDraftInput,
+    requestCloseJournalModal,
+    retryConnectivityNow,
+    dismissUpdateBanner,
+    checkServerHealthStatus,
+    dismissOnboardingCard,
   };
 
   window.addEventListener('DOMContentLoaded', () => {
     applyTheme(getThemePreference(), false);
+    window.addEventListener('online', () => { updateAppStatusBanner(); retryConnectivityNow(); });
+    window.addEventListener('offline', () => { updateAppStatusBanner(); });
     try {
       systemThemeMedia = window.matchMedia('(prefers-color-scheme: dark)');
       systemThemeMedia.addEventListener('change', () => {

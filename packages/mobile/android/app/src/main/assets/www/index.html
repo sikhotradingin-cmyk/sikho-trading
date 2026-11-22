@@ -135,11 +135,13 @@
       </header>
 
       <div id="launch-access-label" class="launch-label" hidden></div>
+      <div id="app-connectivity-banner" class="app-status-banner" role="status" aria-live="polite" hidden></div>
       <!-- Persistent Benchmark Index Strip -->
       <div id="benchmark-index-strip" class="index-strip-bar"></div>
 
       <!-- TAB 1: MARKETS (Stocks | F&O | Commodities) -->
       <main id="tab-explore" class="white-content-scroll">
+        <div id="onboarding-card-slot"></div>
         <div class="explore-mode-bar">
           <div class="segmented-pill-group">
             <button id="btn-explore-stocks" class="seg-pill-btn active" onclick="window.TZApp.setExploreCategory('STOCKS')">Stocks</button>
@@ -856,7 +858,13 @@
           </div>
         </div>
 
-        <div id="ticket-error-box" class="auth-error-box"></div>
+        <div id="ticket-error-box" class="auth-error-box" role="alert"></div>
+        <div id="ticket-timeout-box" class="order-timeout-box" role="alert" style="display:none;">
+          <strong>Order status unknown — network timed out</strong>
+          <div id="ticket-timeout-detail">The server may have already received this order. Do not place a duplicate order before checking status.</div>
+          <button id="ticket-check-status-btn" type="button" class="ux-state-cta" style="margin-top:8px;width:100%;" onclick="window.TZApp.checkTimedOutOrderStatus()">Check Order Status</button>
+        </div>
+        <div id="ticket-disabled-hint" class="disabled-reason-hint" style="display:none;"></div>
 
         <button id="ticket-submit-btn" class="btn-lime-primary" onclick="window.TZApp.submitPaperOrder()">
           Place Paper BUY Order
@@ -891,31 +899,34 @@
     <!-- ==================================================================
          MODAL 6: TRADE JOURNAL & PERFORMANCE LOG
          ================================================================== -->
-    <div id="modal-journal" class="chart-overlay-screen" style="background:var(--bg-white);color:var(--text-on-white-primary);">
+    <div id="modal-journal" class="chart-overlay-screen">
       <div class="top-dark-header">
         <div style="display:flex;align-items:center;justify-content:space-between;">
           <div style="display:flex;align-items:center;gap:10px;">
-            <button class="chart-back-btn" onclick="document.getElementById('modal-journal').classList.remove('active')">
+            <button class="chart-back-btn" aria-label="Close trade journal" onclick="window.TZApp.requestCloseJournalModal()">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
                 <path d="M19 12H5M12 19l-7-7 7-7"/>
               </svg>
             </button>
             <div>
-              <div style="font-size:16px;font-weight:700;color:var(--text-on-black-primary);">Trade Journal &amp; Notes</div>
-              <div style="font-size:11.5px;color:var(--text-on-black-secondary);">Strategy tags, notes &amp; trade review</div>
+              <div class="section-title-dark" style="font-size:16px;">Trade Journal &amp; Notes</div>
+              <div class="section-sub-dark" style="font-size:11.5px;">Strategy tags, notes &amp; trade review</div>
             </div>
           </div>
-          <button class="link-btn" style="color:var(--accent-lime);font-size:12px;" onclick="window.TZApp.exportJournalCSV()">Export CSV</button>
+          <button class="link-btn" style="font-size:12px;" onclick="window.TZApp.exportJournalCSV()">Export CSV</button>
         </div>
       </div>
-      <div style="padding:14px 16px;background:var(--surface-light-secondary);border-bottom:1px solid var(--surface-light-border);">
-        <div style="font-weight:700;font-size:13px;margin-bottom:8px;">Add New Trade Journal Entry</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
-          <input id="journal-input-tag" class="form-input" type="text" placeholder="Strategy Tag (e.g. Breakout)" />
-          <input id="journal-input-ref" class="form-input" type="text" placeholder="Symbol / Order Ref" />
+      <div style="padding:14px 16px;background:var(--bg-surface-secondary);border-bottom:1px solid var(--border-subtle);">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;">
+          <div class="section-title-dark" style="font-size:13px;">Add New Trade Journal Entry</div>
+          <span id="journal-sync-status" class="sync-status-pill">Synced</span>
         </div>
-        <textarea id="journal-input-notes" class="form-input" rows="2" placeholder="Write trade thesis, entry rationale, emotions or lessons learned..."></textarea>
-        <button class="btn-lime-primary" style="margin-top:8px;min-height:38px;font-size:13px;" onclick="window.TZApp.submitJournalEntry()">Save Journal Note</button>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+          <input id="journal-input-tag" class="form-input" type="text" placeholder="Strategy Tag (e.g. Breakout)" oninput="window.TZApp.onJournalDraftInput()" />
+          <input id="journal-input-ref" class="form-input" type="text" placeholder="Symbol / Order Ref" oninput="window.TZApp.onJournalDraftInput()" />
+        </div>
+        <textarea id="journal-input-notes" class="form-input" rows="2" placeholder="Write trade thesis, entry rationale, emotions or lessons learned..." oninput="window.TZApp.onJournalDraftInput()"></textarea>
+        <button id="btn-journal-save" class="btn-lime-primary" style="margin-top:8px;min-height:44px;font-size:13px;" onclick="window.TZApp.submitJournalEntry()">Save Journal Note</button>
       </div>
       <div id="journal-entries-container" class="white-content-scroll"></div>
     </div>
