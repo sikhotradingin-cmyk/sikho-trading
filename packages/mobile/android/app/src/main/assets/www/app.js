@@ -2995,7 +2995,42 @@
   async function openChartByGlobalId(globalId) {
     if (!globalId) return;
     const navigationSeq=++chartNavigationSeq, sessionToken=state.token;
-    rememberChartViewport();
+    const prevGid = state.activeInstrument?.globalId || null;
+    if (prevGid && prevGid !== globalId) {
+      chartRequestController?.abort();
+      state.chartLoadSeq = (state.chartLoadSeq || 0) + 1;
+      state.chartLoading = true;
+      state.candles = [];
+      state.chartPendingTicks = [];
+      state.chartBarUpdates = {};
+      state.lastChartAppliedPriceMs = 0;
+      state.drawings = [];
+      state.activeDraftDrawing = null;
+      state.historicalInspection = false;
+      inspectedCandleTime = null;
+      state.isUserScrolledBack = false;
+      if (state.replayMode) {
+        if (state.replayTimer) clearInterval(state.replayTimer);
+        state.replayPlaying = false;
+        state.replayMode = false;
+        const rBar = document.getElementById('chart-replay-bar');
+        if (rBar) rBar.style.display = 'none';
+      }
+      try { candleSeries?.setData?.([]); } catch {}
+      try {
+        Object.values(indicatorSeriesMap || {}).forEach((s) => {
+          try { tvChart?.removeSeries?.(s); } catch { try { s?.setData?.([]); } catch {} }
+        });
+        indicatorSeriesMap = {};
+      } catch {}
+      const svgLayer = document.getElementById('drawing-svg-layer');
+      if (svgLayer) svgLayer.innerHTML = '';
+      try {
+        tvChart?.priceScale?.('right')?.applyOptions?.({ autoScale: true, mode: 0, scaleMargins: { top: 0.1, bottom: 0.14 } });
+        candleSeries?.priceScale?.()?.applyOptions?.({ autoScale: true, mode: 0, scaleMargins: { top: 0.1, bottom: 0.14 } });
+        tvChart?.timeScale?.()?.resetTimeScale?.();
+      } catch {}
+    }
     const inst = await resolveInstrumentForChart(globalId);
     if(navigationSeq!==chartNavigationSeq||sessionToken!==state.token)return;
     const hasOpenPos = (state.positionsData?.positions || []).some(
@@ -3018,6 +3053,16 @@
 
     state.activeInstrument = inst;
     state.historicalInspection=false;inspectedCandleTime=null;
+    state.isUserScrolledBack=false;
+    state.candles=[];
+    state.chartPendingTicks=[];
+    state.chartBarUpdates={};
+    state.lastChartAppliedPriceMs=0;
+    state.drawings=[];
+    state.activeDraftDrawing=null;
+    if (typeof chartViewportCache !== 'undefined' && chartViewportCache?.clear) {
+      chartViewportCache.clear();
+    }
     try{const saved=JSON.parse(localStorage.getItem('tz_indicators_'+(state.user?.userId||state.user?.id))||'null');if(saved)Object.assign(state.indicators,saved);}catch{}
     document.getElementById('chart-ltp-display').textContent='—';
     document.getElementById('chart-chg-display').textContent='';
@@ -3174,9 +3219,18 @@
     const container = document.getElementById('tv-main-chart');
     if (tvChart) {
       state.candles=[]; candleSeries.setData([]);
-      Object.values(indicatorSeriesMap).forEach(series=>series.setData([]));
-      document.getElementById('drawing-svg-layer').innerHTML='';
+      Object.values(indicatorSeriesMap).forEach((series) => {
+        try { tvChart.removeSeries(series); } catch { try { series.setData([]); } catch {} }
+      });
+      indicatorSeriesMap = {};
+      const svg = document.getElementById('drawing-svg-layer');
+      if (svg) svg.innerHTML='';
       tvChart.applyOptions({width:container.clientWidth||380,height:container.clientHeight||420});
+      try {
+        tvChart.priceScale('right')?.applyOptions?.({ autoScale: true, mode: 0, scaleMargins: { top: 0.1, bottom: 0.14 } });
+        candleSeries?.priceScale?.()?.applyOptions?.({ autoScale: true, mode: 0, scaleMargins: { top: 0.1, bottom: 0.14 } });
+        tvChart.timeScale()?.resetTimeScale?.();
+      } catch {}
       return;
     }
 
@@ -3188,7 +3242,7 @@
       layout: chartTheme.layout,
       grid: chartTheme.grid,
       crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-      rightPriceScale: { borderColor: chartTheme.rightPriceScale.borderColor, autoScale: true, scaleMargins:{top:.1,bottom:.1} },
+      rightPriceScale: { borderColor: chartTheme.rightPriceScale.borderColor, autoScale: true, scaleMargins:{top:.1,bottom:.14} },
       timeScale: {
         borderColor: chartTheme.timeScale.borderColor,
         timeVisible: true,
@@ -3214,14 +3268,18 @@
       }
     });
 
-    // Left-scroll pagination listener + "Go to latest" visibility detector
+    // Left-scroll pagination listener + refresh button scroll state indicator
     tvChart.timeScale().subscribeVisibleLogicalRangeChange((logicalRange) => {
       renderDrawingsSvgOverlay();
       if (!logicalRange || state.candles.length === 0) return;
 
       const distanceFromRight = state.candles.length - 1 - logicalRange.to;
       state.isUserScrolledBack = distanceFromRight > 12;
-      document.getElementById('btn-go-latest').style.display = state.isUserScrolledBack ? 'inline-flex' : 'none';
+      const btn = document.getElementById('btn-go-latest');
+      if (btn) {
+        btn.style.display = 'inline-flex';
+        btn.classList?.toggle?.('is-scrolled', Boolean(state.isUserScrolledBack || state.historicalInspection));
+      }
 
       if (logicalRange.from < 15 && state.hasMoreHistory && !state.isFetchingOlder) {
         fetchOlderCandlePage();
@@ -3240,85 +3298,193 @@
     const range=tvChart.timeScale().getVisibleRange();
     if(range){const key=state.activeInstrument.globalId+':'+state.activeTimeframe;chartViewportCache.delete(key);chartViewportCache.set(key,range);if(chartViewportCache.size>12)chartViewportCache.delete(chartViewportCache.keys().next().value);}
   }
-  async function loadChartCandlesInitial() {
+  function resetChartScaleAndFitRecent(fitTimeAxis = true) {
+    if (!tvChart) return;
+    try {
+      tvChart.priceScale('right')?.applyOptions?.({
+        autoScale: true,
+        mode: 0,
+        scaleMargins: { top: 0.1, bottom: 0.14 },
+      });
+    } catch {}
+    try {
+      candleSeries?.priceScale?.()?.applyOptions?.({
+        autoScale: true,
+        mode: 0,
+        scaleMargins: { top: 0.1, bottom: 0.14 },
+      });
+    } catch {}
+    if (fitTimeAxis) {
+      try { tvChart.timeScale()?.resetTimeScale?.(); } catch {}
+      const totalBars = (state.candles || []).length;
+      if (totalBars > 0) {
+        const barsToShow = Math.min(80, Math.max(50, totalBars));
+        try {
+          tvChart.timeScale().setVisibleLogicalRange({
+            from: Math.max(0, totalBars - barsToShow),
+            to: totalBars + 4,
+          });
+        } catch {}
+      }
+      try {
+        tvChart.priceScale('right')?.applyOptions?.({
+          autoScale: true,
+          scaleMargins: { top: 0.1, bottom: 0.14 },
+        });
+        candleSeries?.priceScale?.()?.applyOptions?.({
+          autoScale: true,
+          scaleMargins: { top: 0.1, bottom: 0.14 },
+        });
+      } catch {}
+    }
+    state.isUserScrolledBack = false;
+    const btn = document.getElementById('btn-go-latest');
+    if (btn) {
+      btn.style.display = 'inline-flex';
+      btn.classList?.remove?.('is-scrolled');
+    }
+  }
+  async function loadChartCandlesInitial(opts = {}) {
     if (!state.activeInstrument) return;
     chartRequestController?.abort();
     chartRequestController=new AbortController();
     const seq = ++state.chartLoadSeq;
+    const gid = state.activeInstrument.globalId;
+    const tf = state.activeTimeframe;
+    const token = state.token;
+    const isRefresh = Boolean(opts && opts.isRefresh);
     state.chartLoading=true;state.chartPendingTicks=[];state.chartBarUpdates={};state.lastChartAppliedPriceMs=0;
     state.isFetchingOlder = false;
     state.isUserScrolledBack = false;
-    document.getElementById('btn-go-latest').style.display = 'none';
-    document.getElementById('chart-ohlc-legend').textContent='Loading price history…';
-    document.getElementById('chart-candle-stats').textContent='Loading current data…';
+    state.historicalInspection = false;
+    inspectedCandleTime = null;
+    if (typeof chartViewportCache !== 'undefined' && chartViewportCache?.delete) {
+      chartViewportCache.delete(gid + ':' + tf);
+    }
+    const refreshBtn = document.getElementById('btn-go-latest');
+    if (refreshBtn) {
+      refreshBtn.style.display = 'inline-flex';
+      refreshBtn.classList?.remove?.('is-scrolled');
+      refreshBtn.classList?.add?.('is-loading');
+      refreshBtn.setAttribute?.('aria-busy', 'true');
+    }
+    const legendEl = document.getElementById('chart-ohlc-legend');
+    const statsEl = document.getElementById('chart-candle-stats');
+    if (legendEl) legendEl.textContent = isRefresh ? 'Refreshing chart…' : 'Loading price history…';
+    if (statsEl) statsEl.textContent = isRefresh ? 'Reloading latest candles…' : 'Loading current data…';
 
-    const gid = state.activeInstrument.globalId;
-    const tf = state.activeTimeframe;
     const rangeParam = state.activeRange ? `&range=${encodeURIComponent(state.activeRange)}` : '';
 
     try {
       const data = await apiFetch(
         `/api/v1/market-data/candles?globalId=${encodeURIComponent(gid)}&timeframe=${encodeURIComponent(tf)}${rangeParam}&limit=200`, {signal:chartRequestController.signal}
       );
-      if (seq !== state.chartLoadSeq) return; // Discard stale response from earlier switch
+      if (seq !== state.chartLoadSeq || (token !== undefined && state.token !== token) || state.activeInstrument?.globalId !== gid || state.activeTimeframe !== tf) return; // Discard stale response from earlier switch
 
       const incomingHistory=sanitizeChartCandles(data.candles || []);
       if(!incomingHistory.length&&data.providerError){
         state.chartLoading=false;
+        if (refreshBtn) {
+          refreshBtn.classList?.remove?.('is-loading');
+          refreshBtn.removeAttribute?.('aria-busy');
+        }
         if(state.chartDataKey!==gid+':'+tf){state.candles=[];candleSeries?.setData([]);}
         else for(const tick of state.chartPendingTicks||[])if(tick.globalId===gid)reconcileCandleWithTick(tick,false);
         state.chartPendingTicks=[];
-        document.getElementById('chart-ohlc-legend').textContent='History unavailable: '+data.providerError;
-        document.getElementById('chart-candle-stats').textContent='Tap an interval to retry. Last received bars are preserved when available.';
+        if (legendEl) legendEl.textContent='History unavailable: '+data.providerError;
+        if (statsEl) statsEl.textContent='Tap ↻ or an interval to retry. Last received bars are preserved when available.';
         updateChartCountdownUI();return;
       }
       state.candles = incomingHistory;state.chartDataKey=gid+':'+tf;
       state.chartLoading=false;
+      if (refreshBtn) {
+        refreshBtn.classList?.remove?.('is-loading');
+        refreshBtn.removeAttribute?.('aria-busy');
+      }
       state.hasMoreHistory = Boolean(data.hasMore);
       state.earliestTime = data.earliestTime;
       state.prevSessionClose = data.prevSessionClose;
 
       if (!state.candles.length) {
         candleSeries?.setData([]);
-        document.getElementById('chart-ohlc-legend').textContent = 'No history available for this interval.';
-        document.getElementById('chart-candle-stats').textContent = 'Choose another interval or retry later';
+        if (legendEl) legendEl.textContent = 'No history available for this interval.';
+        if (statsEl) statsEl.textContent = 'Tap ↻ or choose another interval to retry';
       }
 
       if (candleSeries && state.candles.length > 0) {
         candleSeries.setData(state.candles);
+        try {
+          if (typeof tvChart !== 'undefined' && tvChart) {
+            tvChart.priceScale?.('right')?.applyOptions?.({
+              autoScale: true,
+              mode: 0,
+              scaleMargins: { top: 0.1, bottom: 0.14 },
+            });
+            tvChart.timeScale?.()?.resetTimeScale?.();
+          }
+          candleSeries?.priceScale?.()?.applyOptions?.({
+            autoScale: true,
+            mode: 0,
+            scaleMargins: { top: 0.1, bottom: 0.14 },
+          });
+        } catch {}
         const totalBars = state.candles.length;
-        const barsToShow = Math.min(100, Math.max(60, totalBars));
-        tvChart.timeScale().setVisibleLogicalRange({
-          from: totalBars - barsToShow,
-          to: totalBars + 4,
-        });
-        const savedViewport=chartViewportCache.get(gid+':'+tf);
-        if(savedViewport&&savedViewport.from>=state.candles[0].time&&savedViewport.to<=state.candles[totalBars-1].time)tvChart.timeScale().setVisibleRange(savedViewport);
+        const barsToShow = Math.min(80, Math.max(50, totalBars));
+        try {
+          if (typeof tvChart !== 'undefined' && tvChart) {
+            tvChart.timeScale?.()?.setVisibleLogicalRange?.({
+              from: Math.max(0, totalBars - barsToShow),
+              to: totalBars + 4,
+            });
+            tvChart.priceScale?.('right')?.applyOptions?.({
+              autoScale: true,
+              scaleMargins: { top: 0.1, bottom: 0.14 },
+            });
+          }
+          candleSeries?.priceScale?.()?.applyOptions?.({
+            autoScale: true,
+            scaleMargins: { top: 0.1, bottom: 0.14 },
+          });
+        } catch {}
         const last = state.candles[state.candles.length - 1];
-        document.getElementById('chart-ohlc-legend').textContent =
-          `O ${fmtNum(last.open)}  H ${fmtNum(last.high)}  L ${fmtNum(last.low)}  C ${fmtNum(last.close)}`;
-        document.getElementById('chart-candle-stats').textContent =
-          `${state.candles.length} bars • ${data.sessionDateIST || ''}`;
+        if (legendEl) {
+          legendEl.textContent =
+            `O ${fmtNum(last.open)}  H ${fmtNum(last.high)}  L ${fmtNum(last.low)}  C ${fmtNum(last.close)}`;
+        }
+        if (statsEl) {
+          const mktClosed = state.feedHealth && state.feedHealth.marketSession && state.feedHealth.marketSession.isMarketOpen === false;
+          const sessionSuffix = data.sessionDateIST ? ` • ${data.sessionDateIST}` : '';
+          const statusSuffix = mktClosed ? ' • Market Closed' : '';
+          statsEl.textContent = `${state.candles.length} bars${sessionSuffix}${statusSuffix}`;
+        }
       }
-      if (data.latestQuote) {
+      if (data.latestQuote && (!data.latestQuote.globalId || data.latestQuote.globalId === gid)) {
         const latest=state.quotesMap?.get(gid);
         updateChartHeaderQuote(latest&&latest.providerTimestamp>data.latestQuote.providerTimestamp?latest:data.latestQuote);
         // Reconcile initial snapshot against the latest loaded candle if snapshot is at or after the latest candle
         if (state.candles.length > 0 && Number(data.latestQuote.ltp) > 0) {
-          if(!latest||latest.providerTimestamp<=data.latestQuote.providerTimestamp)reconcileCandleWithTick(data.latestQuote, true);
+          if(!latest||latest.providerTimestamp<=data.latestQuote.providerTimestamp)reconcileCandleWithTick({ ...data.latestQuote, globalId: gid }, true);
         }
+      } else if (state.quotesMap?.get(gid)) {
+        updateChartHeaderQuote(state.quotesMap.get(gid));
       }
       for(const tick of state.chartPendingTicks||[])if(tick.globalId===gid)reconcileCandleWithTick(tick,false);
       state.chartPendingTicks=[];
       updateChartCountdownUI();
       recalculateAndRenderIndicators();
       renderDrawingsSvgOverlay();
-      sendWsSubscribe([gid]); // Request genuine forming bars after this timeframe's history is ready.
+      if (!isRefresh || !state.wsSubscribed?.has?.(gid)) {
+        if (typeof sendWsSubscribe === 'function') sendWsSubscribe([gid]);
+      }
     } catch (err) {
       if(seq===state.chartLoadSeq&&err.name!=='AbortError'){
         state.chartLoading=false;
-        document.getElementById('chart-ohlc-legend').textContent='History unavailable. Tap an interval to retry.';
-        document.getElementById('chart-candle-stats').textContent='Waiting for verified data';
+        if (refreshBtn) {
+          refreshBtn.classList?.remove?.('is-loading');
+          refreshBtn.removeAttribute?.('aria-busy');
+        }
+        if (legendEl) legendEl.textContent='Chart refresh failed. Tap ↻ to retry.';
+        if (statsEl) statsEl.textContent='Tap ↻ to retry';
       }
     }
   }
@@ -3417,22 +3583,37 @@
     return [...byTime.values()].sort((a,b)=>a.time-b.time).slice(-6000);
   }
 
-  function scrollToLatestBar() {
-    if(state.historicalInspection){state.historicalInspection=false;inspectedCandleTime=null;loadChartCandlesInitial();return;}
-    if (tvChart) {
-      const totalBars = state.candles.length;
-      const barsToShow = Math.min(100, Math.max(60, totalBars));
-      tvChart.timeScale().setVisibleLogicalRange({
-        from: totalBars - barsToShow,
-        to: totalBars + 4,
-      });
-      state.isUserScrolledBack = false;
-      document.getElementById('btn-go-latest').style.display = 'none';
+  async function refreshActiveChart() {
+    if (!state.activeInstrument || !state.chartOpen) return;
+    const gid = state.activeInstrument.globalId;
+    const tf = state.activeTimeframe || '5m';
+    state.historicalInspection = false;
+    inspectedCandleTime = null;
+    state.isUserScrolledBack = false;
+    if (typeof chartViewportCache !== 'undefined' && chartViewportCache?.delete) {
+      chartViewportCache.delete(gid + ':' + tf);
+    }
+    if (state.replayMode) {
+      if (state.replayTimer) clearInterval(state.replayTimer);
+      state.replayPlaying = false;
+      state.replayMode = false;
+      const bar = document.getElementById('chart-replay-bar');
+      if (bar) bar.style.display = 'none';
+    }
+    resetChartScaleAndFitRecent(true);
+    await loadChartCandlesInitial({ isRefresh: true });
+    if (state.activeInstrument?.globalId === gid) {
+      recalculateAndRenderIndicators();
+      renderDrawingsSvgOverlay();
+      updateChartCountdownUI();
     }
   }
 
+  function scrollToLatestBar() {
+    return refreshActiveChart();
+  }
+
   function selectTimeframe(tf) {
-    rememberChartViewport();
     state.historicalInspection=false;inspectedCandleTime=null;
     state.activeTimeframe = tf;
     document.querySelectorAll('.chart-controls-strip .tf-pill').forEach((b) => {
@@ -5005,6 +5186,7 @@
     state.lastChartAppliedPriceMs=event;state.chartBarUpdates=state.chartBarUpdates||{};state.chartBarUpdates[bar.time]=Date.now();updateChartCountdownUI();
   }
   function reconcileCandleWithTick(quote, isInitialSnapshot = false) {
+    if (!quote || (quote.globalId && state.activeInstrument?.globalId && quote.globalId !== state.activeInstrument.globalId)) return;
     if(quote.isTradeEvent===false&&!isInitialSnapshot)return;
     if(state.chartLoading){state.chartPendingTicks=state.chartPendingTicks||[];if(!isInitialSnapshot){state.chartPendingTicks.push(quote);if(state.chartPendingTicks.length>3000)state.chartPendingTicks.shift();}return;}
     if (!candleSeries || state.candles.length === 0 || state.replayMode || state.historicalInspection) return;
@@ -5559,6 +5741,8 @@
     selectTimeframe,
     selectRangePreset,
     scrollToLatestBar,
+    refreshActiveChart,
+    resetChartScaleAndFitRecent,
     openIndicatorsModal,
     toggleIndicator,
     openDrawingsModal,

@@ -554,8 +554,8 @@
         <div id="chart-ohlc-legend" class="ohlc-floating-legend">O — H — L — C —</div>
         <div id="tv-main-chart"></div>
         <svg id="drawing-svg-layer"></svg>
-        <button id="btn-go-latest" class="go-latest-fab" onclick="window.TZApp.scrollToLatestBar()">
-          <span>Go to latest ➔</span>
+        <button id="btn-go-latest" class="go-latest-fab chart-refresh-fab" type="button" aria-label="Refresh chart" title="Refresh chart" onclick="window.TZApp.refreshActiveChart()">
+          <span class="chart-refresh-circle" aria-hidden="true">↻</span>
         </button>
       </div>
 
