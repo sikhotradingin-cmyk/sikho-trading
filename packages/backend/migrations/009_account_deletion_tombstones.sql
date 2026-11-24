@@ -1,4 +1,4 @@
--- Migration 009: Non-PII Account Deletion Tombstones for Immediate Session Revocation & Audit
+-- Migration 009: Pseudonymous Account Deletion Tombstones for Immediate Session Revocation, Replay Defense & Audit
 CREATE TABLE IF NOT EXISTS deleted_account_tombstones (
   user_id VARCHAR(64) PRIMARY KEY,
   email_sha256 VARCHAR(64) NOT NULL,

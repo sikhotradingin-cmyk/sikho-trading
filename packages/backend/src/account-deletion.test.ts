@@ -120,7 +120,7 @@ test('Ownership-Verified In-App Account Deletion & Immediate Session Revocation'
   assert.equal(okDelete.json().success, true);
   assert.equal(okDelete.json().deletedUserId, user1.userId);
 
-  // 5. Verify all User 1 active records are erased while non-PII tombstone exists
+  // 5. Verify all User 1 active records are erased while pseudonymous security tombstone exists
   assert.equal(await repo.getUserById(user1.userId), null);
   assert.equal(await repo.getAccount(account1.id), null);
   assert.equal((await repo.getOrders(account1.id)).length, 0);
