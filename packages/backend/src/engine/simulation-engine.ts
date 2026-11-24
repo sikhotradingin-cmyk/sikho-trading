@@ -3,11 +3,14 @@ import {
   Money,
   OrderSide,
   OrderType,
+  OrderValidator,
   Paise,
   PlaceOrderRequest,
+  PositionProtectionAuditEntry,
   QuoteSnapshot,
   SimulatedOrder,
   SimulatedPosition,
+  UpdatePositionProtectionRequest,
   getExchangeSessionStatus,
   quoteFreshnessAgeMs,
 } from '@trading/shared';
@@ -21,6 +24,12 @@ export interface ExecutionResult {
   realizedPnlPaise?: Paise;
   chargesPaise?: Paise;
   attachedOrders?: SimulatedOrder[];
+}
+
+export interface ProtectionModificationResult {
+  position: SimulatedPosition;
+  attachedOrders: SimulatedOrder[];
+  audit: PositionProtectionAuditEntry;
 }
 
 export class SimulationEngine {
@@ -183,12 +192,23 @@ export class SimulationEngine {
       await this.repo.saveOrder(res.order);
       if (res.position) {
         if (res.position.quantity === 0) {
+          res.position.stopLossPrice = undefined;
+          res.position.targetPrice = undefined;
+          res.position.stopOrderId = undefined;
+          res.position.targetOrderId = undefined;
+          res.position.protectionVersion = (res.position.protectionVersion || 1) + 1;
           await this.cancelProtectiveOrdersForPosition(
             request.accountId,
             request.globalInstrumentId,
             'POSITION_CLOSED: Protective order cancelled because position closed.'
           );
         } else if (request.stopLossPrice !== undefined || request.targetPrice !== undefined) {
+          await this.cancelProtectiveOrdersForPosition(
+            request.accountId,
+            request.globalInstrumentId,
+            'PROTECTION_REPLACED: Replaced by new entry protection.'
+          );
+          res.position.protectionVersion = (res.position.protectionVersion || 1) + 1;
           res.attachedOrders = await this.spawnProtectiveOrders(
             res.order,
             res.position,
@@ -196,6 +216,23 @@ export class SimulationEngine {
             request.stopLossPrice,
             request.targetPrice
           );
+          await this.repo.recordProtectionAudit({
+            accountId: request.accountId,
+            positionId: res.position.id,
+            globalInstrumentId: res.position.globalInstrumentId,
+            previousSl: undefined,
+            newSl: res.position.stopLossPrice,
+            previousTp: undefined,
+            newTp: res.position.targetPrice,
+            quantity: res.position.quantity,
+            entryPrice: res.position.averageEntryPrice,
+            referenceLtp: quote.ltp,
+            protectionVersion: res.position.protectionVersion,
+            source: 'ORDER_ENTRY',
+            idempotencyKey: request.idempotencyKey,
+          });
+        } else {
+          await this.syncProtectiveOrdersQuantityForPosition(res.position, _instrument);
         }
         await this.repo.saveOrUpdatePosition(res.position);
       }
@@ -217,8 +254,24 @@ export class SimulationEngine {
     stopLossPrice?: number,
     targetPrice?: number
   ): Promise<SimulatedOrder[]> {
+    return this.spawnProtectiveOrdersForPosition(
+      position,
+      instrument,
+      stopLossPrice,
+      targetPrice,
+      entryOrder.id
+    );
+  }
+
+  private async spawnProtectiveOrdersForPosition(
+    position: SimulatedPosition,
+    instrument: InstrumentMetadata,
+    stopLossPrice?: number,
+    targetPrice?: number,
+    refKeyPrefix: string = randomUUID()
+  ): Promise<SimulatedOrder[]> {
     const exitSide: OrderSide = position.quantity > 0 ? 'SELL' : 'BUY';
-    const exitQty = Math.min(entryOrder.quantity, Math.abs(position.quantity));
+    const exitQty = Math.abs(position.quantity);
     if (exitQty <= 0) return [];
 
     const now = Date.now();
@@ -234,15 +287,15 @@ export class SimulationEngine {
       const estCharges = Money.fromRupees(Math.max(20, stopLossPrice * quoteRatio * exitQty * 0.0002));
       slOrder = {
         id: randomUUID(),
-        accountId: entryOrder.accountId,
-        globalInstrumentId: entryOrder.globalInstrumentId,
+        accountId: position.accountId,
+        globalInstrumentId: position.globalInstrumentId,
         side: exitSide,
         orderType: 'STOP_MARKET',
-        productType: position.productType || entryOrder.productType || 'INTRADAY',
+        productType: position.productType || 'INTRADAY',
         quantity: exitQty,
         triggerPrice: stopLossPrice,
         status: 'PENDING',
-        idempotencyKey: `sl-${entryOrder.id}-${now}`,
+        idempotencyKey: `sl-${refKeyPrefix.slice(0, 28)}-${now}-${randomUUID().slice(0, 6)}`,
         positionId: position.id,
         isProtectiveExit: true,
         estimatedChargesPaise: estCharges,
@@ -251,21 +304,24 @@ export class SimulationEngine {
       };
       position.stopLossPrice = stopLossPrice;
       position.stopOrderId = slOrder.id;
+    } else {
+      position.stopLossPrice = undefined;
+      position.stopOrderId = undefined;
     }
 
     if (targetPrice !== undefined && Number.isFinite(targetPrice) && targetPrice > 0) {
       const estCharges = Money.fromRupees(Math.max(20, targetPrice * quoteRatio * exitQty * 0.0002));
       tpOrder = {
         id: randomUUID(),
-        accountId: entryOrder.accountId,
-        globalInstrumentId: entryOrder.globalInstrumentId,
+        accountId: position.accountId,
+        globalInstrumentId: position.globalInstrumentId,
         side: exitSide,
         orderType: 'LIMIT',
-        productType: position.productType || entryOrder.productType || 'INTRADAY',
+        productType: position.productType || 'INTRADAY',
         quantity: exitQty,
         requestedPrice: targetPrice,
         status: 'PENDING',
-        idempotencyKey: `tp-${entryOrder.id}-${now}`,
+        idempotencyKey: `tp-${refKeyPrefix.slice(0, 28)}-${now}-${randomUUID().slice(0, 6)}`,
         positionId: position.id,
         isProtectiveExit: true,
         estimatedChargesPaise: estCharges,
@@ -274,6 +330,9 @@ export class SimulationEngine {
       };
       position.targetPrice = targetPrice;
       position.targetOrderId = tpOrder.id;
+    } else {
+      position.targetPrice = undefined;
+      position.targetOrderId = undefined;
     }
 
     if (slOrder && tpOrder) {
@@ -292,12 +351,59 @@ export class SimulationEngine {
         configurable: true,
       });
       await this.repo.saveOrder(child);
-      this.pendingOrders.push(child);
+      if (!this.pendingOrders.some((o) => o.id === child.id)) {
+        this.pendingOrders.push(child);
+      }
       this.pendingInstruments.set(child.id, instrument);
       spawned.push(child);
     }
 
     return spawned;
+  }
+
+  private async syncProtectiveOrdersQuantityForPosition(
+    position: SimulatedPosition,
+    instrument?: InstrumentMetadata
+  ): Promise<void> {
+    if (position.quantity === 0) return;
+    const expectedSide: OrderSide = position.quantity > 0 ? 'SELL' : 'BUY';
+    const expectedQty = Math.abs(position.quantity);
+    const activeProtective = this.pendingOrders.filter(
+      (o) =>
+        o.accountId === position.accountId &&
+        o.globalInstrumentId === position.globalInstrumentId &&
+        (o.status === 'PENDING' || o.status === 'TRIGGERED') &&
+        Boolean(o.isProtectiveExit || o.ocoCompanionOrderId || o.positionId === position.id)
+    );
+    for (const o of activeProtective) {
+      if (o.side !== expectedSide) {
+        // Position flipped direction -> cancel previous-direction protective order
+        o.status = 'CANCELLED';
+        o.rejectionReason = 'POSITION_REVERSED: Cancelled because position flipped direction.';
+        o.updatedAt = Date.now();
+        await this.repo.updateOrder(o);
+        this.pendingInstruments.delete(o.id);
+        if (position.stopOrderId === o.id) {
+          position.stopOrderId = undefined;
+          position.stopLossPrice = undefined;
+        }
+        if (position.targetOrderId === o.id) {
+          position.targetOrderId = undefined;
+          position.targetPrice = undefined;
+        }
+      } else if (o.quantity !== expectedQty) {
+        o.quantity = expectedQty;
+        const quoteRatio =
+          instrument?.exchange === 'MCX' && instrument?.priceQuoteMultiplier
+            ? instrument.priceQuoteMultiplier / (instrument.lotSize || 1)
+            : 1;
+        const refPrice = o.triggerPrice || o.requestedPrice || position.averageEntryPrice;
+        o.estimatedChargesPaise = Money.fromRupees(Math.max(20, refPrice * quoteRatio * expectedQty * 0.0002));
+        o.updatedAt = Date.now();
+        await this.repo.updateOrder(o);
+      }
+    }
+    this.pendingOrders = this.pendingOrders.filter((o) => o.status === 'PENDING' || o.status === 'TRIGGERED');
   }
 
   private async cancelProtectiveOrdersForPosition(
@@ -647,14 +753,23 @@ export class SimulationEngine {
 
       if (res.position) {
         if (res.position.quantity === 0) {
+          res.position.stopLossPrice = undefined;
+          res.position.targetPrice = undefined;
           res.position.stopOrderId = undefined;
           res.position.targetOrderId = undefined;
+          res.position.protectionVersion = (res.position.protectionVersion || 1) + 1;
           await this.cancelProtectiveOrdersForPosition(
             order.accountId,
             order.globalInstrumentId,
             'POSITION_CLOSED: Protective order cancelled because position closed.'
           );
         } else if (instrument && (order.stopLossPrice !== undefined || order.targetPrice !== undefined)) {
+          await this.cancelProtectiveOrdersForPosition(
+            order.accountId,
+            order.globalInstrumentId,
+            'PROTECTION_REPLACED: Replaced by new entry protection.'
+          );
+          res.position.protectionVersion = (res.position.protectionVersion || 1) + 1;
           const spawned = await this.spawnProtectiveOrders(
             res.order,
             res.position,
@@ -664,6 +779,23 @@ export class SimulationEngine {
           );
           res.attachedOrders = spawned;
           newlySpawned.push(...spawned);
+          await this.repo.recordProtectionAudit({
+            accountId: order.accountId,
+            positionId: res.position.id,
+            globalInstrumentId: res.position.globalInstrumentId,
+            previousSl: undefined,
+            newSl: res.position.stopLossPrice,
+            previousTp: undefined,
+            newTp: res.position.targetPrice,
+            quantity: res.position.quantity,
+            entryPrice: res.position.averageEntryPrice,
+            referenceLtp: quote.ltp,
+            protectionVersion: res.position.protectionVersion,
+            source: 'ORDER_ENTRY',
+            idempotencyKey: order.idempotencyKey,
+          });
+        } else {
+          await this.syncProtectiveOrdersQuantityForPosition(res.position, instrument);
         }
         await this.repo.saveOrUpdatePosition(res.position);
       }
@@ -772,7 +904,276 @@ export class SimulationEngine {
       this.lockedOrderMargins.delete(orderId);
     }
 
+    // If the cancelled order was a protective SL/TP order on an open position, reconcile position fields & OCO sibling
+    if (order.isProtectiveExit || order.positionId || order.ocoCompanionOrderId) {
+      const positions = await this.repo.getPositions(accountId);
+      const pos = positions.find(
+        (p) =>
+          (order.positionId && p.id === order.positionId) ||
+          p.globalInstrumentId === order.globalInstrumentId
+      );
+      if (pos) {
+        let changed = false;
+        if (pos.stopOrderId === order.id || (order.orderType === 'STOP_MARKET' && pos.stopLossPrice !== undefined)) {
+          pos.stopOrderId = undefined;
+          pos.stopLossPrice = undefined;
+          changed = true;
+        }
+        if (pos.targetOrderId === order.id || (order.orderType === 'LIMIT' && pos.targetPrice !== undefined && order.isProtectiveExit)) {
+          pos.targetOrderId = undefined;
+          pos.targetPrice = undefined;
+          changed = true;
+        }
+        if (order.ocoCompanionOrderId) {
+          const sibling = this.pendingOrders.find((o) => o.id === order.ocoCompanionOrderId);
+          if (sibling) {
+            sibling.ocoCompanionOrderId = undefined;
+            sibling.updatedAt = Date.now();
+            await this.repo.updateOrder(sibling);
+          }
+        }
+        if (changed) {
+          pos.protectionVersion = (pos.protectionVersion || 1) + 1;
+          pos.updatedAt = Date.now();
+          await this.repo.saveOrUpdatePosition(pos);
+        }
+      }
+    }
+
     return order;
+  }
+
+  public updatePositionProtection(
+    request: UpdatePositionProtectionRequest,
+    instrument: InstrumentMetadata,
+    quote: QuoteSnapshot
+  ): Promise<ProtectionModificationResult> {
+    return this.serialized(() => this.updatePositionProtectionNow(request, instrument, quote));
+  }
+
+  private async updatePositionProtectionNow(
+    request: UpdatePositionProtectionRequest,
+    instrument: InstrumentMetadata,
+    quote: QuoteSnapshot
+  ): Promise<ProtectionModificationResult> {
+    SecurityAirGap.verifySimulatedActionExclusivity('MARKET');
+
+    const idempotencyKey = String(request.idempotencyKey || '').trim();
+    if (!idempotencyKey || idempotencyKey.length > 128) {
+      throw new Error('ERR_INVALID_IDEMPOTENCY_KEY: A valid idempotencyKey (1..128 chars) is required.');
+    }
+
+    const payloadSignature = JSON.stringify({
+      positionId: request.positionId,
+      stopLossPrice: request.stopLossPrice === undefined ? '__KEEP__' : request.stopLossPrice,
+      targetPrice: request.targetPrice === undefined ? '__KEEP__' : request.targetPrice,
+      removeStopLoss: Boolean(request.removeStopLoss),
+      removeTarget: Boolean(request.removeTarget),
+    });
+
+    const existingReq = await this.repo.getProtectionRequestByIdempotency(request.accountId, idempotencyKey);
+    if (existingReq) {
+      if (existingReq.payloadSignature !== payloadSignature) {
+        throw new Error('ERR_IDEMPOTENCY_MISMATCH: Idempotency key reused with different protection modification payload.');
+      }
+      const currentPos = await this.repo.getPositionById(request.accountId, existingReq.positionId);
+      return {
+        position: currentPos || existingReq.response.position,
+        attachedOrders: existingReq.response.attachedOrders || [],
+        audit: existingReq.response.audit,
+      };
+    }
+
+    const position = await this.repo.getPositionById(request.accountId, request.positionId);
+    if (!position) {
+      throw new Error('ERR_POSITION_NOT_FOUND: Position not found or does not belong to this account.');
+    }
+    if (position.quantity === 0) {
+      throw new Error('ERR_POSITION_CLOSED: Cannot modify TP/SL because this position is already closed.');
+    }
+
+    const currentVersion = Number(position.protectionVersion || 1);
+    if (request.expectedVersion !== undefined && Number(request.expectedVersion) !== currentVersion) {
+      throw new Error(
+        `ERR_PROTECTION_VERSION_CONFLICT: Position protection was updated (expected version ${request.expectedVersion}, actual ${currentVersion}). Refresh and review current levels.`
+      );
+    }
+
+    if (instrument.globalId !== position.globalInstrumentId) {
+      throw new Error(
+        `ERR_INSTRUMENT_MISMATCH: Protection for ${position.globalInstrumentId} must be evaluated against its own traded contract, not ${instrument.globalId}.`
+      );
+    }
+
+    // Validate fresh executable quote on the actual traded contract
+    const quoteAgeMs = quoteFreshnessAgeMs(quote);
+    const sessionStatus = getExchangeSessionStatus(instrument.exchange, new Date());
+    const isClosedMarketLiveQuote = !quote.isSimulated && !sessionStatus.isOpen;
+    if (
+      !quote ||
+      quote.globalId !== instrument.globalId ||
+      !Number.isFinite(quote.ltp) ||
+      quote.ltp <= 0
+    ) {
+      throw new Error('ERR_UNSUITABLE_MARKET_DATA: Executable market quote is invalid or unavailable for this contract.');
+    }
+    if (isClosedMarketLiveQuote) {
+      throw new Error(
+        `ERR_MARKET_CLOSED: ${instrument.exchange} market is currently closed (${sessionStatus.sessionName}). TP/SL modifications require an active session with a fresh executable quote.`
+      );
+    }
+    if (quoteAgeMs > 5000) {
+      throw new Error(
+        `ERR_STALE_MARKET_DATA: Market quote age is ${quoteAgeMs}ms (threshold 5000ms). TP/SL modification requires a fresh live quote.`
+      );
+    }
+
+    const previousSl = position.stopLossPrice;
+    const previousTp = position.targetPrice;
+    let nextSl: number | undefined = previousSl;
+    let nextTp: number | undefined = previousTp;
+    let slTouched = false;
+    let tpTouched = false;
+
+    if (request.removeStopLoss === true || request.stopLossPrice === null) {
+      nextSl = undefined;
+      slTouched = true;
+    } else if (request.stopLossPrice !== undefined) {
+      const rawSl = typeof request.stopLossPrice === 'number' ? request.stopLossPrice : Number(request.stopLossPrice);
+      if (request.stopLossPrice === ('' as any) || !Number.isFinite(rawSl) || rawSl <= 0) {
+        throw new Error('ERR_INVALID_STOP_LOSS: Stop Loss price must be a valid number strictly greater than zero.');
+      }
+      nextSl = rawSl;
+      slTouched = true;
+    }
+
+    if (request.removeTarget === true || request.targetPrice === null) {
+      nextTp = undefined;
+      tpTouched = true;
+    } else if (request.targetPrice !== undefined) {
+      const rawTp = typeof request.targetPrice === 'number' ? request.targetPrice : Number(request.targetPrice);
+      if (request.targetPrice === ('' as any) || !Number.isFinite(rawTp) || rawTp <= 0) {
+        throw new Error('ERR_INVALID_TARGET: Take Profit price must be a valid number strictly greater than zero.');
+      }
+      nextTp = rawTp;
+      tpTouched = true;
+    }
+
+    if (!slTouched && !tpTouched) {
+      throw new Error('ERR_NO_PROTECTION_CHANGE: Specify a Stop Loss or Take Profit change (or explicit removal).');
+    }
+
+    const tick = Number(instrument.tickSize) > 0 ? Number(instrument.tickSize) : 0.05;
+    const isLong = position.quantity > 0;
+    const currentLtp = Number(quote.ltp);
+
+    if (nextSl !== undefined) {
+      if (!OrderValidator.isAlignedToTick(nextSl, tick)) {
+        throw new Error(`ERR_OFF_TICK_PRICE: Stop Loss price ₹${nextSl} does not align with instrument tick size ${tick}.`);
+      }
+      // Validate against current executable market price (allows profit-protecting stops beyond entry!)
+      if (isLong && nextSl >= currentLtp) {
+        throw new Error(
+          `ERR_PROTECTION_ALREADY_CROSSED: For a LONG position, Stop Loss (₹${nextSl}) must be strictly below the current market price (₹${currentLtp}).`
+        );
+      }
+      if (!isLong && nextSl <= currentLtp) {
+        throw new Error(
+          `ERR_PROTECTION_ALREADY_CROSSED: For a SHORT position, Stop Loss (₹${nextSl}) must be strictly above the current market price (₹${currentLtp}).`
+        );
+      }
+    }
+
+    if (nextTp !== undefined) {
+      if (!OrderValidator.isAlignedToTick(nextTp, tick)) {
+        throw new Error(`ERR_OFF_TICK_PRICE: Take Profit price ₹${nextTp} does not align with instrument tick size ${tick}.`);
+      }
+      if (isLong && nextTp <= currentLtp) {
+        throw new Error(
+          `ERR_PROTECTION_ALREADY_CROSSED: For a LONG position, Take Profit (₹${nextTp}) must be strictly above the current market price (₹${currentLtp}).`
+        );
+      }
+      if (!isLong && nextTp >= currentLtp) {
+        throw new Error(
+          `ERR_PROTECTION_ALREADY_CROSSED: For a SHORT position, Take Profit (₹${nextTp}) must be strictly below the current market price (₹${currentLtp}).`
+        );
+      }
+    }
+
+    if (nextSl !== undefined && nextTp !== undefined) {
+      if (isLong && nextSl >= nextTp) {
+        throw new Error(
+          `ERR_INVALID_PROTECTION_RANGE: For a LONG position, Stop Loss (₹${nextSl}) must be strictly below Take Profit (₹${nextTp}).`
+        );
+      }
+      if (!isLong && nextTp >= nextSl) {
+        throw new Error(
+          `ERR_INVALID_PROTECTION_RANGE: For a SHORT position, Take Profit (₹${nextTp}) must be strictly below Stop Loss (₹${nextSl}).`
+        );
+      }
+    }
+
+    // Atomically cancel any previous protective orders for this position
+    await this.cancelProtectiveOrdersForPosition(
+      request.accountId,
+      position.globalInstrumentId,
+      'PROTECTION_UPDATED: Replaced by updated position TP/SL protection.'
+    );
+
+    position.protectionVersion = currentVersion + 1;
+    position.updatedAt = Date.now();
+
+    const attachedOrders = await this.spawnProtectiveOrdersForPosition(
+      position,
+      instrument,
+      nextSl,
+      nextTp,
+      `prot-${position.id}-v${position.protectionVersion}`
+    );
+
+    this.updatePositionUnrealized(position, currentLtp, instrument);
+    await this.repo.saveOrUpdatePosition(position);
+
+    const audit = await this.repo.recordProtectionAudit({
+      accountId: request.accountId,
+      positionId: position.id,
+      globalInstrumentId: position.globalInstrumentId,
+      previousSl,
+      newSl: nextSl,
+      previousTp,
+      newTp: nextTp,
+      quantity: position.quantity,
+      entryPrice: position.averageEntryPrice,
+      referenceLtp: currentLtp,
+      protectionVersion: position.protectionVersion,
+      source: request.source || 'MANUAL_EDIT',
+      idempotencyKey,
+    });
+
+    await this.repo.saveProtectionRequest({
+      accountId: request.accountId,
+      positionId: position.id,
+      idempotencyKey,
+      payloadSignature,
+      response: {
+        position: {
+          ...position,
+          realizedPnlPaise: position.realizedPnlPaise.toString(),
+          unrealizedPnlPaise: position.unrealizedPnlPaise.toString(),
+        },
+        attachedOrders: attachedOrders.map((o) => ({
+          ...o,
+          estimatedChargesPaise: o.estimatedChargesPaise.toString(),
+        })),
+        audit,
+      },
+    });
+
+    return {
+      position,
+      attachedOrders,
+      audit,
+    };
   }
 
   private updatePositionUnrealized(pos: SimulatedPosition, currentLtp: number, instrument?: InstrumentMetadata): void {

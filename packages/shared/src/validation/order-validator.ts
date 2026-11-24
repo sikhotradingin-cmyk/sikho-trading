@@ -328,7 +328,7 @@ export class OrderValidator {
     };
   }
 
-  private static isAlignedToTick(price: number, tick: number): boolean {
+  public static isAlignedToTick(price: number, tick: number): boolean {
     const ticks = price / tick;
     const rounded = Math.round(ticks);
     return Math.abs(ticks - rounded) < 1e-4;

@@ -15,6 +15,37 @@ export interface SimulatedPosition {
   targetPrice?: number;
   stopOrderId?: string;
   targetOrderId?: string;
+  protectionVersion?: number;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface UpdatePositionProtectionRequest {
+  accountId: string;
+  positionId: string;
+  stopLossPrice?: number | null;
+  targetPrice?: number | null;
+  removeStopLoss?: boolean;
+  removeTarget?: boolean;
+  expectedVersion?: number;
+  idempotencyKey: string;
+  source?: 'MANUAL_EDIT' | 'CHART_DRAG';
+}
+
+export interface PositionProtectionAuditEntry {
+  id: string;
+  accountId: string;
+  positionId: string;
+  globalInstrumentId: string;
+  previousSl?: number;
+  newSl?: number;
+  previousTp?: number;
+  newTp?: number;
+  quantity: number;
+  entryPrice: number;
+  referenceLtp: number;
+  protectionVersion: number;
+  source: string;
+  idempotencyKey?: string;
+  createdAt: number;
 }

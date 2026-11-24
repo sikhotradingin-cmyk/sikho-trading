@@ -45,7 +45,7 @@ if (!(BigInt.prototype as any).toJSON) {
 }
 
 /** Application version advertised by /health (kept in sync with the Android versionName). */
-export const SERVICE_VERSION = '1.0.12';
+export const SERVICE_VERSION = '1.0.18';
 const SERVICE_STARTED_AT = new Date().toISOString();
 
 /** Browser/WebSocket clients must be told the server clock so countdowns can be corrected. */
@@ -1186,19 +1186,25 @@ export async function buildServer(
       return reply.status(400).send({ error: 'Missing or invalid globalId query parameter' });
     }
 
-    const ALLOWED_TIMEFRAMES = new Set(['1m', '5m', '15m', '30m', '1h', '1d']);
-    const timeframe: Timeframe = query.timeframe || '5m';
-    if (!ALLOWED_TIMEFRAMES.has(timeframe)) {
-      return reply.status(400).send({ error: `Unsupported timeframe "${timeframe}". Permitted: 1m, 5m, 15m, 30m, 1h, 1d`, code: 'ERR_INVALID_TIMEFRAME' });
+    const rawTf = String(query.timeframe || '5m').trim();
+    const normalizedTf = (rawTf.toLowerCase() === '1d' ? '1D' : rawTf) as Timeframe;
+    const ALLOWED_TIMEFRAMES = new Set<Timeframe>(['1m', '3m', '5m', '15m', '30m', '1h', '1D']);
+    if (!ALLOWED_TIMEFRAMES.has(normalizedTf)) {
+      return reply.status(400).send({
+        error: `Unsupported timeframe "${rawTf}". Permitted: 1m, 3m, 5m, 15m, 30m, 1h, 1D`,
+        code: 'ERR_INVALID_TIMEFRAME',
+      });
     }
+    const timeframe: Timeframe = normalizedTf;
+
+    const resolvedInst = activeProvider.getInstrumentById
+      ? await activeProvider.getInstrumentById(query.globalId)
+      : (await activeProvider.getInstruments()).find((i) => i.globalId === query.globalId);
+    const canonicalGlobalId = resolvedInst?.globalId || query.globalId;
 
     const access = await resolveAccessFromReq(req);
     if (!access.fullFeatureAccess) {
-      const inst =
-        (activeProvider.getInstrumentById
-          ? await activeProvider.getInstrumentById(query.globalId)
-          : (await activeProvider.getInstruments()).find((i) => i.globalId === query.globalId)) ||
-        parseFallbackInstrument(query.globalId);
+      const inst = resolvedInst || parseFallbackInstrument(query.globalId);
       if (!isFreeTierAllowedInstrument(inst) && !(await canViewExposure(req, inst.globalId))) {
         return reply.status(403).send({
           error: 'UPGRADE_REQUIRED: Historical charts for equities, commodities, and other indices are exclusive to Premium subscribers.',
@@ -1212,6 +1218,34 @@ export async function buildServer(
     const before = query.before ? parseInt(query.before, 10) : undefined;
     const from = query.from ? parseInt(query.from, 10) : undefined;
     const to = query.to ? parseInt(query.to, 10) : undefined;
+    const requestId = (req.headers['x-request-id'] as string) || req.id || randomUUID();
+
+    const mergeFormingBar = (bars: any[]) => {
+      if (before || to) return { candles: bars, formingMerged: false };
+      const formingBar =
+        formingTracker.snapshot(canonicalGlobalId)?.[timeframe] ||
+        formingTracker.snapshot(query.globalId!)?.[timeframe];
+      if (!formingBar || !(formingBar.close > 0) || !(formingBar.time > 0)) {
+        return { candles: bars, formingMerged: false };
+      }
+      const out = bars.map((b) => ({ ...b }));
+      if (out.length === 0) {
+        return { candles: [{ ...formingBar }], formingMerged: true };
+      }
+      const last = out[out.length - 1];
+      if (formingBar.time === last.time) {
+        last.high = Math.max(last.high, formingBar.high);
+        last.low = Math.min(last.low, formingBar.low);
+        last.close = formingBar.close;
+        last.volume = Math.max(Number(last.volume || 0), Number(formingBar.volume || 0));
+        return { candles: out, formingMerged: true };
+      }
+      if (formingBar.time > last.time) {
+        out.push({ ...formingBar });
+        return { candles: out, formingMerged: true };
+      }
+      return { candles: out, formingMerged: false };
+    };
 
     if (activeProvider.getCandlesPaginated) {
       const pageRes = await activeProvider.getCandlesPaginated(query.globalId, timeframe, {
@@ -1222,24 +1256,41 @@ export async function buildServer(
         range: query.range,
       });
       const quote = await activeProvider.getQuote(query.globalId);
+      const merged = mergeFormingBar(pageRes.candles || []);
+      const finalCandles = merged.candles;
+      const effectiveError = finalCandles.length > 0 && !(pageRes as any).staleFallback ? null : pageRes.providerError;
 
       return {
         globalId: query.globalId,
         timeframe,
         range: query.range || null,
-        candles: pageRes.candles,
+        candles: finalCandles,
         hasMore: pageRes.hasMore,
-        earliestTime: pageRes.earliestTime,
-        latestTime: pageRes.latestTime,
+        earliestTime: finalCandles.length > 0 ? finalCandles[0].time : pageRes.earliestTime,
+        latestTime: finalCandles.length > 0 ? finalCandles[finalCandles.length - 1].time : pageRes.latestTime,
         sessionDateIST: pageRes.sessionDateIST,
-        prevSessionClose: pageRes.prevSessionClose,
+        prevSessionClose: pageRes.prevSessionClose || quote?.close || null,
         latestQuote: quote,
-        providerError: pageRes.providerError,
+        providerError: effectiveError,
+        staleFallback: Boolean((pageRes as any).staleFallback),
+        lastCachedAt: (pageRes as any).lastCachedAt || null,
         feedHealth: activeProvider.getFeedHealth(),
+        diagnostics: {
+          requestId,
+          serverTimestamp: Date.now(),
+          providerId: activeProvider.providerId,
+          candleCount: finalCandles.length,
+          formingBarMerged: merged.formingMerged,
+          staleFallback: Boolean((pageRes as any).staleFallback),
+          lastCachedAt: (pageRes as any).lastCachedAt || null,
+          instrumentTelemetry: (activeProvider as any).getInstrumentTelemetry?.(canonicalGlobalId) || null,
+        },
       };
     }
 
-    const candles = await activeProvider.getCandles(query.globalId, timeframe, limit || 500);
+    const rawCandles = await activeProvider.getCandles(query.globalId, timeframe, limit || 500);
+    const merged = mergeFormingBar(rawCandles || []);
+    const candles = merged.candles;
     const quote = await activeProvider.getQuote(query.globalId);
     const providerError =
       activeProvider.providerId === 'SMARTAPI' ? smartApiAdapter.getLastDataError() : null;
@@ -1258,6 +1309,13 @@ export async function buildServer(
       prevSessionClose: quote?.close || (candles.length > 1 ? candles[0].close : null),
       providerError,
       feedHealth: activeProvider.getFeedHealth(),
+      diagnostics: {
+        requestId,
+        serverTimestamp: Date.now(),
+        providerId: activeProvider.providerId,
+        candleCount: candles.length,
+        formingBarMerged: merged.formingMerged,
+      },
     };
   });
 
@@ -1836,6 +1894,8 @@ export async function buildServer(
           instrumentType: inst?.instrumentType || 'EQUITY_STOCK',
           exchange: inst?.exchange || p.globalInstrumentId.split(':')[0] || 'NSE',
           lotSize: inst?.lotSize || 1,
+          tickSize: inst?.tickSize || 0.05,
+          protectionVersion: p.protectionVersion || 1,
           realizedPnlINR: Money.toRupees(p.realizedPnlPaise),
           unrealizedPnlINR: unrealizedINR,
           priceSource: hasLiveQuote ? 'LIVE_PROVIDER' : 'LAST_KNOWN_PERSISTED',
@@ -1856,6 +1916,201 @@ export async function buildServer(
       holdings,
       activePositions,
       closedPositions,
+    };
+  });
+
+  // 11C. Post-Execution Position TP/SL Add, Edit & Explicit Removal (Atomic, Idempotent, Race-Safe)
+  const handleUpdatePositionProtection = async (req: any, reply: any) => {
+    const positionId = String((req.params as any)?.positionId || '').trim();
+    const accountId = req.user.accountId;
+    const body = (req.body as {
+      stopLossPrice?: number | null;
+      targetPrice?: number | null;
+      removeStopLoss?: boolean;
+      removeTarget?: boolean;
+      expectedVersion?: number;
+      idempotencyKey?: string;
+      source?: 'MANUAL_EDIT' | 'CHART_DRAG';
+    }) || {};
+
+    if (!positionId) {
+      return reply.status(400).send({
+        success: false,
+        code: 'ERR_MISSING_POSITION_ID',
+        error: 'Position ID is required to modify TP/SL protection.',
+      });
+    }
+
+    const position = await repo.getPositionById(accountId, positionId);
+    if (!position) {
+      return reply.status(404).send({
+        success: false,
+        code: 'ERR_POSITION_NOT_FOUND',
+        error: 'Position not found or does not belong to your account.',
+      });
+    }
+
+    const resolvedInst = activeProvider.getInstrumentById
+      ? await activeProvider.getInstrumentById(position.globalInstrumentId)
+      : (await activeProvider.getInstruments()).find((i) => i.globalId === position.globalInstrumentId);
+    const fb = parseFallbackInstrument(position.globalInstrumentId);
+    const instrument: InstrumentMetadata = resolvedInst || {
+      globalId: fb.globalId,
+      provider: activeProvider.providerId as any,
+      exchange: fb.exchange as any,
+      token: position.globalInstrumentId.split(':')[2] || '0',
+      symbol: fb.symbol,
+      name: fb.symbol,
+      instrumentType: fb.instrumentType as any,
+      isTradable: true,
+      lotSize: 1,
+      tickSize: 0.05,
+      isSimulatedFixture: false,
+    };
+
+    ensureEngineSubscription(instrument.globalId);
+    const quote = await activeProvider.getQuote(instrument.globalId);
+    if (!quote) {
+      return reply.status(400).send({
+        success: false,
+        code: 'ERR_UNSUITABLE_MARKET_DATA',
+        error: 'Live market quote is currently unavailable for this contract. Cannot verify TP/SL placement.',
+      });
+    }
+
+    try {
+      const result = await simEngine.updatePositionProtection(
+        {
+          accountId,
+          positionId,
+          stopLossPrice: body.stopLossPrice,
+          targetPrice: body.targetPrice,
+          removeStopLoss: body.removeStopLoss,
+          removeTarget: body.removeTarget,
+          expectedVersion: body.expectedVersion,
+          idempotencyKey: body.idempotencyKey || `prot_${Date.now()}_${randomUUID().slice(0, 8)}`,
+          source: body.source || 'MANUAL_EDIT',
+        },
+        instrument,
+        quote
+      );
+
+      const pnlMultiplier =
+        instrument.exchange === 'MCX' && instrument.priceQuoteMultiplier
+          ? Number(instrument.priceQuoteMultiplier) / (Number(instrument.lotSize) || 1)
+          : 1;
+      const diff =
+        result.position.quantity > 0
+          ? quote.ltp - result.position.averageEntryPrice
+          : result.position.averageEntryPrice - quote.ltp;
+      const unrealizedINR =
+        result.position.quantity !== 0
+          ? Number((diff * pnlMultiplier * Math.abs(result.position.quantity)).toFixed(2))
+          : 0;
+
+      const enrichedPosition = {
+        ...result.position,
+        currentPrice: quote.ltp,
+        pnlMultiplier,
+        symbol: instrument.symbol,
+        instrumentName: instrument.name,
+        instrumentType: instrument.instrumentType,
+        exchange: instrument.exchange,
+        lotSize: instrument.lotSize || 1,
+        tickSize: instrument.tickSize || 0.05,
+        protectionVersion: result.position.protectionVersion || 1,
+        realizedPnlINR: Money.toRupees(result.position.realizedPnlPaise),
+        unrealizedPnlINR: unrealizedINR,
+      };
+
+      for (const client of wsClients) {
+        if (client.accountId === accountId && client.ws.readyState === WebSocket.OPEN) {
+          client.ws.send(
+            JSON.stringify({
+              type: 'POSITION_PROTECTION_UPDATED',
+              accountId,
+              positionId: result.position.id,
+              position: enrichedPosition,
+              audit: result.audit,
+              serverTimestamp: Date.now(),
+            })
+          );
+        }
+      }
+
+      return {
+        success: true,
+        position: enrichedPosition,
+        attachedOrders: result.attachedOrders.map((o) => ({
+          ...o,
+          symbol: instrument.symbol,
+          estimatedChargesINR: Money.toRupees(o.estimatedChargesPaise),
+        })),
+        audit: result.audit,
+      };
+    } catch (err: any) {
+      const msg = String(err?.message || 'Failed to update position protection.');
+      const code = msg.includes(':') ? msg.split(':')[0].trim() : 'ERR_PROTECTION_UPDATE_FAILED';
+      const status =
+        code === 'ERR_POSITION_NOT_FOUND'
+          ? 404
+          : code === 'ERR_POSITION_CLOSED' || code === 'ERR_PROTECTION_VERSION_CONFLICT'
+            ? 409
+            : 400;
+      const latestPos = await repo.getPositionById(accountId, positionId);
+      return reply.status(status).send({
+        success: false,
+        code,
+        error: msg,
+        currentPosition: latestPos
+          ? {
+              ...latestPos,
+              protectionVersion: latestPos.protectionVersion || 1,
+              realizedPnlINR: Money.toRupees(latestPos.realizedPnlPaise),
+            }
+          : null,
+      });
+    }
+  };
+
+  app.put('/api/v1/positions/:positionId/protection', { preHandler: [(app as any).authenticate] }, handleUpdatePositionProtection);
+  app.post('/api/v1/positions/:positionId/protection', { preHandler: [(app as any).authenticate] }, handleUpdatePositionProtection);
+
+  // 11D. Idempotency Status Lookup for Timed-Out Protection Modifications
+  app.get('/api/v1/positions/protection-by-idempotency/:key', { preHandler: [(app as any).authenticate] }, async (req: any, reply) => {
+    const key = String((req.params as any)?.key || '').trim();
+    if (!key || key.length > 128) {
+      return reply.status(400).send({ error: 'Valid idempotency key is required.', code: 'ERR_INVALID_IDEMPOTENCY_KEY' });
+    }
+    const record = await repo.getProtectionRequestByIdempotency(req.user.accountId, key);
+    if (!record) {
+      return { found: false, result: null };
+    }
+    const currentPosition = await repo.getPositionById(req.user.accountId, record.positionId);
+    return {
+      found: true,
+      result: record.response,
+      currentPosition: currentPosition
+        ? {
+            ...currentPosition,
+            protectionVersion: currentPosition.protectionVersion || 1,
+            realizedPnlINR: Money.toRupees(currentPosition.realizedPnlPaise),
+          }
+        : null,
+    };
+  });
+
+  // 11E. Position Protection Audit History
+  app.get('/api/v1/positions/:positionId/protection-audit', { preHandler: [(app as any).authenticate] }, async (req: any, reply) => {
+    const positionId = String((req.params as any)?.positionId || '').trim();
+    const pos = await repo.getPositionById(req.user.accountId, positionId);
+    if (!pos) {
+      return reply.status(404).send({ error: 'Position not found.', code: 'ERR_POSITION_NOT_FOUND' });
+    }
+    const audits = await repo.getProtectionAudit(req.user.accountId, positionId, 50);
+    return {
+      positionId,
+      audits,
     };
   });
 

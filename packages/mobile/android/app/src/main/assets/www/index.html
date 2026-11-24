@@ -548,12 +548,14 @@
         </div>
       </div>
 
-      <!-- Main Chart Canvas + Touch-Arbitrated Vector Drawing Layer -->
+      <!-- Main Chart Canvas + Touch-Arbitrated Vector Drawing Layer + Draggable TP/SL Protection Layer -->
       <div class="chart-stage-wrap">
-        <div id="chart-indicator-label" class="chart-indicator-label">Indicators off · dashed line: last price · drawings: user saved</div>
+        <div id="chart-indicator-label" class="chart-indicator-label">Candle time: IST open · dashed line: last price · drawings: user saved</div>
         <div id="chart-ohlc-legend" class="ohlc-floating-legend">O — H — L — C —</div>
         <div id="tv-main-chart"></div>
         <svg id="drawing-svg-layer"></svg>
+        <div id="chart-protection-layer" class="chart-protection-layer" aria-label="Position protection lines"></div>
+        <div id="chart-protection-confirm-bar" class="chart-protection-confirm-bar" style="display:none;" role="region" aria-label="Confirm TP/SL adjustment"></div>
         <button id="btn-go-latest" class="go-latest-fab chart-refresh-fab" type="button" aria-label="Refresh chart" title="Refresh chart" onclick="window.TZApp.refreshActiveChart()">
           <span class="chart-refresh-circle" aria-hidden="true">↻</span>
         </button>
@@ -1137,6 +1139,93 @@
           </button>
           <button id="btn-branded-confirm-ok" class="btn-lime-primary" style="flex:1;" onclick="window.TZApp.closeConfirmSheet(true)">
             Confirm
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================================================================
+         MODAL 13: POST-EXECUTION ADD / EDIT TP & SL PROTECTION SHEET
+         ================================================================== -->
+    <div id="modal-position-protection" class="modal-backdrop" onclick="if(event.target===this) window.TZApp.closeProtectionModal()">
+      <div class="white-bottom-sheet">
+        <div class="sheet-handle"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+          <div>
+            <div id="prot-modal-title" class="auth-card-title" style="font-size:17px;">Add / Edit TP &amp; SL</div>
+            <div id="prot-modal-subtitle" class="auth-card-sub" style="margin-top:2px;">Post-execution position protection</div>
+          </div>
+          <button type="button" class="chart-back-btn" style="width:32px;height:32px;" onclick="window.TZApp.closeProtectionModal()" aria-label="Close TP/SL editor">✕</button>
+        </div>
+
+        <!-- Position Reference Summary: Executed Entry, Current Market Price + Freshness, Saved TP/SL -->
+        <div class="prot-summary-grid" style="margin-top:12px;">
+          <div class="prot-summary-cell">
+            <span class="prot-summary-label">Executed Entry Price</span>
+            <strong id="prot-entry-price" class="tabular-nums">—</strong>
+          </div>
+          <div class="prot-summary-cell">
+            <span class="prot-summary-label">Current Market Price</span>
+            <strong id="prot-current-ltp" class="tabular-nums">—</strong>
+            <span id="prot-ltp-freshness" class="prot-freshness-tag">—</span>
+          </div>
+          <div class="prot-summary-cell">
+            <span class="prot-summary-label">Saved Take Profit (TP)</span>
+            <strong id="prot-saved-tp" class="tabular-nums val-pos">Not set</strong>
+          </div>
+          <div class="prot-summary-cell">
+            <span class="prot-summary-label">Saved Stop Loss (SL)</span>
+            <strong id="prot-saved-sl" class="tabular-nums val-neg">Not set</strong>
+          </div>
+        </div>
+
+        <!-- Take Profit (TP) Section -->
+        <div class="prot-field-card" style="margin-top:12px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+            <label class="form-label" for="prot-input-tp" style="margin:0;font-weight:700;">Proposed Take Profit (TP) Price (₹)</label>
+            <button id="prot-btn-remove-tp" type="button" class="prot-remove-btn" style="display:none;" onclick="window.TZApp.toggleRemoveProtectionField('TP')">Remove Saved TP</button>
+          </div>
+          <input id="prot-input-tp" class="form-input tabular-nums" type="number" step="0.05" placeholder="Leave blank to keep saved TP" oninput="window.TZApp.onProtectionInputChanged('TP')" />
+          <div class="prot-quick-row">
+            <span class="prot-quick-ref">From Executed Entry:</span>
+            <button type="button" class="prot-quick-chip" onclick="window.TZApp.applyProtectionPointsOffset('TP', 20)">+20 pts</button>
+            <button type="button" class="prot-quick-chip" onclick="window.TZApp.applyProtectionPointsOffset('TP', 50)">+50 pts</button>
+            <button type="button" class="prot-quick-chip" onclick="window.TZApp.applyProtectionPointsOffset('TP', 100)">+100 pts</button>
+          </div>
+          <div id="prot-tp-preview" class="prot-preview-line">No TP change proposed</div>
+        </div>
+
+        <!-- Stop Loss (SL) Section -->
+        <div class="prot-field-card" style="margin-top:10px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+            <label class="form-label" for="prot-input-sl" style="margin:0;font-weight:700;">Proposed Stop Loss (SL) Price (₹)</label>
+            <button id="prot-btn-remove-sl" type="button" class="prot-remove-btn" style="display:none;" onclick="window.TZApp.toggleRemoveProtectionField('SL')">Remove Saved SL</button>
+          </div>
+          <input id="prot-input-sl" class="form-input tabular-nums" type="number" step="0.05" placeholder="Leave blank to keep saved SL" oninput="window.TZApp.onProtectionInputChanged('SL')" />
+          <div class="prot-quick-row">
+            <span class="prot-quick-ref">From Executed Entry:</span>
+            <button type="button" class="prot-quick-chip" onclick="window.TZApp.applyProtectionPointsOffset('SL', 20)">-20 pts</button>
+            <button type="button" class="prot-quick-chip" onclick="window.TZApp.applyProtectionPointsOffset('SL', 50)">-50 pts</button>
+            <button type="button" class="prot-quick-chip" onclick="window.TZApp.applyProtectionPointsOffset('SL', 0)">Entry (Breakeven)</button>
+          </div>
+          <div id="prot-sl-preview" class="prot-preview-line">No SL change proposed</div>
+        </div>
+
+        <div id="prot-error-box" class="auth-error-banner" style="display:none;margin-top:10px;" role="alert"></div>
+
+        <!-- Safe Timeout Reconciliation Box -->
+        <div id="prot-timeout-box" class="order-timeout-box" style="display:none;margin-top:10px;" role="status">
+          <strong>Modification outcome unknown (Request timed out)</strong>
+          <div id="prot-timeout-detail" style="margin-bottom:8px;">Verify saved server protection state before retrying.</div>
+          <button id="prot-check-status-btn" type="button" class="ux-state-cta" style="width:100%;margin-top:0;" onclick="window.TZApp.checkTimedOutProtectionStatus()">Check Saved Server State</button>
+        </div>
+
+        <div style="display:flex;gap:10px;margin-top:14px;">
+          <button type="button" class="btn-lime-primary" style="flex:1;background:var(--bg-surface-secondary);color:var(--text-primary);border:1px solid var(--border-strong);" onclick="window.TZApp.closeProtectionModal()">
+            Cancel
+          </button>
+          <button id="prot-submit-btn" type="button" class="btn-lime-primary" style="flex:1.4;" onclick="window.TZApp.submitPositionProtectionModal()">
+            Confirm TP / SL
           </button>
         </div>
       </div>

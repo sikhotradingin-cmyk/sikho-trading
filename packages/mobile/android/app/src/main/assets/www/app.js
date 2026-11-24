@@ -1261,6 +1261,9 @@
     state.accessResolved = false;
     state.quotesMap = new Map();
     state.orderTicket.open=false;clearInterval(ticketQuoteTimer);ticketQuoteTimer=null;
+    state.protectionModal = null;
+    state.protectionDrag = null;
+    if (typeof chartCandleCache !== 'undefined' && chartCandleCache?.clear) chartCandleCache.clear();
     state.lastTickTimestamps={};state.lastTickClientReceiveMs={};state.lastSeenQuoteReceipt={};state.lastRenderByInstrument={};state.providerDiagnostics={};state.wsSubscribed=new Set();
     window.SikhoHistory?.clear();
     document.getElementById('modal-history-csv')?.remove();
@@ -1642,6 +1645,11 @@
       renderExploreStocksList();
       renderExploreFnoLists();
       renderCommoditiesList();
+      reconcileActiveProtectionState();
+      if (state.chartOpen && state.activeInstrument) {
+        renderChartBottomTradeBar(state.activeInstrument);
+        renderChartProtectionOverlay();
+      }
       notifyNativeScreenState();
       notifyNativeUserTier();
     } catch { }
@@ -2997,6 +3005,7 @@
     const navigationSeq=++chartNavigationSeq, sessionToken=state.token;
     const prevGid = state.activeInstrument?.globalId || null;
     if (prevGid && prevGid !== globalId) {
+      if (typeof cancelChartProtectionDrag === 'function') cancelChartProtectionDrag();
       chartRequestController?.abort();
       state.chartLoadSeq = (state.chartLoadSeq || 0) + 1;
       state.chartLoading = true;
@@ -3054,12 +3063,14 @@
     state.activeInstrument = inst;
     state.historicalInspection=false;inspectedCandleTime=null;
     state.isUserScrolledBack=false;
-    state.candles=[];
-    state.chartPendingTicks=[];
-    state.chartBarUpdates={};
-    state.lastChartAppliedPriceMs=0;
-    state.drawings=[];
-    state.activeDraftDrawing=null;
+    if (prevGid !== inst.globalId) {
+      state.candles=[];
+      state.chartPendingTicks=[];
+      state.chartBarUpdates={};
+      state.lastChartAppliedPriceMs=0;
+      state.drawings=[];
+      state.activeDraftDrawing=null;
+    }
     if (typeof chartViewportCache !== 'undefined' && chartViewportCache?.clear) {
       chartViewportCache.clear();
     }
@@ -3095,9 +3106,11 @@
     if(navigationSeq!==chartNavigationSeq||sessionToken!==state.token)return;
     initLightweightChartInstance();
     await Promise.all([loadChartCandlesInitial(), loadUserDrawingsForActiveInstrument()]);
+    if (typeof renderChartProtectionOverlay === 'function') renderChartProtectionOverlay();
   }
 
   function closeChartWorkspace() {
+    if (typeof cancelChartProtectionDrag === 'function') cancelChartProtectionDrag();
     rememberChartViewport();
     chartNavigationSeq++;
     chartRequestController?.abort();
@@ -3131,7 +3144,14 @@
         </button>
       `;
     } else {
+      const openPos = getOpenPositionForInstrument(inst.globalId);
+      const protBtnHtml = openPos
+        ? `<button class="btn-trade-sell" style="background:#0F172A;border:1px solid #334155;color:#C7F542;font-size:12px;font-weight:700;flex:1.15;" onclick="window.TZApp.openProtectionModal('${openPos.id}')">
+            TP / SL
+           </button>`
+        : '';
       bar.innerHTML = `
+        ${protBtnHtml}
         <button class="btn-trade-sell" onclick="window.TZApp.openOrderTicket('SELL')">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M4.5 9c0-1.9 1.6-3.5 3.5-3.5.7 0 1.4.2 2 .6C10.7 5.4 11.3 5 12 5s1.3.4 2 1.1c.6-.4 1.3-.6 2-.6 1.9 0 3.5 1.6 3.5 3.5 0 .8-.3 1.5-.8 2.1.2.6.3 1.3.3 1.9 0 3.3-3.1 6-7 6s-7-2.7-7-6c0-.6.1-1.3.3-1.9-.5-.6-.8-1.3-.8-2.1zm4.5 4c-.8 0-1.5.7-1.5 1.5s.7 1.5 1.5 1.5 1.5-.7 1.5-1.5-.7-1.5-1.5-1.5zm6 0c-.8 0-1.5.7-1.5 1.5s.7 1.5 1.5 1.5 1.5-.7 1.5-1.5-.7-1.5-1.5-1.5z"/></svg>
           <span>Sell</span>
@@ -3215,16 +3235,61 @@
     const epoch=typeof t==='number'?t*1000:Date.parse(typeof t==='string'?t:t.year+'-'+String(t.month).padStart(2,'0')+'-'+String(t.day).padStart(2,'0'));
     return new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',...(full?{day:'2-digit',month:'short',year:'numeric'}:{}),...(state.activeTimeframe==='1D'?{}:{hour:'2-digit',minute:'2-digit',hour12:false})}).format(epoch)+(full?' IST':'');
   }
+  function formatChartAxisTick(t, tickMarkType) {
+    const epochMs = typeof t === 'number'
+      ? t * 1000
+      : Date.parse(typeof t === 'string' ? t : `${t.year}-${String(t.month).padStart(2, '0')}-${String(t.day).padStart(2, '0')}`);
+    if (!Number.isFinite(epochMs)) return '';
+    if (state.activeTimeframe === '1D' || tickMarkType === 0 || tickMarkType === 1 || tickMarkType === 2) {
+      return new Intl.DateTimeFormat('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        day: '2-digit',
+        month: 'short',
+        ...(state.activeTimeframe === '1D' || tickMarkType === 0 ? { year: '2-digit' } : {}),
+      }).format(epochMs);
+    }
+    const istSec = Math.floor(epochMs / 1000) + 19800;
+    const secOfIstDay = ((istSec % 86400) + 86400) % 86400;
+    let isDayBoundary = secOfIstDay === (9 * 3600 + 15 * 60) || secOfIstDay === (9 * 3600);
+    if (!isDayBoundary && Array.isArray(state.candles) && state.candles.length > 1 && typeof t === 'number') {
+      const idx = state.candles.findIndex((c) => c.time === t);
+      if (idx > 0) {
+        const prevDay = Math.floor((state.candles[idx - 1].time + 19800) / 86400);
+        const curDay = Math.floor((t + 19800) / 86400);
+        if (curDay !== prevDay) isDayBoundary = true;
+      } else if (idx === 0) {
+        isDayBoundary = true;
+      }
+    }
+    if (isDayBoundary) {
+      const datePart = new Intl.DateTimeFormat('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        day: '2-digit',
+        month: 'short',
+      }).format(epochMs);
+      const timePart = new Intl.DateTimeFormat('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }).format(epochMs);
+      return `${datePart} ${timePart}`;
+    }
+    return formatChartTime(t, false);
+  }
   function initLightweightChartInstance() {
     const container = document.getElementById('tv-main-chart');
     if (tvChart) {
-      state.candles=[]; candleSeries.setData([]);
-      Object.values(indicatorSeriesMap).forEach((series) => {
-        try { tvChart.removeSeries(series); } catch { try { series.setData([]); } catch {} }
-      });
-      indicatorSeriesMap = {};
-      const svg = document.getElementById('drawing-svg-layer');
-      if (svg) svg.innerHTML='';
+      const targetKey = (state.activeInstrument?.globalId || '') + ':' + (state.activeTimeframe || '5m');
+      if (state.chartDataKey !== targetKey) {
+        state.candles=[]; candleSeries.setData([]);
+        Object.values(indicatorSeriesMap).forEach((series) => {
+          try { tvChart.removeSeries(series); } catch { try { series.setData([]); } catch {} }
+        });
+        indicatorSeriesMap = {};
+        const svg = document.getElementById('drawing-svg-layer');
+        if (svg) svg.innerHTML='';
+      }
       tvChart.applyOptions({width:container.clientWidth||380,height:container.clientHeight||420});
       try {
         tvChart.priceScale('right')?.applyOptions?.({ autoScale: true, mode: 0, scaleMargins: { top: 0.1, bottom: 0.14 } });
@@ -3249,7 +3314,7 @@
         secondsVisible: false,
         rightOffset: 5,
         visible:true, minimumHeight:32, barSpacing:7, minBarSpacing:3,
-        tickMarkFormatter:t=>formatChartTime(t,state.activeTimeframe==='1D'),
+        tickMarkFormatter:(t, tickMarkType)=>formatChartAxisTick(t, tickMarkType),
       },
     });
 
@@ -3259,8 +3324,14 @@
     });
 
     tvChart.subscribeCrosshairMove((param) => {
-      inspectedCandleTime=param?.time || null;
-      if (!param || !param.time || !param.seriesData) return;
+      if (!param || !param.time || !param.seriesData) {
+        // Keep selected candle timestamp while browsing history; only clear when following latest bar
+        if (!state.isUserScrolledBack && !state.historicalInspection) {
+          inspectedCandleTime = null;
+        }
+        return;
+      }
+      inspectedCandleTime = param.time;
       const bar = param.seriesData.get(candleSeries);
       if (bar) {
         document.getElementById('chart-ohlc-legend').textContent =
@@ -3271,6 +3342,7 @@
     // Left-scroll pagination listener + refresh button scroll state indicator
     tvChart.timeScale().subscribeVisibleLogicalRangeChange((logicalRange) => {
       renderDrawingsSvgOverlay();
+      if (typeof renderChartProtectionOverlay === 'function') renderChartProtectionOverlay();
       if (!logicalRange || state.candles.length === 0) return;
 
       const distanceFromRight = state.candles.length - 1 - logicalRange.to;
@@ -3287,11 +3359,12 @@
     });
 
     setupTouchArbitratedDrawingEvents();
-    new ResizeObserver(()=>{if(tvChart&&container.clientWidth>0)tvChart.applyOptions({width:container.clientWidth,height:container.clientHeight});}).observe(container);
+    new ResizeObserver(()=>{if(tvChart&&container.clientWidth>0){tvChart.applyOptions({width:container.clientWidth,height:container.clientHeight});if(typeof renderChartProtectionOverlay==='function')renderChartProtectionOverlay();}}).observe(container);
   }
 
   let chartRequestController=null;
   const chartViewportCache=new Map();
+  const chartCandleCache=new Map();
   let chartNavigationSeq=0;
   function rememberChartViewport(){
     if(!tvChart||!state.activeInstrument||!state.candles.length)return;
@@ -3374,6 +3447,12 @@
     if (statsEl) statsEl.textContent = isRefresh ? 'Reloading latest candles…' : 'Loading current data…';
 
     const rangeParam = state.activeRange ? `&range=${encodeURIComponent(state.activeRange)}` : '';
+    const cacheKey = `${state.user?.userId || state.user?.id || 'anon'}|${gid}|${tf}|${state.activeRange || ''}`;
+    // When switching to a different instrument or timeframe, immediately clear the previous series so old candles never display as the new instrument
+    if (state.chartDataKey && state.chartDataKey !== gid + ':' + tf) {
+      state.candles = [];
+      try { candleSeries?.setData?.([]); } catch {}
+    }
 
     try {
       const data = await apiFetch(
@@ -3388,14 +3467,44 @@
           refreshBtn.classList?.remove?.('is-loading');
           refreshBtn.removeAttribute?.('aria-busy');
         }
-        if(state.chartDataKey!==gid+':'+tf){state.candles=[];candleSeries?.setData([]);}
-        else for(const tick of state.chartPendingTicks||[])if(tick.globalId===gid)reconcileCandleWithTick(tick,false);
+        const cachedEntry = typeof chartCandleCache !== 'undefined' ? chartCandleCache.get(cacheKey) : null;
+        if (state.chartDataKey === gid + ':' + tf && state.candles.length > 0) {
+          for(const tick of state.chartPendingTicks||[])if(tick.globalId===gid)reconcileCandleWithTick(tick,false);
+        } else if (cachedEntry && cachedEntry.candles?.length > 0) {
+          state.candles = cachedEntry.candles.map((c) => ({ ...c }));
+          state.chartDataKey = gid + ':' + tf;
+          candleSeries?.setData?.(state.candles);
+          for(const tick of state.chartPendingTicks||[])if(tick.globalId===gid)reconcileCandleWithTick(tick,false);
+        } else {
+          state.candles=[];
+          candleSeries?.setData?.([]);
+        }
         state.chartPendingTicks=[];
+        const lastUpdateLabel = cachedEntry?.updatedAtMs && typeof fmtIstClock === 'function'
+          ? ` • Last updated ${fmtIstClock(cachedEntry.updatedAtMs)} IST`
+          : '';
         if (legendEl) legendEl.textContent='History unavailable: '+data.providerError;
-        if (statsEl) statsEl.textContent='Tap ↻ or an interval to retry. Last received bars are preserved when available.';
-        updateChartCountdownUI();return;
+        if (statsEl) statsEl.textContent=(state.candles.length > 0 ? `Stale / Reconnecting (${state.candles.length} cached bars${lastUpdateLabel}) • ` : '') + 'Tap ↻ or an interval to retry.';
+        updateChartCountdownUI();
+        if (typeof renderChartProtectionOverlay === 'function') renderChartProtectionOverlay();
+        return;
       }
       state.candles = incomingHistory;state.chartDataKey=gid+':'+tf;
+      state.lastChartDataUpdatedAt = Date.now();
+      if (typeof chartCandleCache !== 'undefined' && incomingHistory.length > 0) {
+        chartCandleCache.delete(cacheKey);
+        chartCandleCache.set(cacheKey, {
+          candles: incomingHistory.map((c) => ({ ...c })),
+          hasMore: Boolean(data.hasMore),
+          earliestTime: data.earliestTime,
+          prevSessionClose: data.prevSessionClose,
+          sessionDateIST: data.sessionDateIST,
+          updatedAtMs: Date.now(),
+        });
+        if (chartCandleCache.size > 24) {
+          chartCandleCache.delete(chartCandleCache.keys().next().value);
+        }
+      }
       state.chartLoading=false;
       if (refreshBtn) {
         refreshBtn.classList?.remove?.('is-loading');
@@ -3448,13 +3557,18 @@
         } catch {}
         const last = state.candles[state.candles.length - 1];
         if (legendEl) {
+          const timePrefix = typeof formatChartTime === 'function' ? `${formatChartTime(last.time, true)} · ` : '';
           legendEl.textContent =
-            `O ${fmtNum(last.open)}  H ${fmtNum(last.high)}  L ${fmtNum(last.low)}  C ${fmtNum(last.close)}`;
+            `${timePrefix}O ${fmtNum(last.open)}  H ${fmtNum(last.high)}  L ${fmtNum(last.low)}  C ${fmtNum(last.close)}`;
         }
         if (statsEl) {
           const mktClosed = state.feedHealth && state.feedHealth.marketSession && state.feedHealth.marketSession.isMarketOpen === false;
           const sessionSuffix = data.sessionDateIST ? ` • ${data.sessionDateIST}` : '';
-          const statusSuffix = mktClosed ? ' • Market Closed' : '';
+          const statusSuffix = data.staleFallback
+            ? ` • Cached (${data.lastCachedAt && typeof fmtIstClock === 'function' ? fmtIstClock(data.lastCachedAt) + ' IST' : 'stale'})`
+            : mktClosed
+              ? ' • Market Closed'
+              : '';
           statsEl.textContent = `${state.candles.length} bars${sessionSuffix}${statusSuffix}`;
         }
       }
@@ -3473,6 +3587,7 @@
       updateChartCountdownUI();
       recalculateAndRenderIndicators();
       renderDrawingsSvgOverlay();
+      if (typeof renderChartProtectionOverlay === 'function') renderChartProtectionOverlay();
       if (!isRefresh || !state.wsSubscribed?.has?.(gid)) {
         if (typeof sendWsSubscribe === 'function') sendWsSubscribe([gid]);
       }
@@ -3483,8 +3598,30 @@
           refreshBtn.classList?.remove?.('is-loading');
           refreshBtn.removeAttribute?.('aria-busy');
         }
-        if (legendEl) legendEl.textContent='Chart refresh failed. Tap ↻ to retry.';
-        if (statsEl) statsEl.textContent='Tap ↻ to retry';
+        const cachedEntry = typeof chartCandleCache !== 'undefined' ? chartCandleCache.get(cacheKey) : null;
+        if (state.chartDataKey === gid + ':' + tf && state.candles.length > 0) {
+          // Keep already-rendered valid candles for the same instrument visible
+        } else if (cachedEntry && cachedEntry.candles?.length > 0) {
+          state.candles = cachedEntry.candles.map((c) => ({ ...c }));
+          state.chartDataKey = gid + ':' + tf;
+          try { candleSeries?.setData?.(state.candles); } catch {}
+        } else {
+          state.candles = [];
+          try { candleSeries?.setData?.([]); } catch {}
+        }
+        const lastTs = cachedEntry?.updatedAtMs || state.lastChartDataUpdatedAt;
+        const lastUpdateText = lastTs && typeof fmtIstClock === 'function' ? ` (Last updated ${fmtIstClock(lastTs)} IST)` : '';
+        if (legendEl) {
+          legendEl.textContent = state.candles.length > 0
+            ? `Chart refresh failed • Showing last verified candles${lastUpdateText}. Tap ↻ to retry.`
+            : 'Chart refresh failed. Tap ↻ to retry.';
+        }
+        if (statsEl) {
+          statsEl.textContent = state.candles.length > 0
+            ? `Stale / Reconnecting${lastUpdateText} • Tap ↻ to retry`
+            : 'Tap ↻ to retry';
+        }
+        if (typeof renderChartProtectionOverlay === 'function') renderChartProtectionOverlay();
       }
     }
   }
@@ -4324,6 +4461,12 @@
         const avatarHtml = window.InstrumentIdentity
           ? window.InstrumentIdentity.renderInstrumentAvatar(p, 38)
           : `<div class="inst-badge-icon">${p.productType === 'DELIVERY' ? 'CNC' : 'POS'}</div>`;
+        const sideLabel = p.quantity > 0 ? 'LONG' : p.quantity < 0 ? 'SHORT' : 'CLOSED';
+        const tpText = Number(p.targetPrice) > 0 ? `TP: ${fmtINR(p.targetPrice)}` : 'TP: None';
+        const slText = Number(p.stopLossPrice) > 0 ? `SL: ${fmtINR(p.stopLossPrice)}` : 'SL: None';
+        const protLine = isOpen
+          ? `<div class="inst-name-sub" style="margin-top:2px;font-weight:600;">${tpText} • ${slText}</div>`
+          : '';
 
         return `
           <div class="instrument-row-white" onclick="window.TZApp.openChartByGlobalId('${p.globalInstrumentId}')">
@@ -4333,21 +4476,28 @@
                 <div class="inst-symbol-row">
                   <span class="inst-symbol">${p.symbol}</span>
                   <span class="tag-exch">${p.productType || 'INTRADAY'}</span>
-                  <span class="tag-exch">Qty: ${p.quantity}</span>
+                  <span class="tag-exch">${sideLabel} ${Math.abs(p.quantity)}</span>
                 </div>
                 <div class="inst-name-sub">Avg: ${fmtINR(p.averageEntryPrice)} • LTP: ${fmtINR(p.currentPrice)}</div>
+                ${protLine}
               </div>
             </div>
-            <div class="inst-right">
+            <div class="inst-right" style="gap:6px;flex-wrap:wrap;justify-content:flex-end;">
               <div class="inst-price-col">
                 <span class="inst-ltp-val ${cls}">${pnl >= 0 ? '+' : ''}${fmtINR(pnl)}</span>
                 <span class="inst-chg-val" style="color:var(--text-on-white-secondary);">${isOpen ? 'Unrealized MTM' : 'Realized P&L'}</span>
               </div>
               ${isOpen
-            ? `<button class="btn-lime-primary" style="width:auto;min-height:34px;padding:0 10px;font-size:11.5px;background:var(--negative-red);color:#fff;"
-                             onclick="event.stopPropagation(); window.TZApp.squareOffPosition('${p.globalInstrumentId}')">
-                      Exit
-                    </button>`
+            ? `<div style="display:flex;gap:6px;align-items:center;">
+                <button class="row-action" style="min-height:34px;padding:0 9px;font-size:11px;font-weight:700;"
+                        onclick="event.stopPropagation(); window.TZApp.openProtectionModal('${p.id}')">
+                  Add / Edit TP &amp; SL
+                </button>
+                <button class="btn-lime-primary" style="width:auto;min-height:34px;padding:0 10px;font-size:11.5px;background:var(--negative-red);color:#fff;"
+                        onclick="event.stopPropagation(); window.TZApp.squareOffPosition('${p.globalInstrumentId}')">
+                  Exit
+                </button>
+               </div>`
             : ''
           }
             </div>
@@ -5105,6 +5255,11 @@
             return;
           }
           if(msg.type==='TRADING_CHANGED'){scheduleTradingReconcile();return;}
+          if (msg.type === 'POSITION_PROTECTION_UPDATED' && msg.position) {
+            applyRemotePositionProtectionUpdate(msg.position);
+            scheduleTradingReconcile();
+            return;
+          }
           if (msg.type === 'AUTH_SUCCESS') {
             state.wsSubscribed=new Set();
             applyAccessPolicy(msg.access);
@@ -5232,9 +5387,11 @@
       updateIndicatorsForLastBar();
       const legendEl = document.getElementById('chart-ohlc-legend');
       if (legendEl && (!inspectedCandleTime || inspectedCandleTime===bucketSec)) {
+        const timePrefix = typeof formatChartTime === 'function' ? `${formatChartTime(updatedBar.time, true)} · ` : '';
         legendEl.textContent =
-          `O ${fmtNum(updatedBar.open)}  H ${fmtNum(updatedBar.high)}  L ${fmtNum(updatedBar.low)}  C ${fmtNum(updatedBar.close)}`;
+          `${timePrefix}O ${fmtNum(updatedBar.open)}  H ${fmtNum(updatedBar.high)}  L ${fmtNum(updatedBar.low)}  C ${fmtNum(updatedBar.close)}`;
       }
+      if (typeof renderChartProtectionOverlay === 'function') renderChartProtectionOverlay();
     } else if (bucketSec > lastBar.time) {
       if(isInitialSnapshot)return; // A cached snapshot does not prove a new interval traded.
       // Genuine tick in a new timeframe interval -> start a new candle at the exact boundary.
@@ -5253,14 +5410,16 @@
       recalculateAndRenderIndicators();
       const legendEl = document.getElementById('chart-ohlc-legend');
       if (legendEl && (!inspectedCandleTime || inspectedCandleTime===bucketSec)) {
+        const timePrefix = typeof formatChartTime === 'function' ? `${formatChartTime(newBar.time, true)} · ` : '';
         legendEl.textContent =
-          `O ${fmtNum(newBar.open)}  H ${fmtNum(newBar.high)}  L ${fmtNum(newBar.low)}  C ${fmtNum(newBar.close)}`;
+          `${timePrefix}O ${fmtNum(newBar.open)}  H ${fmtNum(newBar.high)}  L ${fmtNum(newBar.low)}  C ${fmtNum(newBar.close)}`;
       }
       const statsEl = document.getElementById('chart-candle-stats');
       if (statsEl) {
         statsEl.textContent = `${state.candles.length} bars`;
       }
       renderDrawingsSvgOverlay();
+      if (typeof renderChartProtectionOverlay === 'function') renderChartProtectionOverlay();
     }
     state.lastChartAppliedPriceMs=Math.max(state.lastChartAppliedPriceMs||0,tickTimeMs);
   }
@@ -5385,6 +5544,9 @@
     // Update visible CE/PE cells from genuine ticks without re-rendering or jumping scroll.
     updateOptionChainQuote(quote);
     if(state.orderTicket?.open&&state.orderTicket.instrument?.globalId===quote.globalId){recalcOrderMarginPreview();state.lastRenderByInstrument=state.lastRenderByInstrument||{};state.lastRenderByInstrument[quote.globalId]=Date.now();}
+    if (state.protectionModal?.open && state.protectionModal.globalInstrumentId === quote.globalId) {
+      renderProtectionModalLiveQuote();
+    }
   }
 
   // =========================================================================
@@ -5682,6 +5844,844 @@
   }
 
   // =========================================================================
+  // 10. POST-EXECUTION TP/SL PROTECTION EDITOR & DRAGGABLE CHART LINES
+  // =========================================================================
+  function alignPriceToTick(price, tickSize = 0.05) {
+    const tick = Number(tickSize) > 0 ? Number(tickSize) : 0.05;
+    const num = Number(price);
+    if (!Number.isFinite(num) || num <= 0) return 0;
+    const steps = Math.round(num / tick);
+    return Number((steps * tick).toFixed(2));
+  }
+
+  function getPositionById(positionId) {
+    if (!positionId) return null;
+    const all = state.positionsData?.positions || [];
+    return all.find((p) => p.id === positionId) || null;
+  }
+
+  function getOpenPositionForInstrument(globalId, preferredPositionId = null) {
+    if (!globalId) return null;
+    const all = (state.positionsData?.positions || []).filter(
+      (p) => p.globalInstrumentId === globalId && Number(p.quantity) !== 0
+    );
+    if (all.length === 0) return null;
+    if (preferredPositionId) {
+      const exact = all.find((p) => p.id === preferredPositionId);
+      if (exact) return exact;
+    }
+    return all[0];
+  }
+
+  function applyRemotePositionProtectionUpdate(updatedPos) {
+    if (!updatedPos || !updatedPos.id || !state.positionsData) return;
+    const updateList = (arr) => {
+      if (!Array.isArray(arr)) return;
+      const idx = arr.findIndex((p) => p.id === updatedPos.id);
+      if (idx !== -1) {
+        arr[idx] = { ...arr[idx], ...updatedPos };
+      }
+    };
+    updateList(state.positionsData.positions);
+    updateList(state.positionsData.activePositions);
+    updateList(state.positionsData.holdings);
+    reconcileActiveProtectionState();
+    renderPortfolioTab();
+    if (state.chartOpen && state.activeInstrument) {
+      renderChartBottomTradeBar(state.activeInstrument);
+      renderChartProtectionOverlay();
+    }
+  }
+
+  function reconcileActiveProtectionState() {
+    // 1. If a chart drag confirmation or active drag is open and the target position closed, cancel & notify
+    if (state.protectionDrag) {
+      const pos = getPositionById(state.protectionDrag.positionId);
+      if (!pos || Number(pos.quantity) === 0 || (state.chartOpen && state.activeInstrument?.globalId !== pos.globalInstrumentId)) {
+        const closedWhileEditing = Boolean(!pos || Number(pos.quantity) === 0);
+        cancelChartProtectionDrag();
+        if (closedWhileEditing) {
+          window.SikhoUX?.notify?.('Position closed while editing protection — reconciled with server.');
+        }
+      }
+    }
+    // 2. If the numeric TP/SL modal is open and the target position closed, disable confirmation and explain
+    if (state.protectionModal?.open) {
+      const pos = getPositionById(state.protectionModal.positionId);
+      if (!pos || Number(pos.quantity) === 0) {
+        const errBox = document.getElementById('prot-error-box');
+        const submitBtn = document.getElementById('prot-submit-btn');
+        if (errBox) {
+          errBox.textContent = 'This position has already closed. TP/SL confirmation is disabled.';
+          errBox.style.display = 'block';
+        }
+        if (submitBtn) submitBtn.disabled = true;
+      } else {
+        state.protectionModal.position = pos;
+        renderProtectionModalLiveQuote();
+      }
+    }
+  }
+
+  function openProtectionModal(positionId, prefill = {}) {
+    const pos = getPositionById(positionId) || (state.activeInstrument ? getOpenPositionForInstrument(state.activeInstrument.globalId, positionId) : null);
+    if (!pos || Number(pos.quantity) === 0) {
+      showBrandedAlert('Position Closed', 'Cannot edit TP/SL because this position is already closed.');
+      return;
+    }
+    const tickSize = Number(pos.tickSize || state.activeInstrument?.tickSize || 0.05) || 0.05;
+    state.protectionModal = {
+      open: true,
+      positionId: pos.id,
+      globalInstrumentId: pos.globalInstrumentId,
+      position: pos,
+      tickSize,
+      removeTp: false,
+      removeSl: false,
+      submitting: false,
+      pendingIdempotencyKey: null,
+      timedOutKey: null,
+    };
+
+    const tpIn = document.getElementById('prot-input-tp');
+    const slIn = document.getElementById('prot-input-sl');
+    if (tpIn) {
+      tpIn.step = String(tickSize);
+      tpIn.disabled = false;
+      tpIn.value = prefill.targetPrice !== undefined
+        ? String(prefill.targetPrice)
+        : Number(pos.targetPrice) > 0
+          ? String(pos.targetPrice)
+          : '';
+    }
+    if (slIn) {
+      slIn.step = String(tickSize);
+      slIn.disabled = false;
+      slIn.value = prefill.stopLossPrice !== undefined
+        ? String(prefill.stopLossPrice)
+        : Number(pos.stopLossPrice) > 0
+          ? String(pos.stopLossPrice)
+          : '';
+    }
+
+    const errBox = document.getElementById('prot-error-box');
+    if (errBox) { errBox.style.display = 'none'; errBox.textContent = ''; }
+    const timeoutBox = document.getElementById('prot-timeout-box');
+    if (timeoutBox) timeoutBox.style.display = 'none';
+    const submitBtn = document.getElementById('prot-submit-btn');
+    if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Confirm TP / SL'; }
+
+    renderProtectionModalState();
+    const modal = document.getElementById('modal-position-protection');
+    if (modal) modal.classList.add('active');
+    notifyNativeScreenState();
+
+    // Fetch a fresh quote for this position's exact contract so freshness is verified
+    sendWsSubscribe([pos.globalInstrumentId]);
+    apiFetch(`/api/v1/market-data/quote?globalId=${encodeURIComponent(pos.globalInstrumentId)}`)
+      .then((data) => {
+        if (data?.serverTimestamp) noteServerClock(data.serverTimestamp);
+        if (data?.quote) handleIncomingQuoteTick(data.quote, true);
+        if (state.protectionModal?.open && state.protectionModal.positionId === pos.id) {
+          renderProtectionModalLiveQuote();
+        }
+      })
+      .catch(() => {});
+  }
+
+  function closeProtectionModal() {
+    if (state.protectionModal) state.protectionModal.open = false;
+    const modal = document.getElementById('modal-position-protection');
+    if (modal) modal.classList.remove('active');
+    notifyNativeScreenState();
+  }
+
+  function renderProtectionModalLiveQuote() {
+    const pm = state.protectionModal;
+    if (!pm || !pm.open) return;
+    const pos = getPositionById(pm.positionId) || pm.position;
+    if (!pos) return;
+    const quote = state.quotesMap?.get(pos.globalInstrumentId);
+    const ltp = Number(quote?.ltp || pos.currentPrice || pos.averageEntryPrice);
+    const ageMs = quote ? quoteFreshnessMs(quote) : Infinity;
+    const isFresh = ageMs <= 5000;
+
+    const ltpEl = document.getElementById('prot-current-ltp');
+    const freshEl = document.getElementById('prot-ltp-freshness');
+    if (ltpEl) ltpEl.textContent = ltp > 0 ? fmtINR(ltp) : '—';
+    if (freshEl) {
+      freshEl.textContent = isFresh
+        ? `Live (${Math.round(ageMs)}ms)`
+        : Number.isFinite(ageMs)
+          ? `Stale (${Math.round(ageMs / 1000)}s old)`
+          : 'Awaiting live tick';
+      freshEl.style.color = isFresh ? 'var(--positive-text)' : 'var(--warning-amber)';
+    }
+  }
+
+  function renderProtectionModalState() {
+    const pm = state.protectionModal;
+    if (!pm) return;
+    const pos = getPositionById(pm.positionId) || pm.position;
+    if (!pos) return;
+    const isLong = Number(pos.quantity) > 0;
+    const sideLabel = isLong ? 'LONG' : 'SHORT';
+    const absQty = Math.abs(Number(pos.quantity));
+    const tick = pm.tickSize || 0.05;
+    const mult = Number(pos.pnlMultiplier) > 0 ? Number(pos.pnlMultiplier) : 1;
+
+    const titleEl = document.getElementById('prot-modal-title');
+    const subEl = document.getElementById('prot-modal-subtitle');
+    if (titleEl) titleEl.textContent = `Add / Edit TP & SL — ${pos.symbol || pos.globalInstrumentId}`;
+    if (subEl) subEl.textContent = `${sideLabel} ${absQty} • ${pos.exchange || 'NSE'} • Tick ₹${tick} • Contract price`;
+
+    const entryEl = document.getElementById('prot-entry-price');
+    if (entryEl) entryEl.textContent = fmtINR(pos.averageEntryPrice);
+    renderProtectionModalLiveQuote();
+
+    const savedTpEl = document.getElementById('prot-saved-tp');
+    const savedSlEl = document.getElementById('prot-saved-sl');
+    const hasSavedTp = Number(pos.targetPrice) > 0;
+    const hasSavedSl = Number(pos.stopLossPrice) > 0;
+    if (savedTpEl) savedTpEl.textContent = hasSavedTp ? fmtINR(pos.targetPrice) : 'Not set';
+    if (savedSlEl) savedSlEl.textContent = hasSavedSl ? fmtINR(pos.stopLossPrice) : 'Not set';
+
+    const rmTpBtn = document.getElementById('prot-btn-remove-tp');
+    if (rmTpBtn) {
+      rmTpBtn.style.display = hasSavedTp ? 'inline-flex' : 'none';
+      rmTpBtn.classList.toggle('is-active', Boolean(pm.removeTp));
+      rmTpBtn.textContent = pm.removeTp ? '✓ Removing Saved TP (Tap to Keep)' : 'Remove Saved TP';
+    }
+    const rmSlBtn = document.getElementById('prot-btn-remove-sl');
+    if (rmSlBtn) {
+      rmSlBtn.style.display = hasSavedSl ? 'inline-flex' : 'none';
+      rmSlBtn.classList.toggle('is-active', Boolean(pm.removeSl));
+      rmSlBtn.textContent = pm.removeSl ? '✓ Removing Saved SL (Tap to Keep)' : 'Remove Saved SL';
+    }
+
+    const tpIn = document.getElementById('prot-input-tp');
+    const slIn = document.getElementById('prot-input-sl');
+    const tpPrev = document.getElementById('prot-tp-preview');
+    const slPrev = document.getElementById('prot-sl-preview');
+
+    if (tpPrev) {
+      if (pm.removeTp) {
+        tpPrev.textContent = `Explicit removal: Saved TP (${fmtINR(pos.targetPrice)}) will be removed on confirmation.`;
+        tpPrev.style.color = 'var(--negative-text)';
+      } else {
+        const rawTp = (tpIn?.value || '').trim();
+        if (!rawTp) {
+          tpPrev.textContent = hasSavedTp
+            ? `Unchanged: Keeping saved TP at ${fmtINR(pos.targetPrice)}`
+            : 'No Take Profit configured';
+          tpPrev.style.color = 'var(--text-secondary)';
+        } else {
+          const val = Number(rawTp);
+          if (!Number.isFinite(val) || val <= 0) {
+            tpPrev.textContent = 'Enter a valid Take Profit price greater than 0.';
+            tpPrev.style.color = 'var(--negative-text)';
+          } else {
+            const diff = isLong ? val - pos.averageEntryPrice : pos.averageEntryPrice - val;
+            const estPnl = diff * mult * absQty;
+            const prevStr = hasSavedTp ? fmtINR(pos.targetPrice) : 'None';
+            tpPrev.textContent = `Proposed TP: ${prevStr} → ${fmtINR(val)} (Est. P&L vs Entry: ${estPnl >= 0 ? '+' : ''}${fmtINR(estPnl)})`;
+            tpPrev.style.color = 'var(--positive-text)';
+          }
+        }
+      }
+    }
+
+    if (slPrev) {
+      if (pm.removeSl) {
+        slPrev.textContent = `Explicit removal: Saved SL (${fmtINR(pos.stopLossPrice)}) will be removed on confirmation.`;
+        slPrev.style.color = 'var(--negative-text)';
+      } else {
+        const rawSl = (slIn?.value || '').trim();
+        if (!rawSl) {
+          slPrev.textContent = hasSavedSl
+            ? `Unchanged: Keeping saved SL at ${fmtINR(pos.stopLossPrice)}`
+            : 'No Stop Loss configured';
+          slPrev.style.color = 'var(--text-secondary)';
+        } else {
+          const val = Number(rawSl);
+          if (!Number.isFinite(val) || val <= 0) {
+            slPrev.textContent = 'Enter a valid Stop Loss price greater than 0.';
+            slPrev.style.color = 'var(--negative-text)';
+          } else {
+            const diff = isLong ? val - pos.averageEntryPrice : pos.averageEntryPrice - val;
+            const estPnl = diff * mult * absQty;
+            const prevStr = hasSavedSl ? fmtINR(pos.stopLossPrice) : 'None';
+            slPrev.textContent = `Proposed SL: ${prevStr} → ${fmtINR(val)} (Est. P&L vs Entry: ${estPnl >= 0 ? '+' : ''}${fmtINR(estPnl)})`;
+            slPrev.style.color = estPnl >= 0 ? 'var(--positive-text)' : 'var(--negative-text)';
+          }
+        }
+      }
+    }
+  }
+
+  function toggleRemoveProtectionField(field) {
+    const pm = state.protectionModal;
+    if (!pm) return;
+    if (field === 'TP') {
+      pm.removeTp = !pm.removeTp;
+      const tpIn = document.getElementById('prot-input-tp');
+      if (tpIn) tpIn.disabled = pm.removeTp;
+    } else if (field === 'SL') {
+      pm.removeSl = !pm.removeSl;
+      const slIn = document.getElementById('prot-input-sl');
+      if (slIn) slIn.disabled = pm.removeSl;
+    }
+    renderProtectionModalState();
+  }
+
+  function applyProtectionPointsOffset(field, pts) {
+    const pm = state.protectionModal;
+    if (!pm) return;
+    const pos = getPositionById(pm.positionId) || pm.position;
+    if (!pos) return;
+    const isLong = Number(pos.quantity) > 0;
+    const entry = Number(pos.averageEntryPrice);
+    const tick = pm.tickSize || 0.05;
+    let targetPrice = entry;
+
+    if (field === 'TP') {
+      pm.removeTp = false;
+      targetPrice = isLong ? entry + pts : Math.max(tick, entry - pts);
+      const aligned = alignPriceToTick(targetPrice, tick);
+      const tpIn = document.getElementById('prot-input-tp');
+      if (tpIn) {
+        tpIn.disabled = false;
+        tpIn.value = String(aligned);
+      }
+    } else if (field === 'SL') {
+      pm.removeSl = false;
+      targetPrice = pts === 0 ? entry : isLong ? Math.max(tick, entry - pts) : entry + pts;
+      const aligned = alignPriceToTick(targetPrice, tick);
+      const slIn = document.getElementById('prot-input-sl');
+      if (slIn) {
+        slIn.disabled = false;
+        slIn.value = String(aligned);
+      }
+    }
+    renderProtectionModalState();
+  }
+
+  function onProtectionInputChanged(field) {
+    const pm = state.protectionModal;
+    if (!pm) return;
+    if (field === 'TP') pm.removeTp = false;
+    if (field === 'SL') pm.removeSl = false;
+    pm.pendingIdempotencyKey = null;
+    renderProtectionModalState();
+  }
+
+  async function submitPositionProtectionModal() {
+    const pm = state.protectionModal;
+    if (!pm || pm.submitting) return;
+    const pos = getPositionById(pm.positionId) || pm.position;
+    const errBox = document.getElementById('prot-error-box');
+    if (errBox) { errBox.style.display = 'none'; errBox.textContent = ''; }
+
+    if (!pos || Number(pos.quantity) === 0) {
+      if (errBox) {
+        errBox.textContent = 'This position has already closed. Reconciling portfolio state.';
+        errBox.style.display = 'block';
+      }
+      await refreshAccountAndPortfolio();
+      return;
+    }
+
+    const tpIn = document.getElementById('prot-input-tp');
+    const slIn = document.getElementById('prot-input-sl');
+    const rawTpStr = (tpIn?.value || '').trim();
+    const rawSlStr = (slIn?.value || '').trim();
+
+    const payload = {
+      expectedVersion: pos.protectionVersion || 1,
+      idempotencyKey: pm.pendingIdempotencyKey || `prot_${pos.id}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      source: 'MANUAL_EDIT',
+    };
+    pm.pendingIdempotencyKey = payload.idempotencyKey;
+
+    if (pm.removeTp) {
+      payload.removeTarget = true;
+      payload.targetPrice = null;
+    } else if (rawTpStr.length > 0) {
+      const parsedTp = Number(rawTpStr);
+      if (!Number.isFinite(parsedTp) || parsedTp <= 0) {
+        if (errBox) {
+          errBox.textContent = 'Enter a valid Take Profit price greater than zero (or use "Remove Saved TP").';
+          errBox.style.display = 'block';
+        }
+        return;
+      }
+      payload.targetPrice = parsedTp;
+    }
+
+    if (pm.removeSl) {
+      payload.removeStopLoss = true;
+      payload.stopLossPrice = null;
+    } else if (rawSlStr.length > 0) {
+      const parsedSl = Number(rawSlStr);
+      if (!Number.isFinite(parsedSl) || parsedSl <= 0) {
+        if (errBox) {
+          errBox.textContent = 'Enter a valid Stop Loss price greater than zero (or use "Remove Saved SL").';
+          errBox.style.display = 'block';
+        }
+        return;
+      }
+      payload.stopLossPrice = parsedSl;
+    }
+
+    if (
+      payload.targetPrice === undefined &&
+      payload.stopLossPrice === undefined &&
+      !payload.removeTarget &&
+      !payload.removeStopLoss
+    ) {
+      if (errBox) {
+        errBox.textContent = 'Enter a Take Profit or Stop Loss level to save, or choose an explicit remove button.';
+        errBox.style.display = 'block';
+      }
+      return;
+    }
+
+    const submitBtn = document.getElementById('prot-submit-btn');
+    const timeoutBox = document.getElementById('prot-timeout-box');
+    if (timeoutBox) timeoutBox.style.display = 'none';
+    pm.submitting = true;
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.setAttribute('aria-busy', 'true');
+      submitBtn.textContent = 'Saving protection…';
+    }
+
+    try {
+      const res = await apiFetch(`/api/v1/positions/${encodeURIComponent(pos.id)}/protection`, {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      });
+      pm.pendingIdempotencyKey = null;
+      pm.timedOutKey = null;
+      if (res && res.position) {
+        applyRemotePositionProtectionUpdate(res.position);
+      }
+      closeProtectionModal();
+      await refreshAccountAndPortfolio();
+      window.SikhoUX?.notify?.(`Saved TP/SL protection for ${pos.symbol || pos.globalInstrumentId}`);
+    } catch (err) {
+      if (err && (err.code === 'ERR_SERVER_TIMEOUT' || err.code === 'ERR_SERVER_UNREACHABLE')) {
+        pm.timedOutKey = payload.idempotencyKey;
+        if (timeoutBox) {
+          const detail = document.getElementById('prot-timeout-detail');
+          if (detail) {
+            detail.textContent = `Request timed out for ref ${payload.idempotencyKey.slice(-8)}. Check saved server state before retrying.`;
+          }
+          timeoutBox.style.display = 'block';
+        }
+      } else {
+        pm.pendingIdempotencyKey = null;
+        if (errBox) {
+          errBox.textContent = err?.message || 'Could not update TP/SL protection.';
+          errBox.style.display = 'block';
+        }
+        await refreshAccountAndPortfolio();
+      }
+    } finally {
+      pm.submitting = false;
+      if (submitBtn) {
+        submitBtn.removeAttribute('aria-busy');
+        submitBtn.disabled = Boolean(pm.timedOutKey);
+        submitBtn.textContent = 'Confirm TP / SL';
+      }
+    }
+  }
+
+  async function checkTimedOutProtectionStatus() {
+    const pm = state.protectionModal;
+    const key = pm?.timedOutKey;
+    if (!key) return;
+    const btn = document.getElementById('prot-check-status-btn');
+    const detail = document.getElementById('prot-timeout-detail');
+    if (btn) { btn.disabled = true; btn.textContent = 'Checking server state…'; }
+    try {
+      const res = await apiFetch(`/api/v1/positions/protection-by-idempotency/${encodeURIComponent(key)}`);
+      await refreshAccountAndPortfolio();
+      const timeoutBox = document.getElementById('prot-timeout-box');
+      if (res && res.found) {
+        pm.timedOutKey = null;
+        pm.pendingIdempotencyKey = null;
+        if (timeoutBox) timeoutBox.style.display = 'none';
+        closeProtectionModal();
+        window.SikhoUX?.notify?.('Confirmed from server: TP/SL update was saved.');
+      } else {
+        pm.timedOutKey = null;
+        if (timeoutBox) timeoutBox.style.display = 'none';
+        const submitBtn = document.getElementById('prot-submit-btn');
+        if (submitBtn) submitBtn.disabled = false;
+        window.SikhoUX?.notify?.('Server did not record the timed-out edit. Reconciled current saved levels — you may safely retry.');
+        renderProtectionModalState();
+      }
+    } catch (err) {
+      if (detail) {
+        detail.textContent = `Still unable to reach server (${err.message}). Do not retry until server state is verified.`;
+      }
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Check Saved Server State'; }
+    }
+  }
+
+  // =========================================================================
+  // DRAGGABLE CHART TP/SL LINES & CONFIRMATION BAR
+  // =========================================================================
+  function renderChartProtectionOverlay() {
+    const layer = document.getElementById('chart-protection-layer');
+    const confirmBar = document.getElementById('chart-protection-confirm-bar');
+    if (!layer) return;
+
+    if (!state.chartOpen || !state.activeInstrument || !tvChart || !candleSeries || !state.candles.length) {
+      layer.innerHTML = '';
+      if (confirmBar) confirmBar.style.display = 'none';
+      return;
+    }
+
+    const gid = state.activeInstrument.globalId;
+    const drag = state.protectionDrag;
+    const pos = getOpenPositionForInstrument(gid, drag?.positionId || null);
+    if (!pos || Number(pos.quantity) === 0) {
+      layer.innerHTML = '';
+      if (confirmBar) confirmBar.style.display = 'none';
+      state.protectionDrag = null;
+      return;
+    }
+
+    const chartEl = document.getElementById('tv-main-chart');
+    const totalHeight = chartEl?.clientHeight || 420;
+    const plotMaxY = Math.max(80, totalHeight - 36); // stay above 32px bottom time axis
+    const clampY = (y) => Math.max(12, Math.min(plotMaxY - 12, Math.round(y)));
+    const priceToY = (price) => {
+      if (!(Number(price) > 0)) return null;
+      const coord = candleSeries.priceToCoordinate(Number(price));
+      if (coord === null || coord === undefined || !Number.isFinite(coord)) return null;
+      return clampY(coord);
+    };
+
+    const isLong = Number(pos.quantity) > 0;
+    const sideLabel = isLong ? 'LONG' : 'SHORT';
+    const absQty = Math.abs(Number(pos.quantity));
+    const mult = Number(pos.pnlMultiplier) > 0 ? Number(pos.pnlMultiplier) : 1;
+    const esc = window.SikhoUX?.escape || ((s) => String(s ?? ''));
+
+    const linesHtml = [];
+
+    // 1. Executed Entry Line + Quick TP/SL Trigger
+    const entryY = priceToY(pos.averageEntryPrice);
+    if (entryY !== null) {
+      linesHtml.push(`
+        <div class="prot-chart-line is-entry" style="top:${entryY}px;" data-prot-line="ENTRY">
+          <button type="button" class="prot-line-badge is-entry"
+                  onclick="window.TZApp.openProtectionModal('${esc(pos.id)}')"
+                  title="Tap to add or edit TP &amp; SL for ${esc(pos.symbol)}">
+            <span>ENTRY ${sideLabel} ${absQty} • ₹${fmtNum(pos.averageEntryPrice)}</span>
+            <span style="text-decoration:underline;margin-left:4px;">TP/SL ✎</span>
+          </button>
+        </div>
+      `);
+    }
+
+    // 2. Saved Take Profit (TP) Line (Draggable)
+    if (Number(pos.targetPrice) > 0) {
+      const tpY = priceToY(pos.targetPrice);
+      if (tpY !== null) {
+        const diff = isLong ? pos.targetPrice - pos.averageEntryPrice : pos.averageEntryPrice - pos.targetPrice;
+        const estPnl = diff * mult * absQty;
+        const isBeingDragged = drag && drag.positionId === pos.id && drag.field === 'TP';
+        linesHtml.push(`
+          <div class="prot-chart-line is-tp ${isBeingDragged ? 'is-dimmed' : ''}" style="top:${tpY}px;" data-prot-line="TP_SAVED">
+            <div class="prot-drag-handle is-tp"
+                 role="slider"
+                 aria-label="Drag Take Profit line for ${esc(pos.symbol)}"
+                 aria-valuenow="${Number(pos.targetPrice)}"
+                 onmousedown="window.TZApp.startChartProtectionDrag(event, '${esc(pos.id)}', 'TP')"
+                 ontouchstart="window.TZApp.startChartProtectionDrag(event, '${esc(pos.id)}', 'TP')">
+              <span>⠿ TP (Saved) ₹${fmtNum(pos.targetPrice)} (${estPnl >= 0 ? '+' : ''}₹${fmtNum(estPnl)})</span>
+            </div>
+          </div>
+        `);
+      }
+    }
+
+    // 3. Saved Stop Loss (SL) Line (Draggable)
+    if (Number(pos.stopLossPrice) > 0) {
+      const slY = priceToY(pos.stopLossPrice);
+      if (slY !== null) {
+        const diff = isLong ? pos.stopLossPrice - pos.averageEntryPrice : pos.averageEntryPrice - pos.stopLossPrice;
+        const estPnl = diff * mult * absQty;
+        const isBeingDragged = drag && drag.positionId === pos.id && drag.field === 'SL';
+        linesHtml.push(`
+          <div class="prot-chart-line is-sl ${isBeingDragged ? 'is-dimmed' : ''}" style="top:${slY}px;" data-prot-line="SL_SAVED">
+            <div class="prot-drag-handle is-sl"
+                 role="slider"
+                 aria-label="Drag Stop Loss line for ${esc(pos.symbol)}"
+                 aria-valuenow="${Number(pos.stopLossPrice)}"
+                 onmousedown="window.TZApp.startChartProtectionDrag(event, '${esc(pos.id)}', 'SL')"
+                 ontouchstart="window.TZApp.startChartProtectionDrag(event, '${esc(pos.id)}', 'SL')">
+              <span>⠿ SL (Saved) ₹${fmtNum(pos.stopLossPrice)} (${estPnl >= 0 ? '+' : ''}₹${fmtNum(estPnl)})</span>
+            </div>
+          </div>
+        `);
+      }
+    }
+
+    // 4. Temporary Unconfirmed Drag Preview Line
+    if (drag && drag.positionId === pos.id && Number(drag.proposedPrice) > 0) {
+      const prevY = drag.currentY !== undefined && drag.active ? clampY(drag.currentY) : priceToY(drag.proposedPrice);
+      if (prevY !== null) {
+        const diff = isLong ? drag.proposedPrice - pos.averageEntryPrice : pos.averageEntryPrice - drag.proposedPrice;
+        const estPnl = diff * mult * absQty;
+        linesHtml.push(`
+          <div class="prot-chart-line is-preview" style="top:${prevY}px;" data-prot-line="PREVIEW">
+            <div class="prot-line-badge is-preview">
+              <span>⠿ ${esc(drag.field)} PREVIEW (Unconfirmed): ₹${fmtNum(drag.previousPrice)} → ₹${fmtNum(drag.proposedPrice)} (${estPnl >= 0 ? '+' : ''}₹${fmtNum(estPnl)})</span>
+            </div>
+          </div>
+        `);
+      }
+    }
+
+    layer.innerHTML = linesHtml.join('');
+
+    // 5. Compact Confirmation Panel after Drag Release
+    if (confirmBar) {
+      if (drag && drag.pendingConfirm && drag.positionId === pos.id) {
+        const fieldName = drag.field === 'TP' ? 'Take Profit (TP)' : 'Stop Loss (SL)';
+        confirmBar.style.display = 'flex';
+        confirmBar.innerHTML = `
+          <div class="prot-confirm-header">
+            <span>${esc(pos.symbol)} • ${sideLabel} ${absQty}</span>
+            <span>Modify ${fieldName}</span>
+          </div>
+          <div class="prot-confirm-detail">
+            Saved ₹${fmtNum(drag.previousPrice)} → Proposed ₹${fmtNum(drag.proposedPrice)} (Tick ₹${drag.tickSize})
+          </div>
+          <div class="prot-confirm-actions">
+            <button type="button" class="prot-confirm-btn" ${drag.submitting ? 'disabled' : ''} onclick="window.TZApp.cancelChartProtectionDrag()">Cancel</button>
+            <button type="button" class="prot-confirm-btn" ${drag.submitting ? 'disabled' : ''} onclick="window.TZApp.openProtectionModalFromDrag()">Numeric Edit</button>
+            <button id="btn-chart-prot-confirm" type="button" class="prot-confirm-btn is-primary" ${drag.submitting ? 'disabled aria-busy="true"' : ''} onclick="window.TZApp.confirmChartProtectionDrag()">
+              ${drag.submitting ? 'Confirming…' : 'Confirm ' + esc(drag.field)}
+            </button>
+          </div>
+        `;
+      } else {
+        confirmBar.style.display = 'none';
+        confirmBar.innerHTML = '';
+      }
+    }
+  }
+
+  function startChartProtectionDrag(ev, positionId, field) {
+    if (!tvChart || !candleSeries) return;
+    const pos = getPositionById(positionId);
+    if (!pos || Number(pos.quantity) === 0) return;
+    if (ev && typeof ev.preventDefault === 'function') ev.preventDefault();
+    if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
+
+    const previousPrice = field === 'TP' ? Number(pos.targetPrice) : Number(pos.stopLossPrice);
+    if (!(previousPrice > 0)) return;
+    const tickSize = Number(pos.tickSize || state.activeInstrument?.tickSize || 0.05) || 0.05;
+
+    // Lock chart pan/zoom during protection handle drag so dragging never scrolls the chart
+    try {
+      tvChart.applyOptions({ handleScroll: false, handleScale: false });
+    } catch {}
+
+    state.protectionDrag = {
+      active: true,
+      pendingConfirm: false,
+      submitting: false,
+      positionId: pos.id,
+      globalInstrumentId: pos.globalInstrumentId,
+      field,
+      tickSize,
+      previousPrice,
+      proposedPrice: previousPrice,
+      currentY: undefined,
+      idempotencyKey: null,
+    };
+
+    const chartEl = document.getElementById('tv-main-chart');
+    const updateFromClientY = (clientY) => {
+      if (!state.protectionDrag || !state.protectionDrag.active || !chartEl) return;
+      const rect = chartEl.getBoundingClientRect();
+      const maxPlotY = Math.max(80, (rect.height || 420) - 36);
+      const relY = Math.max(12, Math.min(maxPlotY - 12, clientY - rect.top));
+      const rawPrice = candleSeries.coordinateToPrice(relY);
+      if (rawPrice !== null && rawPrice !== undefined && Number.isFinite(rawPrice) && rawPrice > 0) {
+        state.protectionDrag.proposedPrice = alignPriceToTick(rawPrice, tickSize);
+        state.protectionDrag.currentY = relY;
+        renderChartProtectionOverlay();
+      }
+    };
+
+    const onMove = (moveEv) => {
+      if (!state.protectionDrag || !state.protectionDrag.active) return;
+      if (moveEv.cancelable) moveEv.preventDefault();
+      const pt = moveEv.touches?.[0] || moveEv.changedTouches?.[0] || moveEv;
+      if (pt && Number.isFinite(pt.clientY)) {
+        updateFromClientY(pt.clientY);
+      }
+    };
+
+    const onEnd = (endEv) => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onEnd);
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('touchend', onEnd);
+      window.removeEventListener('touchcancel', onEnd);
+      try {
+        if (state.activeDrawingTool === 'cursor') {
+          tvChart?.applyOptions?.({ handleScroll: true, handleScale: true });
+        }
+      } catch {}
+
+      if (!state.protectionDrag) return;
+      const pt = endEv?.changedTouches?.[0] || endEv;
+      if (pt && Number.isFinite(pt.clientY)) {
+        updateFromClientY(pt.clientY);
+      }
+      state.protectionDrag.active = false;
+      state.protectionDrag.currentY = undefined;
+      if (state.protectionDrag.proposedPrice === state.protectionDrag.previousPrice) {
+        state.protectionDrag = null;
+      } else {
+        state.protectionDrag.pendingConfirm = true;
+        state.protectionDrag.idempotencyKey = `drag_${pos.id}_${field}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      }
+      renderChartProtectionOverlay();
+    };
+
+    window.addEventListener('mousemove', onMove, { passive: false });
+    window.addEventListener('mouseup', onEnd);
+    window.addEventListener('touchmove', onMove, { passive: false });
+    window.addEventListener('touchend', onEnd);
+    window.addEventListener('touchcancel', onEnd);
+    renderChartProtectionOverlay();
+  }
+
+  /** Programmatic drag helper for deterministic tests and accessibility adjustments */
+  function previewChartProtectionDrag(positionId, field, proposedRawPrice) {
+    const pos = getPositionById(positionId);
+    if (!pos || Number(pos.quantity) === 0) return null;
+    const previousPrice = field === 'TP' ? Number(pos.targetPrice) : Number(pos.stopLossPrice);
+    const tickSize = Number(pos.tickSize || state.activeInstrument?.tickSize || 0.05) || 0.05;
+    const aligned = alignPriceToTick(proposedRawPrice, tickSize);
+    if (!(aligned > 0) || aligned === previousPrice) {
+      state.protectionDrag = null;
+      renderChartProtectionOverlay();
+      return null;
+    }
+    state.protectionDrag = {
+      active: false,
+      pendingConfirm: true,
+      submitting: false,
+      positionId: pos.id,
+      globalInstrumentId: pos.globalInstrumentId,
+      field,
+      tickSize,
+      previousPrice,
+      proposedPrice: aligned,
+      idempotencyKey: `drag_${pos.id}_${field}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    };
+    renderChartProtectionOverlay();
+    return state.protectionDrag;
+  }
+
+  function cancelChartProtectionDrag() {
+    state.protectionDrag = null;
+    try {
+      if (tvChart && state.activeDrawingTool === 'cursor') {
+        tvChart.applyOptions({ handleScroll: true, handleScale: true });
+      }
+    } catch {}
+    renderChartProtectionOverlay();
+  }
+
+  function openProtectionModalFromDrag() {
+    const drag = state.protectionDrag;
+    if (!drag) return;
+    const prefill = drag.field === 'TP'
+      ? { targetPrice: drag.proposedPrice }
+      : { stopLossPrice: drag.proposedPrice };
+    const posId = drag.positionId;
+    cancelChartProtectionDrag();
+    openProtectionModal(posId, prefill);
+  }
+
+  async function confirmChartProtectionDrag() {
+    const drag = state.protectionDrag;
+    if (!drag || !drag.pendingConfirm || drag.submitting) return;
+    const pos = getPositionById(drag.positionId);
+    if (!pos || Number(pos.quantity) === 0) {
+      cancelChartProtectionDrag();
+      window.SikhoUX?.notify?.('Position has already closed — cannot apply TP/SL change.');
+      await refreshAccountAndPortfolio();
+      return;
+    }
+
+    drag.submitting = true;
+    renderChartProtectionOverlay();
+
+    const payload = {
+      expectedVersion: pos.protectionVersion || 1,
+      idempotencyKey: drag.idempotencyKey || `drag_${pos.id}_${drag.field}_${Date.now()}`,
+      source: 'CHART_DRAG',
+    };
+    if (drag.field === 'TP') payload.targetPrice = drag.proposedPrice;
+    else payload.stopLossPrice = drag.proposedPrice;
+
+    try {
+      const res = await apiFetch(`/api/v1/positions/${encodeURIComponent(pos.id)}/protection`, {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      });
+      state.protectionDrag = null;
+      if (res && res.position) {
+        applyRemotePositionProtectionUpdate(res.position);
+      }
+      await refreshAccountAndPortfolio();
+      renderChartProtectionOverlay();
+      window.SikhoUX?.notify?.(
+        `${drag.field} updated: ₹${fmtNum(drag.previousPrice)} → ₹${fmtNum(drag.proposedPrice)}`
+      );
+    } catch (err) {
+      if (err && (err.code === 'ERR_SERVER_TIMEOUT' || err.code === 'ERR_SERVER_UNREACHABLE')) {
+        // Transfer timed-out drag request to the protection modal reconciliation flow rather than claiming success
+        const prefill = drag.field === 'TP' ? { targetPrice: drag.proposedPrice } : { stopLossPrice: drag.proposedPrice };
+        const timedOutKey = payload.idempotencyKey;
+        state.protectionDrag = null;
+        renderChartProtectionOverlay();
+        openProtectionModal(pos.id, prefill);
+        if (state.protectionModal) {
+          state.protectionModal.timedOutKey = timedOutKey;
+          state.protectionModal.pendingIdempotencyKey = timedOutKey;
+          const timeoutBox = document.getElementById('prot-timeout-box');
+          if (timeoutBox) timeoutBox.style.display = 'block';
+          const submitBtn = document.getElementById('prot-submit-btn');
+          if (submitBtn) submitBtn.disabled = true;
+        }
+        return;
+      }
+      state.protectionDrag = null;
+      await refreshAccountAndPortfolio();
+      renderChartProtectionOverlay();
+      showBrandedAlert(
+        `${drag.field} Change Rejected`,
+        err?.message || 'Could not update protection level. Saved level has been restored.'
+      );
+    }
+  }
+
+  // =========================================================================
   // EXPORT PUBLIC API & BOOTSTRAP
   // =========================================================================
   window.TZApp = {
@@ -5796,6 +6796,21 @@
     dismissUpdateBanner,
     checkServerHealthStatus,
     dismissOnboardingCard,
+    alignPriceToTick,
+    formatChartAxisTick,
+    openProtectionModal,
+    closeProtectionModal,
+    toggleRemoveProtectionField,
+    applyProtectionPointsOffset,
+    onProtectionInputChanged,
+    submitPositionProtectionModal,
+    checkTimedOutProtectionStatus,
+    renderChartProtectionOverlay,
+    startChartProtectionDrag,
+    previewChartProtectionDrag,
+    confirmChartProtectionDrag,
+    cancelChartProtectionDrag,
+    openProtectionModalFromDrag,
   };
 
   window.addEventListener('DOMContentLoaded', () => {

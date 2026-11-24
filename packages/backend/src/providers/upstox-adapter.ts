@@ -533,6 +533,19 @@ export class UpstoxAdapter implements IMarketDataProvider {
   private priorityUntil=new Map<string,number>();
   private pollInFlight=false;
   private pollCursor=0;
+  private candleInFlight = new Map<string, Promise<CandlePageResult>>();
+  private candleCache = new Map<string, { result: CandlePageResult; cachedAt: number }>();
+  private candleDiagnostics: Array<{
+    at: number;
+    globalId: string;
+    timeframe: string;
+    status: string;
+    candleCount: number;
+    durationMs: number;
+    error?: string | null;
+    staleFallback?: boolean;
+  }> = [];
+  private lastSilentResubscribeAt = 0;
   public prioritize(globalId:string){this.priorityUntil.set(globalId,Date.now()+90000);}
   private availableFilters = {
     exchanges: ['NSE', 'NFO', 'BSE', 'BFO'],
@@ -852,10 +865,12 @@ export class UpstoxAdapter implements IMarketDataProvider {
     const spotBank = this.allInstruments.get('NSE:BANKNIFTY:99926009');
     if (spotBank) defaults.push(spotBank.globalId);
 
-    // Nearest NIFTY and BANKNIFTY Futures
+    const todayIst = this.formatISTDate(Date.now());
+
+    // Nearest NIFTY and BANKNIFTY Futures (unexpired)
     for (const u of ['NIFTY', 'BANKNIFTY', 'SENSEX']) {
       const futs = Array.from(this.allInstruments.values())
-        .filter((i) => i.instrumentType === 'FUTIDX' && i.underlying === u && i.expiry)
+        .filter((i) => i.instrumentType === 'FUTIDX' && i.underlying === u && i.expiry && i.expiry >= todayIst)
         .sort((a, b) => (a.expiry || '').localeCompare(b.expiry || ''));
       if (futs.length > 0) defaults.push(futs[0].globalId);
     }
@@ -868,10 +883,10 @@ export class UpstoxAdapter implements IMarketDataProvider {
       if (found) defaults.push(found.globalId);
     }
 
-    // Representative MCX Commodities (Bullion, Energy, Base Metals)
+    // Representative MCX Commodities (Bullion, Energy, Base Metals — unexpired)
     for (const comSym of ['CRUDEOIL', 'GOLD', 'NATURALGAS', 'SILVER', 'COPPER']) {
       const futs = Array.from(this.allInstruments.values())
-        .filter((i) => i.instrumentType === 'FUTCOM' && (i.underlying === comSym || i.symbol.startsWith(comSym)) && i.expiry)
+        .filter((i) => i.instrumentType === 'FUTCOM' && (i.underlying === comSym || i.symbol.startsWith(comSym)) && i.expiry && i.expiry >= todayIst)
         .sort((a, b) => (a.expiry || '').localeCompare(b.expiry || ''));
       if (futs.length > 0) defaults.push(futs[0].globalId);
     }
@@ -968,9 +983,11 @@ export class UpstoxAdapter implements IMarketDataProvider {
     const page = Math.max(1, opts.page || 1);
     const limit = Math.min(200, Math.max(1, opts.limit || 50));
 
+    const todayIst = this.formatISTDate(Date.now());
     const matched: Array<{ inst: InstrumentMetadata; score: number }> = [];
 
     for (const inst of this.allInstruments.values()) {
+      if (inst.expiry && !expiry && inst.expiry < todayIst) continue;
       if (exchange && inst.exchange !== exchange) continue;
       if (segment) {
         if (segment === 'COMMODITY' && inst.exchange !== 'MCX' && inst.segment !== 'COMMODITY') continue;
@@ -1338,6 +1355,21 @@ export class UpstoxAdapter implements IMarketDataProvider {
     return { candles: [] };
   }
 
+  private recordCandleDiagnostic(entry: {
+    globalId: string;
+    timeframe: string;
+    status: string;
+    candleCount: number;
+    durationMs: number;
+    error?: string | null;
+    staleFallback?: boolean;
+  }): void {
+    this.candleDiagnostics.push({ at: Date.now(), ...entry });
+    if (this.candleDiagnostics.length > 60) {
+      this.candleDiagnostics.shift();
+    }
+  }
+
   public async getCandlesPaginated(
     globalId: string,
     timeframe: Timeframe,
@@ -1356,10 +1388,31 @@ export class UpstoxAdapter implements IMarketDataProvider {
       };
     }
 
+    const reqKey = `${inst.globalId}|${timeframe}|${opts.before || ''}|${opts.from || ''}|${opts.to || ''}|${opts.range || ''}|${opts.limit || ''}`;
+    const inFlight = this.candleInFlight.get(reqKey);
+    if (inFlight) return inFlight;
+
+    const task = this.fetchCandlesPaginatedInternal(inst, timeframe, opts);
+    this.candleInFlight.set(reqKey, task);
+    try {
+      return await task;
+    } finally {
+      this.candleInFlight.delete(reqKey);
+    }
+  }
+
+  private async fetchCandlesPaginatedInternal(
+    inst: InstrumentMetadata,
+    timeframe: Timeframe,
+    opts: CandleQueryOptions = {}
+  ): Promise<CandlePageResult> {
+    const startedAt = Date.now();
     const upstoxKey = inst.upstoxInstrumentKey!;
     const { unit, interval, chunkDays, maxLookbackDays } = this.mapTimeframeToUpstoxV3(timeframe);
     const nowMs = Date.now();
     const minAllowedMs = nowMs - maxLookbackDays * 86400 * 1000;
+    const isLatestWindow = !opts.before && !opts.to && !opts.from;
+    const cacheKey = `${inst.globalId}:${timeframe}:${opts.range || 'DEFAULT'}`;
 
     let endMs = opts.to ? opts.to * 1000 : opts.before ? opts.before * 1000 - 1000 : nowMs;
     if (endMs > nowMs) endMs = nowMs;
@@ -1380,10 +1433,11 @@ export class UpstoxAdapter implements IMarketDataProvider {
 
     const startTargetMs = Math.max(minAllowedMs, endMs - targetDays * 86400 * 1000);
     const mergedMap = new Map<number, Candle>();
-    let providerError:string|null=null;
+    let intradayError: string | null = null;
+    let historyError: string | null = null;
 
     // Fetch today's intraday candles if loading latest window on an intraday timeframe
-    if (!opts.before && !opts.to && !opts.from && timeframe !== '1D') {
+    if (isLatestWindow && timeframe !== '1D') {
       try {
         const intra = await this.fetchUpstoxIntraday(upstoxKey, unit, interval);
         for (const c of intra.candles) {
@@ -1391,8 +1445,8 @@ export class UpstoxAdapter implements IMarketDataProvider {
             mergedMap.set(c.time, c);
           }
         }
-      } catch (err:any) {
-        providerError=err?.message||'Intraday history unavailable';
+      } catch (err: any) {
+        intradayError = err?.message || 'Intraday history unavailable';
         // continue with historical endpoint
       }
     }
@@ -1400,6 +1454,7 @@ export class UpstoxAdapter implements IMarketDataProvider {
     let cursorEndMs = endMs;
     let chunksFetched = 0;
     const maxChunks = opts.range === 'ALL' ? 8 : 4;
+    const desiredBars = opts.limit || 200;
 
     while (cursorEndMs > minAllowedMs && chunksFetched < maxChunks) {
       const cursorStartMs = Math.max(
@@ -1408,8 +1463,13 @@ export class UpstoxAdapter implements IMarketDataProvider {
       );
       const fromStr = this.formatISTDate(cursorStartMs);
       const toStr = this.formatISTDate(cursorEndMs);
-      let chunk:Candle[]=[];
-      try{chunk=await this.fetchUpstoxHistoricalChunk(upstoxKey, unit, interval, fromStr, toStr);}catch(err:any){providerError=err?.message||'Historical data unavailable';break;}
+      let chunk: Candle[] = [];
+      try {
+        chunk = await this.fetchUpstoxHistoricalChunk(upstoxKey, unit, interval, fromStr, toStr);
+      } catch (err: any) {
+        historyError = err?.message || 'Historical data unavailable';
+        break;
+      }
       chunksFetched++;
 
       for (const c of chunk) {
@@ -1424,6 +1484,9 @@ export class UpstoxAdapter implements IMarketDataProvider {
       if (opts.before) {
         if (mergedMap.size >= (opts.limit || 300)) break;
         if (chunksFetched >= 2 && mergedMap.size > 0) break;
+      } else if (!opts.range && mergedMap.size >= desiredBars) {
+        // Stop early once we have enough bars and at least two distinct session dates
+        break;
       } else if (cursorEndMs <= startTargetMs) {
         break;
       }
@@ -1431,6 +1494,30 @@ export class UpstoxAdapter implements IMarketDataProvider {
 
     let sorted = Array.from(mergedMap.values()).sort((a, b) => a.time - b.time);
     sorted = this.sanitizeCandleSeries(sorted);
+    let providerError: string | null = sorted.length === 0 ? (historyError || intradayError) : null;
+
+    // If upstream transiently failed (e.g. HTTP 429/5xx at 09:15, noon, or 15:30) and we have last-known-good cached bars for this exact instrument & timeframe, serve them with staleFallback metadata
+    if (sorted.length === 0 && isLatestWindow) {
+      const cached = this.candleCache.get(cacheKey);
+      if (cached && cached.result.candles.length > 0) {
+        this.recordCandleDiagnostic({
+          globalId: inst.globalId,
+          timeframe,
+          status: 'STALE_CACHE_FALLBACK',
+          candleCount: cached.result.candles.length,
+          durationMs: Date.now() - startedAt,
+          error: providerError,
+          staleFallback: true,
+        });
+        return {
+          ...cached.result,
+          candles: cached.result.candles.map((c) => ({ ...c })),
+          providerError,
+          ...( { staleFallback: true, lastCachedAt: cached.cachedAt } as any ),
+        };
+      }
+    }
+
     let hasMore = cursorEndMs > minAllowedMs && sorted.length > 0;
 
     if (opts.limit && sorted.length > opts.limit) {
@@ -1455,7 +1542,7 @@ export class UpstoxAdapter implements IMarketDataProvider {
       // History bars remain reference data; never cache them as executable quotes.
     }
 
-    return {
+    const result: CandlePageResult = {
       candles: sorted,
       hasMore,
       earliestTime: sorted.length > 0 ? sorted[0].time : null,
@@ -1464,6 +1551,30 @@ export class UpstoxAdapter implements IMarketDataProvider {
       prevSessionClose,
       providerError,
     };
+
+    if (isLatestWindow && sorted.length > 0) {
+      this.candleCache.delete(cacheKey);
+      this.candleCache.set(cacheKey, {
+        result: { ...result, candles: sorted.map((c) => ({ ...c })) },
+        cachedAt: Date.now(),
+      });
+      if (this.candleCache.size > 150) {
+        const oldestKey = this.candleCache.keys().next().value;
+        if (oldestKey) this.candleCache.delete(oldestKey);
+      }
+    }
+
+    this.recordCandleDiagnostic({
+      globalId: inst.globalId,
+      timeframe,
+      status: sorted.length > 0 ? 'OK' : 'EMPTY_OR_ERROR',
+      candleCount: sorted.length,
+      durationMs: Date.now() - startedAt,
+      error: providerError,
+      staleFallback: false,
+    });
+
+    return result;
   }
 
   public async getCandles(globalId: string, timeframe: Timeframe, count: number = 500): Promise<Candle[]> {
@@ -1667,14 +1778,33 @@ export class UpstoxAdapter implements IMarketDataProvider {
     this.clearWsHeartbeat();
     this.wsHeartbeatTimer = setInterval(() => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+      const now = Date.now();
       const lastActivity = Math.max(this.lastPongAt, this.lastProviderEventAt);
-      if (Date.now() - lastActivity > 90000) {
+      if (now - lastActivity > 90000) {
         this.lastErrorReason = 'Upstox WebSocket heartbeat timeout; reconnecting.';
         this.isConnected = false;
         try {
           this.ws.terminate();
         } catch {}
         return;
+      }
+      // Watchdog for silent feed stream during active market hours (e.g. 09:15 open, noon, or 15:30 transition)
+      const isAnyOpen = getExchangeSessionStatus('NSE').isOpen || getExchangeSessionStatus('MCX').isOpen;
+      if (isAnyOpen && this.listeners.size > 0 && this.lastProviderEventAt > 0) {
+        const silentDataMs = now - this.lastProviderEventAt;
+        if (silentDataMs > 90000) {
+          this.lastErrorReason = 'Upstox WebSocket stream silent during active session; reconnecting.';
+          this.isConnected = false;
+          try {
+            this.ws.terminate();
+          } catch {}
+          return;
+        } else if (silentDataMs > 45000 && now - this.lastSilentResubscribeAt > 45000) {
+          this.lastSilentResubscribeAt = now;
+          try {
+            this.sendActiveWebSocketSubscriptions();
+          } catch {}
+        }
       }
       try {
         this.ws.ping();
@@ -1788,6 +1918,8 @@ export class UpstoxAdapter implements IMarketDataProvider {
       lastProviderEventAt: this.lastProviderEventAt,
       lastDecodeAt: this.lastDecodeAt,
       cachedQuotesCount: this.quotes.size,
+      cachedCandlesCount: this.candleCache.size,
+      recentCandleDiagnostics: this.candleDiagnostics.slice(-15),
       wsConnected: this.isConnected,
       restRecovery:{requestsLastMinute:this.restRequestTimes.filter(t=>Date.now()-t<60000).length,requestsLast30Minutes:this.restRequestTimes.length,nextRetryAt:this.restBlockedUntil||null,queuedKeys:this.quoteQueue.size},
       decodeErrors:this.decodeErrors,subscriptionErrors:this.subscriptionErrors,authHttpStatus:this.authHttpStatus,connectionFlow:'AUTHORIZED_REDIRECT_V3',wsHttpStatus:this.wsHttpStatus,wsErrorCode:this.wsErrorCode,wsResponseId:this.wsResponseId,

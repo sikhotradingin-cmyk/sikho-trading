@@ -3,6 +3,7 @@ import {
   LedgerEntry,
   Money,
   Paise,
+  PositionProtectionAuditEntry,
   ProductType,
   SimulatedOrder,
   SimulatedPosition,
@@ -759,14 +760,19 @@ export class PostgresRepository {
     await this.db.transaction(async client=>{
     await client.query(
       `UPDATE orders 
-       SET status = $1, executed_price = $2, rejection_reason = $3, executed_at = $4, updated_at = $5
-       WHERE id = $6`,
+       SET status = $1, executed_price = $2, rejection_reason = $3, executed_at = $4, updated_at = $5,
+           quantity = $6, requested_price = $7, trigger_price = $8, oco_companion_order_id = $9
+       WHERE id = $10`,
       [
         order.status,
         order.executedPrice ?? null,
         order.rejectionReason ?? null,
         order.executedAt ?? null,
         order.updatedAt,
+        order.quantity,
+        order.requestedPrice ?? null,
+        order.triggerPrice ?? null,
+        order.ocoCompanionOrderId ?? null,
         order.id,
       ]
     );
@@ -777,15 +783,17 @@ export class PostgresRepository {
 
   public async saveOrUpdatePosition(position: SimulatedPosition): Promise<void> {
     const existing = await this.db.query(
-      'SELECT id FROM positions WHERE account_id = $1 AND global_instrument_id = $2',
+      'SELECT id, protection_version FROM positions WHERE account_id = $1 AND global_instrument_id = $2',
       [position.accountId, position.globalInstrumentId]
     );
+    const version = position.protectionVersion ?? (existing.rows[0]?.protection_version ? Number(existing.rows[0].protection_version) : 1);
+    position.protectionVersion = version;
 
     if (existing.rows.length === 0) {
       await this.db.query(
         `INSERT INTO positions 
-         (id, account_id, global_instrument_id, product_type, quantity, average_entry_price, realized_pnl_paise, stop_loss_price, target_price, stop_order_id, target_order_id, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+         (id, account_id, global_instrument_id, product_type, quantity, average_entry_price, realized_pnl_paise, stop_loss_price, target_price, stop_order_id, target_order_id, protection_version, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
         [
           position.id,
           position.accountId,
@@ -798,6 +806,7 @@ export class PostgresRepository {
           position.targetPrice ?? null,
           position.stopOrderId ?? null,
           position.targetOrderId ?? null,
+          version,
           position.createdAt,
           position.updatedAt,
         ]
@@ -805,8 +814,8 @@ export class PostgresRepository {
     } else {
       await this.db.query(
         `UPDATE positions 
-         SET product_type = $1, quantity = $2, average_entry_price = $3, realized_pnl_paise = $4, stop_loss_price = $5, target_price = $6, stop_order_id = $7, target_order_id = $8, updated_at = $9
-         WHERE account_id = $10 AND global_instrument_id = $11`,
+         SET product_type = $1, quantity = $2, average_entry_price = $3, realized_pnl_paise = $4, stop_loss_price = $5, target_price = $6, stop_order_id = $7, target_order_id = $8, protection_version = $9, updated_at = $10
+         WHERE account_id = $11 AND global_instrument_id = $12`,
         [
           position.productType || 'INTRADAY',
           position.quantity,
@@ -816,6 +825,7 @@ export class PostgresRepository {
           position.targetPrice ?? null,
           position.stopOrderId ?? null,
           position.targetOrderId ?? null,
+          version,
           position.updatedAt,
           position.accountId,
           position.globalInstrumentId,
@@ -823,6 +833,118 @@ export class PostgresRepository {
       );
     }
     this.onMutation?.(position.accountId);
+  }
+
+  public async getPositionById(accountId: string, positionId: string): Promise<SimulatedPosition | null> {
+    const res = await this.db.query(
+      'SELECT * FROM positions WHERE account_id = $1 AND id = $2',
+      [accountId, positionId]
+    );
+    if (res.rows.length === 0) return null;
+    return this.mapPosition(res.rows[0]);
+  }
+
+  public async getProtectionRequestByIdempotency(
+    accountId: string,
+    idempotencyKey: string
+  ): Promise<{ positionId: string; payloadSignature: string; response: any; createdAt: number } | null> {
+    const res = await this.db.query(
+      'SELECT * FROM position_protection_requests WHERE account_id = $1 AND idempotency_key = $2',
+      [accountId, idempotencyKey]
+    );
+    if (res.rows.length === 0) return null;
+    const row = res.rows[0];
+    return {
+      positionId: row.position_id,
+      payloadSignature: row.payload_signature,
+      response: JSON.parse(row.response_json),
+      createdAt: Number(row.created_at),
+    };
+  }
+
+  public async saveProtectionRequest(params: {
+    accountId: string;
+    positionId: string;
+    idempotencyKey: string;
+    payloadSignature: string;
+    response: any;
+  }): Promise<void> {
+    const now = Date.now();
+    await this.db.query(
+      `INSERT INTO position_protection_requests
+       (id, account_id, position_id, idempotency_key, payload_signature, response_json, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (account_id, idempotency_key) DO NOTHING`,
+      [
+        randomUUID(),
+        params.accountId,
+        params.positionId,
+        params.idempotencyKey,
+        params.payloadSignature,
+        JSON.stringify(params.response),
+        now,
+      ]
+    );
+  }
+
+  public async recordProtectionAudit(entry: Omit<PositionProtectionAuditEntry, 'id' | 'createdAt'> & { createdAt?: number }): Promise<PositionProtectionAuditEntry> {
+    const id = `pa_${randomUUID()}`;
+    const createdAt = entry.createdAt ?? Date.now();
+    await this.db.query(
+      `INSERT INTO position_protection_audit
+       (id, account_id, position_id, global_instrument_id, previous_sl, new_sl, previous_tp, new_tp, quantity, entry_price, reference_ltp, protection_version, source, idempotency_key, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+      [
+        id,
+        entry.accountId,
+        entry.positionId,
+        entry.globalInstrumentId,
+        entry.previousSl ?? null,
+        entry.newSl ?? null,
+        entry.previousTp ?? null,
+        entry.newTp ?? null,
+        entry.quantity,
+        entry.entryPrice,
+        entry.referenceLtp,
+        entry.protectionVersion,
+        entry.source,
+        entry.idempotencyKey ?? null,
+        createdAt,
+      ]
+    );
+    return {
+      id,
+      ...entry,
+      createdAt,
+    };
+  }
+
+  public async getProtectionAudit(accountId: string, positionId: string, limit: number = 50): Promise<PositionProtectionAuditEntry[]> {
+    const safeLimit = Math.max(1, Math.min(200, Math.floor(limit || 50)));
+    const res = await this.db.query(
+      `SELECT * FROM position_protection_audit
+       WHERE account_id = $1 AND position_id = $2
+       ORDER BY created_at DESC
+       LIMIT ${safeLimit}`,
+      [accountId, positionId]
+    );
+    return res.rows.map((r: any) => ({
+      id: r.id,
+      accountId: r.account_id,
+      positionId: r.position_id,
+      globalInstrumentId: r.global_instrument_id,
+      previousSl: r.previous_sl !== null ? Number(r.previous_sl) : undefined,
+      newSl: r.new_sl !== null ? Number(r.new_sl) : undefined,
+      previousTp: r.previous_tp !== null ? Number(r.previous_tp) : undefined,
+      newTp: r.new_tp !== null ? Number(r.new_tp) : undefined,
+      quantity: Number(r.quantity),
+      entryPrice: Number(r.entry_price),
+      referenceLtp: Number(r.reference_ltp),
+      protectionVersion: Number(r.protection_version),
+      source: r.source,
+      idempotencyKey: r.idempotency_key ?? undefined,
+      createdAt: Number(r.created_at),
+    }));
   }
 
   public async getOrders(accountId: string, limit?: number): Promise<SimulatedOrder[]> {
@@ -946,6 +1068,7 @@ export class PostgresRepository {
       targetPrice: row.target_price !== null ? Number(row.target_price) : undefined,
       stopOrderId: row.stop_order_id ?? undefined,
       targetOrderId: row.target_order_id ?? undefined,
+      protectionVersion: row.protection_version !== null && row.protection_version !== undefined ? Number(row.protection_version) : 1,
       createdAt: Number(row.created_at),
       updatedAt: Number(row.updated_at),
     };
