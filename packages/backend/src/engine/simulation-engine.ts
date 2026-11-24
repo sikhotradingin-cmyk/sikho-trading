@@ -1191,4 +1191,15 @@ export class SimulationEngine {
     pos.unrealizedPnlPaise = Money.fromRupees(unrealizedRupees);
     pos.updatedAt = Date.now();
   }
+
+  public purgeAccountState(accountIds: string[]): void {
+    if (!Array.isArray(accountIds) || accountIds.length === 0) return;
+    const targetSet = new Set(accountIds);
+    const removedOrders = this.pendingOrders.filter((o) => targetSet.has(o.accountId));
+    for (const o of removedOrders) {
+      this.lockedOrderMargins.delete(o.id);
+      this.pendingInstruments.delete(o.id);
+    }
+    this.pendingOrders = this.pendingOrders.filter((o) => !targetSet.has(o.accountId));
+  }
 }

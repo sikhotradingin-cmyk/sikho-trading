@@ -13,7 +13,7 @@ import {
   validateResetCapitalAmount,
   UserTier,
 } from '@trading/shared';
-import { pbkdf2Sync, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, pbkdf2Sync, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { IDatabase } from './database.js';
 
 export interface UserRecord {
@@ -1112,5 +1112,110 @@ export class PostgresRepository {
        ON CONFLICT (user_id) DO UPDATE SET selected_indices_json = $2, updated_at = $3`,
       [cleanUserId, jsonStr, now]
     );
+  }
+
+  public async isUserDeleted(userId: string): Promise<boolean> {
+    if (!userId) return false;
+    const res = await this.db.query(
+      'SELECT user_id FROM deleted_account_tombstones WHERE user_id = $1 LIMIT 1',
+      [userId]
+    );
+    return res.rows.length > 0;
+  }
+
+  public async verifyUserOwnershipForDeletion(
+    userId: string,
+    params: { password?: string; confirmEmail?: string; confirmPhrase?: string }
+  ): Promise<UserRecord> {
+    const res = await this.db.query('SELECT * FROM users WHERE id = $1', [userId]);
+    if (res.rows.length === 0) {
+      throw new Error('ERR_USER_NOT_FOUND: User account not found or already deleted.');
+    }
+    const row = res.rows[0];
+    const phrase = String(params.confirmPhrase || '').trim().toUpperCase();
+    if (phrase !== 'DELETE') {
+      throw new Error('ERR_CONFIRMATION_REQUIRED: Type DELETE to confirm permanent account and data deletion.');
+    }
+    const enteredEmail = String(params.confirmEmail || '').trim().toLowerCase();
+    const registeredEmail = String(row.email || '').trim().toLowerCase();
+    if (!enteredEmail || enteredEmail !== registeredEmail) {
+      throw new Error('ERR_EMAIL_MISMATCH: Entered email address does not match the registered account email.');
+    }
+    if (row.password_hash) {
+      const pwd = String(params.password || '');
+      if (!pwd || !verifySecretPBKDF2(pwd, row.password_hash)) {
+        throw new Error('ERR_INVALID_CREDENTIALS: Current account password is required and must match.');
+      }
+    }
+    return this.mapUser(row);
+  }
+
+  public async deleteUserAndAssociatedData(
+    userId: string,
+    source: 'IN_APP_SELF_SERVICE' | 'OWNER_ADMIN_VERIFIED' = 'IN_APP_SELF_SERVICE',
+    reason: string = 'User-requested permanent account and data deletion'
+  ): Promise<{
+    deletedUserId: string;
+    emailSha256: string;
+    deletedAccountIds: string[];
+    deletedAt: number;
+  }> {
+    return this.db.transaction(async (tx) => {
+      const userRes = await tx.query('SELECT id, email FROM users WHERE id = $1', [userId]);
+      if (userRes.rows.length === 0) {
+        throw new Error('ERR_USER_NOT_FOUND: User account not found or already deleted.');
+      }
+      const cleanEmail = String(userRes.rows[0].email || '').trim().toLowerCase();
+      const emailSha256 = createHash('sha256').update(cleanEmail).digest('hex');
+
+      const accRes = await tx.query('SELECT id FROM virtual_accounts WHERE user_id = $1', [userId]);
+      const accountIds: string[] = accRes.rows.map((r: any) => String(r.id));
+
+      for (const accountId of accountIds) {
+        const ordRes = await tx.query('SELECT id FROM orders WHERE account_id = $1', [accountId]);
+        for (const o of ordRes.rows) {
+          await tx.query('DELETE FROM order_execution_context WHERE order_id = $1', [o.id]);
+        }
+        await tx.query('DELETE FROM position_protection_requests WHERE account_id = $1', [accountId]);
+        await tx.query('DELETE FROM position_protection_audit WHERE account_id = $1', [accountId]);
+        await tx.query('DELETE FROM execution_history WHERE account_id = $1', [accountId]);
+        await tx.query('DELETE FROM trade_closures WHERE account_id = $1', [accountId]);
+        await tx.query('DELETE FROM position_history_basis WHERE account_id = $1', [accountId]);
+        await tx.query('DELETE FROM journal_entries WHERE account_id = $1', [accountId]);
+        await tx.query('DELETE FROM practice_sessions WHERE account_id = $1', [accountId]);
+        await tx.query('DELETE FROM account_ledger_entries WHERE account_id = $1', [accountId]);
+        await tx.query('DELETE FROM positions WHERE account_id = $1', [accountId]);
+        await tx.query('DELETE FROM orders WHERE account_id = $1', [accountId]);
+      }
+
+      await tx.query('DELETE FROM practice_sessions WHERE user_id = $1', [userId]);
+      await tx.query('DELETE FROM virtual_accounts WHERE user_id = $1', [userId]);
+      await tx.query('DELETE FROM watchlists WHERE user_id = $1', [userId]);
+      await tx.query('DELETE FROM chart_drawings WHERE user_id = $1', [userId]);
+      await tx.query('DELETE FROM user_index_preferences WHERE user_id = $1', [userId]);
+      await tx.query('DELETE FROM complimentary_grants WHERE user_id = $1', [userId]);
+      await tx.query('DELETE FROM subscriptions WHERE user_id = $1', [userId]);
+      await tx.query('DELETE FROM entitlement_audit_log WHERE user_id = $1', [userId]);
+      await tx.query('DELETE FROM users WHERE id = $1', [userId]);
+
+      const deletedAt = Date.now();
+      await tx.query(
+        `INSERT INTO deleted_account_tombstones (user_id, email_sha256, source, reason, deleted_at)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (user_id) DO UPDATE SET
+           email_sha256 = $2,
+           source = $3,
+           reason = $4,
+           deleted_at = $5`,
+        [userId, emailSha256, source, reason, deletedAt]
+      );
+
+      return {
+        deletedUserId: userId,
+        emailSha256,
+        deletedAccountIds: accountIds,
+        deletedAt,
+      };
+    });
   }
 }

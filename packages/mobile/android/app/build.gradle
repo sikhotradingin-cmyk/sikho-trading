@@ -9,8 +9,31 @@ android {
         applicationId "com.indianpapertrading"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 28
-        versionName "1.0.18"
+        versionCode 29
+        versionName "1.0.19"
+    }
+
+    def uploadPropsFile = file("${System.getProperty('user.home')}/.android/sikho-trading-upload.properties")
+    def uploadProps = new Properties()
+    if (uploadPropsFile.exists()) {
+        uploadPropsFile.withInputStream { uploadProps.load(it) }
+    }
+    def uploadStorePath = System.getenv("SIKHO_UPLOAD_STORE_FILE") ?: uploadProps.getProperty("storeFile", "")
+    def uploadStorePassword = System.getenv("SIKHO_UPLOAD_STORE_PASSWORD") ?: uploadProps.getProperty("storePassword", "")
+    def uploadKeyAlias = System.getenv("SIKHO_UPLOAD_KEY_ALIAS") ?: uploadProps.getProperty("keyAlias", "")
+    def uploadKeyPassword = System.getenv("SIKHO_UPLOAD_KEY_PASSWORD") ?: uploadProps.getProperty("keyPassword", "")
+    def forceDebugKey = project.hasProperty("useDebugKey") && project.property("useDebugKey").toString().toBoolean()
+    def hasUploadKey = !forceDebugKey && uploadStorePath && file(uploadStorePath).exists() && uploadStorePassword && uploadKeyAlias && uploadKeyPassword
+
+    signingConfigs {
+        if (hasUploadKey) {
+            upload {
+                storeFile file(uploadStorePath)
+                storePassword uploadStorePassword
+                keyAlias uploadKeyAlias
+                keyPassword uploadKeyPassword
+            }
+        }
     }
 
     buildFeatures {
@@ -36,7 +59,7 @@ android {
             buildConfigField "boolean", "ENABLE_DEV_SERVER_PICKER", "true"
         }
         release {
-            signingConfig signingConfigs.debug
+            signingConfig(hasUploadKey ? signingConfigs.upload : signingConfigs.debug)
             def appOpenUnit = System.getenv("APP_OPEN_AD_UNIT_ID") ?: ""
             if (appOpenUnit.startsWith("ca-app-pub-3940256099942544/")) {
                 throw new GradleException("Google demo ad units must not be used in release builds")

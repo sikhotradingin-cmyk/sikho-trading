@@ -45,7 +45,7 @@ if (!(BigInt.prototype as any).toJSON) {
 }
 
 /** Application version advertised by /health (kept in sync with the Android versionName). */
-export const SERVICE_VERSION = '1.0.18';
+export const SERVICE_VERSION = '1.0.19';
 const SERVICE_STARTED_AT = new Date().toISOString();
 
 /** Browser/WebSocket clients must be told the server clock so countdowns can be corrected. */
@@ -516,6 +516,7 @@ export async function buildServer(
           userId: user.id,
           name: user.name,
           email: user.email,
+          hasPassword: user.hasPassword,
           tier: entitlement.tier,
           hasPin: false,
           biometricEnabled: false,
@@ -592,6 +593,7 @@ export async function buildServer(
           userId: user.id,
           name: user.name,
           email: user.email,
+          hasPassword: user.hasPassword,
           tier: entitlement.tier,
           hasPin: false,
           biometricEnabled: false,
@@ -735,6 +737,7 @@ export async function buildServer(
           name: user.name,
           email: user.email,
           avatarUrl: user.avatarUrl,
+          hasPassword: user.hasPassword,
           tier: entitlement.tier,
           hasPin: false,
           biometricEnabled: false,
@@ -812,6 +815,7 @@ export async function buildServer(
           userId: user.id,
           name: user.name,
           email: user.email,
+          hasPassword: user.hasPassword,
           tier: entitlement.tier,
           hasPin: false,
           biometricEnabled: false,
@@ -835,6 +839,12 @@ export async function buildServer(
   app.decorate('authenticate', async (request: any, reply: any) => {
     try {
       await request.jwtVerify();
+      if (request.user?.userId && (await repo.isUserDeleted(request.user.userId))) {
+        return reply.status(401).send({
+          error: 'Account has been permanently deleted.',
+          code: 'ERR_ACCOUNT_DELETED',
+        });
+      }
     } catch {
       reply.status(401).send({ error: 'Unauthorized: Valid JWT Bearer token required.', code: 'ERR_SESSION_EXPIRED' });
     }
@@ -856,6 +866,7 @@ export async function buildServer(
           name: user.name,
           email: user.email,
           avatarUrl: user.avatarUrl,
+          hasPassword: user.hasPassword,
           tier: entitlement.tier,
           hasPin: false,
           biometricEnabled: false,
@@ -865,6 +876,7 @@ export async function buildServer(
           userId: req.user.userId,
           name: req.user.name,
           email: req.user.email,
+          hasPassword: false,
           tier: entitlement.tier,
           hasPin: false,
           biometricEnabled: false,
@@ -2391,6 +2403,139 @@ export async function buildServer(
     return { recorded };
   });
 
+  // 14C. Ownership-Verified Permanent Account & Associated-Data Deletion
+  const disconnectDeletedUserWebSockets = async (userId: string) => {
+    for (const client of Array.from(wsClients)) {
+      if (client.userId === userId) {
+        try {
+          if (client.ws.readyState === WebSocket.OPEN) {
+            client.ws.send(
+              JSON.stringify({
+                type: 'ACCOUNT_DELETED',
+                code: 'ERR_ACCOUNT_DELETED',
+                error: 'Your Sikho Trading account has been permanently deleted.',
+              })
+            );
+            client.ws.close(4401, 'Account deleted');
+          }
+        } catch {}
+        wsClients.delete(client);
+      }
+    }
+    await releaseUnusedEngineSubscriptions().catch(() => {});
+  };
+
+  const handleSelfServiceAccountDelete = async (req: any, reply: any) => {
+    const userId = req.user?.userId;
+    if (!userId) {
+      return reply.status(401).send({ error: 'Unauthorized', code: 'ERR_SESSION_EXPIRED' });
+    }
+    const rateKey = `delete-account:${userId}`;
+    const rl = checkRateLimit(rateKey, 5, 60000, 300000);
+    if (!rl.allowed) {
+      reply.header('Retry-After', rl.retryAfterSec);
+      return reply.status(429).send({
+        error: rl.error,
+        code: 'ERR_RATE_LIMIT_EXCEEDED',
+        retryAfter: rl.retryAfterSec,
+      });
+    }
+
+    const body = (req.body as {
+      password?: string;
+      confirmEmail?: string;
+      confirmPhrase?: string;
+    }) || {};
+
+    try {
+      await repo.verifyUserOwnershipForDeletion(userId, {
+        password: body.password,
+        confirmEmail: body.confirmEmail,
+        confirmPhrase: body.confirmPhrase,
+      });
+      const result = await repo.deleteUserAndAssociatedData(
+        userId,
+        'IN_APP_SELF_SERVICE',
+        'In-app ownership-verified user account deletion'
+      );
+      simEngine.purgeAccountState(result.deletedAccountIds);
+      await disconnectDeletedUserWebSockets(userId);
+      resetRateLimit(rateKey);
+      return {
+        success: true,
+        deletedUserId: result.deletedUserId,
+        deletedAt: result.deletedAt,
+        message: 'Your Sikho Trading account and all associated paper-trading records have been permanently deleted.',
+      };
+    } catch (err: any) {
+      const msg = String(err?.message || 'Account deletion failed.');
+      const code = msg.includes(':') ? msg.split(':')[0] : 'ERR_ACCOUNT_DELETE_FAILED';
+      const status =
+        code === 'ERR_INVALID_CREDENTIALS'
+          ? 401
+          : code === 'ERR_USER_NOT_FOUND'
+          ? 404
+          : 400;
+      return reply.status(status).send({
+        success: false,
+        code,
+        error: msg,
+      });
+    }
+  };
+
+  app.post('/api/v1/account/delete', { preHandler: [(app as any).authenticate] }, handleSelfServiceAccountDelete);
+  app.delete('/api/v1/account', { preHandler: [(app as any).authenticate] }, handleSelfServiceAccountDelete);
+
+  // Authorized owner-admin account deletion endpoint for verified external email deletion requests
+  app.post('/api/v1/admin/users/delete', async (req: any, reply) => {
+    if (!verifyAdminSecret(req, reply)) return;
+    const body = (req.body as {
+      userId?: string;
+      email?: string;
+      reason?: string;
+      confirmPhrase?: string;
+    }) || {};
+    if (String(body.confirmPhrase || '').trim().toUpperCase() !== 'DELETE') {
+      return reply.status(400).send({
+        success: false,
+        code: 'ERR_CONFIRMATION_REQUIRED',
+        error: 'confirmPhrase must be "DELETE".',
+      });
+    }
+    let targetUser = body.userId ? await repo.getUserById(body.userId) : null;
+    if (!targetUser && body.email) {
+      targetUser = await repo.getUserByEmail(body.email);
+    }
+    if (!targetUser) {
+      return reply.status(404).send({
+        success: false,
+        code: 'ERR_USER_NOT_FOUND',
+        error: 'Target user not found.',
+      });
+    }
+    try {
+      const result = await repo.deleteUserAndAssociatedData(
+        targetUser.id,
+        'OWNER_ADMIN_VERIFIED',
+        body.reason || 'Verified external deletion request via support@sikhotrading.in'
+      );
+      simEngine.purgeAccountState(result.deletedAccountIds);
+      await disconnectDeletedUserWebSockets(targetUser.id);
+      return {
+        success: true,
+        deletedUserId: result.deletedUserId,
+        deletedAt: result.deletedAt,
+      };
+    } catch (err: any) {
+      return reply.status(400).send({
+        success: false,
+        code: 'ERR_ACCOUNT_DELETE_FAILED',
+        error: err?.message || 'Account deletion failed.',
+      });
+    }
+  });
+
   // 15. WebSocket Real-time Channel (with token-based client ownership & entitlement gating)
   app.get('/ws', { websocket: true }, (connection: any) => {
     const ws = (connection.socket || connection) as WebSocket;
@@ -2468,6 +2613,12 @@ export async function buildServer(
             try {
               const decoded = (app as any).jwt?.verify(msg.token);
               if (decoded && decoded.userId) {
+                if (await repo.isUserDeleted(decoded.userId)) {
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'AUTH_ERROR', code: 'ERR_ACCOUNT_DELETED', error: 'Account has been permanently deleted.' }));
+                  }
+                  return;
+                }
                 clientState.userId = decoded.userId;
                 clientTokens.set(ws, msg.token);
                 try {

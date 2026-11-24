@@ -17,6 +17,8 @@ local.properties
 *.aab
 *.keystore
 *.jks
+*keystore.properties
+*upload.properties
 packages/backend/data/
 paper trading/
 

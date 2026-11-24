@@ -6682,6 +6682,127 @@
   }
 
   // =========================================================================
+  // OWNERSHIP-VERIFIED IN-APP PERMANENT ACCOUNT & DATA DELETION
+  // =========================================================================
+  function openDeleteAccountModal() {
+    if (!state.token || !state.user) {
+      showBrandedAlert('Sign-In Required', 'Please sign in to delete your account.');
+      return;
+    }
+    const modal = document.getElementById('modal-delete-account');
+    const emailEl = document.getElementById('delete-acc-email');
+    const pwdGroup = document.getElementById('delete-acc-password-group');
+    const pwdEl = document.getElementById('delete-acc-password');
+    const phraseEl = document.getElementById('delete-acc-phrase');
+    const errBox = document.getElementById('delete-acc-error-box');
+    const submitBtn = document.getElementById('delete-acc-submit-btn');
+
+    if (emailEl) emailEl.value = '';
+    if (pwdEl) pwdEl.value = '';
+    if (phraseEl) phraseEl.value = '';
+    if (errBox) {
+      errBox.style.display = 'none';
+      errBox.textContent = '';
+    }
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Permanently Delete';
+    }
+    const requiresPassword = state.user.hasPassword !== false;
+    if (pwdGroup) {
+      pwdGroup.style.display = requiresPassword ? 'block' : 'none';
+    }
+    if (modal) modal.style.display = 'flex';
+  }
+
+  function closeDeleteAccountModal() {
+    const modal = document.getElementById('modal-delete-account');
+    if (modal) modal.style.display = 'none';
+  }
+
+  async function submitAccountDeletion() {
+    const emailEl = document.getElementById('delete-acc-email');
+    const pwdEl = document.getElementById('delete-acc-password');
+    const phraseEl = document.getElementById('delete-acc-phrase');
+    const errBox = document.getElementById('delete-acc-error-box');
+    const submitBtn = document.getElementById('delete-acc-submit-btn');
+
+    const confirmEmail = String(emailEl?.value || '').trim().toLowerCase();
+    const password = String(pwdEl?.value || '');
+    const confirmPhrase = String(phraseEl?.value || '').trim().toUpperCase();
+    const requiresPassword = state.user?.hasPassword !== false;
+
+    const showErr = (msg) => {
+      if (errBox) {
+        errBox.textContent = msg;
+        errBox.style.display = 'block';
+      } else {
+        showBrandedAlert('Account Deletion', msg);
+      }
+    };
+
+    if (!confirmEmail || !confirmEmail.includes('@')) {
+      showErr('Enter your registered account email address to verify ownership.');
+      return;
+    }
+    if (state.user?.email && confirmEmail !== String(state.user.email).trim().toLowerCase()) {
+      showErr('Entered email address does not match your signed-in account email.');
+      return;
+    }
+    if (requiresPassword && !password) {
+      showErr('Enter your current account password to verify ownership.');
+      return;
+    }
+    if (confirmPhrase !== 'DELETE') {
+      showErr('Type DELETE in uppercase to confirm permanent account deletion.');
+      return;
+    }
+
+    if (errBox) {
+      errBox.style.display = 'none';
+      errBox.textContent = '';
+    }
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Deleting Account...';
+    }
+
+    const deletingUserId = String(state.user?.userId || state.user?.id || '');
+    try {
+      await apiFetch('/api/v1/account/delete', {
+        method: 'POST',
+        body: JSON.stringify({
+          confirmEmail,
+          password: requiresPassword ? password : '',
+          confirmPhrase,
+        }),
+      });
+      closeDeleteAccountModal();
+      // Purge user-scoped localStorage caches on device
+      try {
+        if (deletingUserId && typeof localStorage !== 'undefined') {
+          const keysToRemove = [];
+          for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (k && k.includes(deletingUserId)) keysToRemove.push(k);
+          }
+          keysToRemove.forEach((k) => localStorage.removeItem(k));
+        }
+      } catch {}
+      if (typeof chartCandleCache !== 'undefined' && chartCandleCache?.clear) {
+        chartCandleCache.clear();
+      }
+      signOut('Your Sikho Trading account and associated paper-trading data have been permanently deleted.');
+    } catch (err) {
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Permanently Delete';
+      }
+      showErr(err?.message || 'Could not delete account. Please verify your credentials and try again.');
+    }
+  }
+
+  // =========================================================================
   // EXPORT PUBLIC API & BOOTSTRAP
   // =========================================================================
   window.TZApp = {
@@ -6811,6 +6932,9 @@
     confirmChartProtectionDrag,
     cancelChartProtectionDrag,
     openProtectionModalFromDrag,
+    openDeleteAccountModal,
+    closeDeleteAccountModal,
+    submitAccountDeletion,
   };
 
   window.addEventListener('DOMContentLoaded', () => {
