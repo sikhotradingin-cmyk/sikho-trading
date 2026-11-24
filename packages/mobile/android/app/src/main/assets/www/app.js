@@ -3209,28 +3209,6 @@
 
   let inspectedCandleTime=null;
   const historicalPageCache=new Map();
-  function openChartDateNavigation(){
-    let modal=document.getElementById('modal-chart-date');if(!modal){modal=document.createElement('div');modal.id='modal-chart-date';modal.className='modal-backdrop';document.body.appendChild(modal);}
-    modal.innerHTML='<div class="white-bottom-sheet history-detail"><h3>Find a candle</h3><label>Date and time (IST)<input id="chart-date-target" type="datetime-local"></label><p>Actual provider history only. Holidays and unavailable times use the nearest recorded candle.</p><div id="chart-date-status" role="status"></div><button class="row-retry" id="chart-date-find">Find candle</button><button class="row-retry" id="chart-date-close">Close</button></div>';
-    document.getElementById('chart-date-target').value=new Date(serverNowMs()+19800000).toISOString().slice(0,16);
-    document.getElementById('chart-date-close').onclick=()=>{modal.classList.remove('active');notifyNativeScreenState();};
-    document.getElementById('chart-date-find').onclick=async()=>{
-      const input=document.getElementById('chart-date-target'),status=document.getElementById('chart-date-status'),button=document.getElementById('chart-date-find');
-      const target=Date.parse(input.value+':00+05:30');if(!Number.isFinite(target)||target>serverNowMs()){status.textContent='Choose a valid past date/time in IST.';return;}
-      const gid=state.activeInstrument?.globalId,tf=state.activeTimeframe,token=state.token;const seq=++state.chartLoadSeq;chartRequestController?.abort();button.disabled=true;status.textContent='Loading recorded history…';
-      try{const day=Math.floor((target+19800000)/86400000)*86400000-19800000;const key=[state.user?.userId,gid,tf,day].join(':');let data=historicalPageCache.get(key);
-        if(!data){data=await apiFetch('/api/v1/market-data/candles?globalId='+encodeURIComponent(gid)+'&timeframe='+tf+'&from='+Math.floor((day-7*86400000)/1000)+'&to='+Math.floor((day+86400000)/1000)+'&limit=1500');historicalPageCache.set(key,data);if(historicalPageCache.size>6)historicalPageCache.delete(historicalPageCache.keys().next().value);}
-        if(seq!==state.chartLoadSeq||token!==state.token||gid!==state.activeInstrument?.globalId)return;
-        const bars=sanitizeChartCandles(data.candles||[]);if(!bars.length){status.textContent=data.providerError||'No recorded candles available. Choose another date or instrument.';return;}
-        state.candles=bars;state.earliestTime=bars[0].time;state.hasMoreHistory=Boolean(data.hasMore);state.historicalInspection=true;candleSeries.setData(bars);recalculateAndRenderIndicators();
-        const targetSec=target/1000;let nearest=0;for(let i=1;i<bars.length;i++)if(Math.abs(bars[i].time-targetSec)<Math.abs(bars[nearest].time-targetSec))nearest=i;
-        tvChart.timeScale().setVisibleLogicalRange({from:Math.max(-2,nearest-45),to:nearest+45});const bar=bars[nearest];inspectedCandleTime=bar.time;
-        document.getElementById('chart-ohlc-legend').textContent=formatChartTime(bar.time,true)+' · O '+fmtNum(bar.open)+' H '+fmtNum(bar.high)+' L '+fmtNum(bar.low)+' C '+fmtNum(bar.close);
-        document.getElementById('chart-candle-stats').textContent='Historical view · '+formatChartTime(bar.time,true);document.getElementById('btn-go-latest').style.display='inline-flex';
-        const exact=bar.time<=targetSec&&targetSec<bar.time+getTimeframeIntervalSec(tf);status.textContent=(exact?'Recorded candle: ':'No candle at that time. Nearest recorded candle: ')+formatChartTime(bar.time,true)+'. Close this sheet to inspect it.';
-      }catch(e){status.textContent=e.message||'History unavailable. Try another date.';}finally{button.disabled=false;}
-    };modal.classList.add('active');notifyNativeScreenState();
-  }
   function formatChartTime(t,full=false){
     const epoch=typeof t==='number'?t*1000:Date.parse(typeof t==='string'?t:t.year+'-'+String(t.month).padStart(2,'0')+'-'+String(t.day).padStart(2,'0'));
     return new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',...(full?{day:'2-digit',month:'short',year:'numeric'}:{}),...(state.activeTimeframe==='1D'?{}:{hour:'2-digit',minute:'2-digit',hour12:false})}).format(epoch)+(full?' IST':'');
@@ -6357,92 +6335,132 @@
 
     const chartEl = document.getElementById('tv-main-chart');
     const totalHeight = chartEl?.clientHeight || 420;
-    const plotMaxY = Math.max(80, totalHeight - 36); // stay above 32px bottom time axis
-    const clampY = (y) => Math.max(12, Math.min(plotMaxY - 12, Math.round(y)));
+    const paneHeight = (typeof tvChart.paneSize === 'function' ? tvChart.paneSize()?.height : null) || (totalHeight - 30);
+
+    // Convert price to Y coordinate relative to candle pane.
+    // If level is outside the visible pane [0, paneHeight], do NOT clamp to false price!
     const priceToY = (price) => {
       if (!(Number(price) > 0)) return null;
       const coord = candleSeries.priceToCoordinate(Number(price));
       if (coord === null || coord === undefined || !Number.isFinite(coord)) return null;
-      return clampY(coord);
+      if (coord < 0) return { offscreen: true, dir: 'ABOVE', coord };
+      if (coord > paneHeight) return { offscreen: true, dir: 'BELOW', coord };
+      return { offscreen: false, y: Math.round(coord) };
     };
 
     const isLong = Number(pos.quantity) > 0;
     const sideLabel = isLong ? 'LONG' : 'SHORT';
     const absQty = Math.abs(Number(pos.quantity));
-    const mult = Number(pos.pnlMultiplier) > 0 ? Number(pos.pnlMultiplier) : 1;
     const esc = window.SikhoUX?.escape || ((s) => String(s ?? ''));
 
     const linesHtml = [];
+    const hasSavedTp = Number(pos.targetPrice) > 0;
+    const hasSavedSl = Number(pos.stopLossPrice) > 0;
 
-    // 1. Executed Entry Line + Quick TP/SL Trigger
-    const entryY = priceToY(pos.averageEntryPrice);
-    if (entryY !== null) {
+    const entryRes = priceToY(pos.averageEntryPrice);
+    const tpRes = hasSavedTp ? priceToY(pos.targetPrice) : null;
+    const slRes = hasSavedSl ? priceToY(pos.stopLossPrice) : null;
+
+    // Disambiguation if visible TP and SL handles are close to each other
+    let tpRightOffset = 4;
+    let slRightOffset = 4;
+    if (tpRes && !tpRes.offscreen && slRes && !slRes.offscreen) {
+      if (Math.abs(tpRes.y - slRes.y) < 24) {
+        slRightOffset = 85;
+      }
+    }
+
+    // 1. Executed Entry Line (Distinct thin dashed line) + compact +TP/+SL chips if missing
+    if (entryRes && !entryRes.offscreen) {
+      let addChipsHtml = '';
+      if (!hasSavedTp) {
+        addChipsHtml += `<button type="button" class="prot-add-chip is-tp" onclick="event.stopPropagation();window.TZApp.openProtectionModal('${esc(pos.id)}', { targetPrice: '' })" title="Add Take Profit">+ TP</button>`;
+      }
+      if (!hasSavedSl) {
+        addChipsHtml += `<button type="button" class="prot-add-chip is-sl" onclick="event.stopPropagation();window.TZApp.openProtectionModal('${esc(pos.id)}', { stopLossPrice: '' })" title="Add Stop Loss">+ SL</button>`;
+      }
       linesHtml.push(`
-        <div class="prot-chart-line is-entry" style="top:${entryY}px;" data-prot-line="ENTRY">
-          <button type="button" class="prot-line-badge is-entry"
-                  onclick="window.TZApp.openProtectionModal('${esc(pos.id)}')"
-                  title="Tap to add or edit TP &amp; SL for ${esc(pos.symbol)}">
+        <div class="prot-chart-line is-entry" style="top:${entryRes.y}px;" data-prot-line="ENTRY">
+          <div class="prot-line-badge is-entry"
+               onclick="window.TZApp.openProtectionModal('${esc(pos.id)}')"
+               title="Entry price. Tap for numeric edit.">
             <span>ENTRY ${sideLabel} ${absQty} • ₹${fmtNum(pos.averageEntryPrice)}</span>
-            <span style="text-decoration:underline;margin-left:4px;">TP/SL ✎</span>
-          </button>
+            ${addChipsHtml}
+          </div>
         </div>
       `);
     }
 
-    // 2. Saved Take Profit (TP) Line (Draggable)
-    if (Number(pos.targetPrice) > 0) {
-      const tpY = priceToY(pos.targetPrice);
-      if (tpY !== null) {
-        const diff = isLong ? pos.targetPrice - pos.averageEntryPrice : pos.averageEntryPrice - pos.targetPrice;
-        const estPnl = diff * mult * absQty;
+    // 2. Saved Take Profit (TP) Line (Draggable, independent 1px line)
+    if (hasSavedTp) {
+      if (tpRes && !tpRes.offscreen) {
         const isBeingDragged = drag && drag.positionId === pos.id && drag.field === 'TP';
         linesHtml.push(`
-          <div class="prot-chart-line is-tp ${isBeingDragged ? 'is-dimmed' : ''}" style="top:${tpY}px;" data-prot-line="TP_SAVED">
+          <div class="prot-chart-line is-tp ${isBeingDragged ? 'is-dimmed' : ''}" style="top:${tpRes.y}px;" data-prot-line="TP_SAVED">
             <div class="prot-drag-handle is-tp"
+                 style="right:${tpRightOffset}px;"
                  role="slider"
                  aria-label="Drag Take Profit line for ${esc(pos.symbol)}"
                  aria-valuenow="${Number(pos.targetPrice)}"
+                 onpointerdown="window.TZApp.startChartProtectionDrag(event, '${esc(pos.id)}', 'TP')"
                  onmousedown="window.TZApp.startChartProtectionDrag(event, '${esc(pos.id)}', 'TP')"
                  ontouchstart="window.TZApp.startChartProtectionDrag(event, '${esc(pos.id)}', 'TP')">
-              <span>⠿ TP (Saved) ₹${fmtNum(pos.targetPrice)} (${estPnl >= 0 ? '+' : ''}₹${fmtNum(estPnl)})</span>
+              <span>⠿ TP ₹${fmtNum(pos.targetPrice)}</span>
             </div>
+          </div>
+        `);
+      } else if (tpRes && tpRes.offscreen) {
+        const edgeStyle = tpRes.dir === 'ABOVE' ? 'top:4px;' : 'bottom:36px;';
+        linesHtml.push(`
+          <div class="prot-offscreen-tag is-tp" style="${edgeStyle}" title="Take Profit outside visible chart range">
+            <span>${tpRes.dir === 'ABOVE' ? '▲' : '▼'} TP ₹${fmtNum(pos.targetPrice)}</span>
           </div>
         `);
       }
     }
 
-    // 3. Saved Stop Loss (SL) Line (Draggable)
-    if (Number(pos.stopLossPrice) > 0) {
-      const slY = priceToY(pos.stopLossPrice);
-      if (slY !== null) {
-        const diff = isLong ? pos.stopLossPrice - pos.averageEntryPrice : pos.averageEntryPrice - pos.stopLossPrice;
-        const estPnl = diff * mult * absQty;
+    // 3. Saved Stop Loss (SL) Line (Draggable, independent 1px line)
+    if (hasSavedSl) {
+      if (slRes && !slRes.offscreen) {
         const isBeingDragged = drag && drag.positionId === pos.id && drag.field === 'SL';
         linesHtml.push(`
-          <div class="prot-chart-line is-sl ${isBeingDragged ? 'is-dimmed' : ''}" style="top:${slY}px;" data-prot-line="SL_SAVED">
+          <div class="prot-chart-line is-sl ${isBeingDragged ? 'is-dimmed' : ''}" style="top:${slRes.y}px;" data-prot-line="SL_SAVED">
             <div class="prot-drag-handle is-sl"
+                 style="right:${slRightOffset}px;"
                  role="slider"
                  aria-label="Drag Stop Loss line for ${esc(pos.symbol)}"
                  aria-valuenow="${Number(pos.stopLossPrice)}"
+                 onpointerdown="window.TZApp.startChartProtectionDrag(event, '${esc(pos.id)}', 'SL')"
                  onmousedown="window.TZApp.startChartProtectionDrag(event, '${esc(pos.id)}', 'SL')"
                  ontouchstart="window.TZApp.startChartProtectionDrag(event, '${esc(pos.id)}', 'SL')">
-              <span>⠿ SL (Saved) ₹${fmtNum(pos.stopLossPrice)} (${estPnl >= 0 ? '+' : ''}₹${fmtNum(estPnl)})</span>
+              <span>⠿ SL ₹${fmtNum(pos.stopLossPrice)}</span>
             </div>
+          </div>
+        `);
+      } else if (slRes && slRes.offscreen) {
+        const edgeStyle = slRes.dir === 'ABOVE' ? 'top:4px;' : 'bottom:36px;';
+        linesHtml.push(`
+          <div class="prot-offscreen-tag is-sl" style="${edgeStyle}" title="Stop Loss outside visible chart range">
+            <span>${slRes.dir === 'ABOVE' ? '▲' : '▼'} SL ₹${fmtNum(pos.stopLossPrice)}</span>
           </div>
         `);
       }
     }
 
-    // 4. Temporary Unconfirmed Drag Preview Line
+    // 4. Temporary Unconfirmed Drag Preview Line (Follows finger/mouse smoothly)
     if (drag && drag.positionId === pos.id && Number(drag.proposedPrice) > 0) {
-      const prevY = drag.currentY !== undefined && drag.active ? clampY(drag.currentY) : priceToY(drag.proposedPrice);
+      let prevY = null;
+      if (drag.currentY !== undefined && drag.active) {
+        prevY = drag.currentY;
+      } else {
+        const pRes = priceToY(drag.proposedPrice);
+        if (pRes && !pRes.offscreen) prevY = pRes.y;
+      }
       if (prevY !== null) {
-        const diff = isLong ? drag.proposedPrice - pos.averageEntryPrice : pos.averageEntryPrice - drag.proposedPrice;
-        const estPnl = diff * mult * absQty;
         linesHtml.push(`
           <div class="prot-chart-line is-preview" style="top:${prevY}px;" data-prot-line="PREVIEW">
-            <div class="prot-line-badge is-preview">
-              <span>⠿ ${esc(drag.field)} PREVIEW (Unconfirmed): ₹${fmtNum(drag.previousPrice)} → ₹${fmtNum(drag.proposedPrice)} (${estPnl >= 0 ? '+' : ''}₹${fmtNum(estPnl)})</span>
+            <div class="prot-drag-handle is-preview" style="right:4px;">
+              <span>⠿ ${esc(drag.field)} ₹${fmtNum(drag.proposedPrice)}</span>
             </div>
           </div>
         `);
@@ -6451,24 +6469,19 @@
 
     layer.innerHTML = linesHtml.join('');
 
-    // 5. Compact Confirmation Panel after Drag Release
+    // 5. Compact Confirmation Bar after Drag Release
     if (confirmBar) {
       if (drag && drag.pendingConfirm && drag.positionId === pos.id) {
-        const fieldName = drag.field === 'TP' ? 'Take Profit (TP)' : 'Stop Loss (SL)';
         confirmBar.style.display = 'flex';
         confirmBar.innerHTML = `
-          <div class="prot-confirm-header">
-            <span>${esc(pos.symbol)} • ${sideLabel} ${absQty}</span>
-            <span>Modify ${fieldName}</span>
+          <div class="prot-confirm-msg">
+            Update ${esc(drag.field)}: <b>₹${fmtNum(drag.previousPrice)}</b> → <b>₹${fmtNum(drag.proposedPrice)}</b>?
           </div>
-          <div class="prot-confirm-detail">
-            Saved ₹${fmtNum(drag.previousPrice)} → Proposed ₹${fmtNum(drag.proposedPrice)} (Tick ₹${drag.tickSize})
-          </div>
-          <div class="prot-confirm-actions">
+          <div class="prot-confirm-btns">
             <button type="button" class="prot-confirm-btn" ${drag.submitting ? 'disabled' : ''} onclick="window.TZApp.cancelChartProtectionDrag()">Cancel</button>
-            <button type="button" class="prot-confirm-btn" ${drag.submitting ? 'disabled' : ''} onclick="window.TZApp.openProtectionModalFromDrag()">Numeric Edit</button>
+            <button type="button" class="prot-confirm-btn" ${drag.submitting ? 'disabled' : ''} onclick="window.TZApp.openProtectionModalFromDrag()">Edit</button>
             <button id="btn-chart-prot-confirm" type="button" class="prot-confirm-btn is-primary" ${drag.submitting ? 'disabled aria-busy="true"' : ''} onclick="window.TZApp.confirmChartProtectionDrag()">
-              ${drag.submitting ? 'Confirming…' : 'Confirm ' + esc(drag.field)}
+              ${drag.submitting ? 'Updating…' : 'Confirm'}
             </button>
           </div>
         `;
@@ -6483,6 +6496,10 @@
     if (!tvChart || !candleSeries) return;
     const pos = getPositionById(positionId);
     if (!pos || Number(pos.quantity) === 0) return;
+    
+    // Ignore non-primary pointers or non-left clicks
+    if (ev && ev.isPrimary === false) return;
+    if (ev && ev.button !== undefined && ev.button !== 0) return;
     if (ev && typeof ev.preventDefault === 'function') ev.preventDefault();
     if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
 
@@ -6490,10 +6507,22 @@
     if (!(previousPrice > 0)) return;
     const tickSize = Number(pos.tickSize || state.activeInstrument?.tickSize || 0.05) || 0.05;
 
-    // Lock chart pan/zoom during protection handle drag so dragging never scrolls the chart
+    const handleEl = ev?.currentTarget || ev?.target;
+    const pointerId = ev?.pointerId;
+
+    // Suspend chart scrolling & zooming so finger only moves the protection line
     try {
       tvChart.applyOptions({ handleScroll: false, handleScale: false });
     } catch {}
+
+    // Capture pointer on handle so movement is reliably tracked across entire screen
+    if (handleEl && typeof handleEl.setPointerCapture === 'function' && pointerId !== undefined) {
+      try { handleEl.setPointerCapture(pointerId); } catch {}
+    }
+
+    const chartEl = document.getElementById('tv-main-chart');
+    const totalHeight = chartEl?.clientHeight || 420;
+    const paneHeight = (typeof tvChart.paneSize === 'function' ? tvChart.paneSize()?.height : null) || (totalHeight - 30);
 
     state.protectionDrag = {
       active: true,
@@ -6507,14 +6536,14 @@
       proposedPrice: previousPrice,
       currentY: undefined,
       idempotencyKey: null,
+      pointerId,
+      handleEl,
     };
 
-    const chartEl = document.getElementById('tv-main-chart');
     const updateFromClientY = (clientY) => {
       if (!state.protectionDrag || !state.protectionDrag.active || !chartEl) return;
       const rect = chartEl.getBoundingClientRect();
-      const maxPlotY = Math.max(80, (rect.height || 420) - 36);
-      const relY = Math.max(12, Math.min(maxPlotY - 12, clientY - rect.top));
+      const relY = Math.max(4, Math.min(paneHeight - 4, clientY - rect.top));
       const rawPrice = candleSeries.coordinateToPrice(relY);
       if (rawPrice !== null && rawPrice !== undefined && Number.isFinite(rawPrice) && rawPrice > 0) {
         state.protectionDrag.proposedPrice = alignPriceToTick(rawPrice, tickSize);
@@ -6523,32 +6552,40 @@
       }
     };
 
-    const onMove = (moveEv) => {
-      if (!state.protectionDrag || !state.protectionDrag.active) return;
-      if (moveEv.cancelable) moveEv.preventDefault();
-      const pt = moveEv.touches?.[0] || moveEv.changedTouches?.[0] || moveEv;
-      if (pt && Number.isFinite(pt.clientY)) {
-        updateFromClientY(pt.clientY);
+    let cleanedUp = false;
+    const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      if (handleEl && typeof handleEl.releasePointerCapture === 'function' && pointerId !== undefined) {
+        try { handleEl.releasePointerCapture(pointerId); } catch {}
       }
-    };
+      window.removeEventListener('pointermove', onPointerMove, { passive: false });
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerCancel);
+      window.removeEventListener('touchmove', onTouchMove, { passive: false });
+      window.removeEventListener('touchend', onTouchEnd);
+      window.removeEventListener('touchcancel', onTouchCancel);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
 
-    const onEnd = (endEv) => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onEnd);
-      window.removeEventListener('touchmove', onMove);
-      window.removeEventListener('touchend', onEnd);
-      window.removeEventListener('touchcancel', onEnd);
       try {
         if (state.activeDrawingTool === 'cursor') {
           tvChart?.applyOptions?.({ handleScroll: true, handleScale: true });
         }
       } catch {}
+    };
 
+    const onPointerMove = (moveEv) => {
+      if (pointerId !== undefined && moveEv.pointerId !== undefined && moveEv.pointerId !== pointerId) return;
+      if (moveEv.cancelable) moveEv.preventDefault();
+      updateFromClientY(moveEv.clientY);
+    };
+
+    const onPointerUp = (upEv) => {
+      if (pointerId !== undefined && upEv.pointerId !== undefined && upEv.pointerId !== pointerId) return;
+      cleanup();
       if (!state.protectionDrag) return;
-      const pt = endEv?.changedTouches?.[0] || endEv;
-      if (pt && Number.isFinite(pt.clientY)) {
-        updateFromClientY(pt.clientY);
-      }
+      if (Number.isFinite(upEv?.clientY)) updateFromClientY(upEv.clientY);
       state.protectionDrag.active = false;
       state.protectionDrag.currentY = undefined;
       if (state.protectionDrag.proposedPrice === state.protectionDrag.previousPrice) {
@@ -6560,11 +6597,43 @@
       renderChartProtectionOverlay();
     };
 
-    window.addEventListener('mousemove', onMove, { passive: false });
-    window.addEventListener('mouseup', onEnd);
-    window.addEventListener('touchmove', onMove, { passive: false });
-    window.addEventListener('touchend', onEnd);
-    window.addEventListener('touchcancel', onEnd);
+    const onPointerCancel = (cancelEv) => {
+      if (pointerId !== undefined && cancelEv.pointerId !== undefined && cancelEv.pointerId !== pointerId) return;
+      cleanup();
+      // Cancellation restores original saved level immediately
+      state.protectionDrag = null;
+      renderChartProtectionOverlay();
+    };
+
+    const onTouchMove = (e) => {
+      if (e.cancelable) e.preventDefault();
+      const t = e.touches?.[0] || e.changedTouches?.[0];
+      if (t) updateFromClientY(t.clientY);
+    };
+    const onTouchEnd = (e) => {
+      const t = e.changedTouches?.[0];
+      onPointerUp(t || e);
+    };
+    const onTouchCancel = (e) => {
+      onPointerCancel(e);
+    };
+    const onMouseMove = (e) => {
+      if (e.cancelable) e.preventDefault();
+      updateFromClientY(e.clientY);
+    };
+    const onMouseUp = (e) => {
+      onPointerUp(e);
+    };
+
+    window.addEventListener('pointermove', onPointerMove, { passive: false });
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerCancel);
+    window.addEventListener('touchmove', onTouchMove, { passive: false });
+    window.addEventListener('touchend', onTouchEnd);
+    window.addEventListener('touchcancel', onTouchCancel);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+
     renderChartProtectionOverlay();
   }
 
@@ -6813,7 +6882,6 @@
     retryExploreData:loadExploreData,
     signOut,
     switchMainTab,
-    openChartDateNavigation,
     clearCurrentWatchlist,
     setExploreCategory,
     setMarketSegment: setExploreCategory,
@@ -6935,6 +7003,7 @@
     openDeleteAccountModal,
     closeDeleteAccountModal,
     submitAccountDeletion,
+    _state: state,
   };
 
   window.addEventListener('DOMContentLoaded', () => {

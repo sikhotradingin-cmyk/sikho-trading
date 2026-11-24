@@ -2404,158 +2404,262 @@ html, body, #app-root, #screen-main {
 .prot-chart-line {
   position: absolute;
   left: 0;
-  right: 64px;
+  right: 60px;
   height: 0;
   pointer-events: none;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  z-index: 16;
 }
 .prot-chart-line.is-entry {
-  border-top: 1.5px dashed #3B82F6;
+  border-top: 1px dashed #3B82F6;
+}
+[data-theme="dark"] .prot-chart-line.is-entry {
+  border-top-color: #60A5FA;
 }
 .prot-chart-line.is-tp {
-  border-top: 2px solid #16A34A;
+  border-top: 1px solid #16A34A;
 }
 [data-theme="dark"] .prot-chart-line.is-tp {
   border-top-color: #22C55E;
 }
 .prot-chart-line.is-sl {
-  border-top: 2px solid #DC2626;
+  border-top: 1px solid #DC2626;
 }
 [data-theme="dark"] .prot-chart-line.is-sl {
-  border-top-color: #F43F5E;
+  border-top-color: #EF4444;
 }
 .prot-chart-line.is-preview {
-  border-top: 2.5px dashed #D97706;
-  z-index: 17;
+  border-top: 1px dashed #D97706;
+  z-index: 18;
 }
 [data-theme="dark"] .prot-chart-line.is-preview {
   border-top-color: #FBBF24;
 }
 .prot-chart-line.is-dimmed {
-  opacity: 0.55;
+  opacity: 0.35;
 }
 
-.prot-line-badge,
-.prot-drag-handle {
+/* Compact Handle & Badges (Right-aligned near chart edge, never obscuring candles) */
+.prot-drag-handle,
+.prot-line-badge {
   pointer-events: auto;
+  position: absolute;
+  top: -11px;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 34px;
-  padding: 4px 10px;
-  margin-left: 10px;
-  border-radius: 999px;
+  gap: 4px;
+  height: 20px;
+  line-height: 18px;
+  padding: 0 6px;
+  border-radius: 4px;
   font-size: 11px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22);
   user-select: none;
   -webkit-user-select: none;
+  touch-action: none;
+  cursor: ns-resize;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
 }
+
+/* Invisible 44x44px touch target on mobile */
+.prot-drag-handle::before {
+  content: "";
+  position: absolute;
+  top: -12px;
+  bottom: -12px;
+  left: -10px;
+  right: -10px;
+  min-height: 44px;
+  min-width: 44px;
+  pointer-events: auto;
+}
+
+.prot-drag-handle.is-tp {
+  background: #DCFCE7;
+  color: #15803D;
+  border: 1px solid #16A34A;
+}
+[data-theme="dark"] .prot-drag-handle.is-tp {
+  background: #064E3B;
+  color: #86EFAC;
+  border-color: #22C55E;
+}
+
+.prot-drag-handle.is-sl {
+  background: #FEE2E2;
+  color: #B91C1C;
+  border: 1px solid #DC2626;
+}
+[data-theme="dark"] .prot-drag-handle.is-sl {
+  background: #450A0A;
+  color: #FCA5A5;
+  border-color: #EF4444;
+}
+
+.prot-drag-handle.is-preview {
+  background: #FEF3C7;
+  color: #92400E;
+  border: 1px dashed #D97706;
+}
+[data-theme="dark"] .prot-drag-handle.is-preview {
+  background: #451A03;
+  color: #FDE68A;
+  border-color: #FBBF24;
+}
+
+/* Entry Badge with quick +TP / +SL chip buttons */
 .prot-line-badge.is-entry {
+  cursor: pointer;
+  left: 8px;
+  right: auto;
   background: var(--bg-surface, #FFFFFF);
   color: #2563EB;
-  border: 1.5px solid #3B82F6;
+  border: 1px dashed #3B82F6;
+  height: 20px;
+  line-height: 18px;
 }
 [data-theme="dark"] .prot-line-badge.is-entry {
   background: #0F172A;
   color: #60A5FA;
   border-color: #3B82F6;
 }
-.prot-drag-handle {
-  cursor: ns-resize;
-  touch-action: none;
+
+.prot-add-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 4px;
+  height: 16px;
+  line-height: 16px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  margin-left: 4px;
+  cursor: pointer;
+  border: none;
 }
-.prot-drag-handle.is-tp {
+.prot-add-chip.is-tp {
   background: #DCFCE7;
-  color: #14532D;
-  border: 1.5px solid #16A34A;
+  color: #15803D;
+  border: 1px solid #16A34A;
 }
-[data-theme="dark"] .prot-drag-handle.is-tp {
+[data-theme="dark"] .prot-add-chip.is-tp {
   background: #064E3B;
-  color: #A7F3D0;
+  color: #86EFAC;
   border-color: #22C55E;
 }
-.prot-drag-handle.is-sl {
+.prot-add-chip.is-sl {
   background: #FEE2E2;
-  color: #7F1D1D;
-  border: 1.5px solid #DC2626;
+  color: #B91C1C;
+  border: 1px solid #DC2626;
 }
-[data-theme="dark"] .prot-drag-handle.is-sl {
-  background: #4C0519;
-  color: #FECDD3;
-  border-color: #F43F5E;
-}
-.prot-line-badge.is-preview {
-  background: #FEF3C7;
-  color: #78350F;
-  border: 1.5px dashed #D97706;
-}
-[data-theme="dark"] .prot-line-badge.is-preview {
-  background: #451A03;
-  color: #FDE68A;
-  border-color: #FBBF24;
+[data-theme="dark"] .prot-add-chip.is-sl {
+  background: #450A0A;
+  color: #FCA5A5;
+  border-color: #EF4444;
 }
 
-/* Compact Chart Drag Confirmation Panel */
+/* Off-screen edge indicators (when levels are scrolled out of view) */
+.prot-offscreen-tag {
+  pointer-events: auto;
+  position: absolute;
+  right: 64px;
+  height: 18px;
+  line-height: 16px;
+  padding: 0 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  z-index: 16;
+  opacity: 0.9;
+}
+.prot-offscreen-tag.is-tp {
+  background: #DCFCE7;
+  color: #15803D;
+  border: 1px solid #16A34A;
+}
+[data-theme="dark"] .prot-offscreen-tag.is-tp {
+  background: #064E3B;
+  color: #86EFAC;
+  border-color: #22C55E;
+}
+.prot-offscreen-tag.is-sl {
+  background: #FEE2E2;
+  color: #B91C1C;
+  border: 1px solid #DC2626;
+}
+[data-theme="dark"] .prot-offscreen-tag.is-sl {
+  background: #450A0A;
+  color: #FCA5A5;
+  border-color: #EF4444;
+}
+
+/* Compact Confirmation Bar */
 .chart-protection-confirm-bar {
   position: absolute;
   left: 10px;
-  right: 74px;
-  bottom: 36px;
-  z-index: 22;
+  right: 70px;
+  bottom: 40px;
+  z-index: 25;
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  padding: 10px 12px;
-  border-radius: 12px;
+  padding: 6px 10px;
+  border-radius: 8px;
   background: var(--bg-surface, #FFFFFF);
   color: var(--text-primary, #0F172A);
-  border: 1.5px solid var(--border-strong, #CBD5E1);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border-strong, #CBD5E1);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  font-size: 12px;
 }
 [data-theme="dark"] .chart-protection-confirm-bar {
   background: #141E2E;
   color: #F8FAFC;
   border-color: #334155;
 }
-.prot-confirm-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 12px;
-  font-weight: 700;
-}
-.prot-confirm-detail {
-  font-size: 12px;
+
+.prot-confirm-msg {
+  font-size: 11.5px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
 }
-.prot-confirm-actions {
+
+.prot-confirm-btns {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  flex-shrink: 0;
 }
+
 .prot-confirm-btn {
-  min-height: 36px;
-  padding: 0 12px;
-  border-radius: 8px;
-  font-size: 12px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 11.5px;
   font-weight: 700;
   cursor: pointer;
   border: 1px solid var(--border-strong);
   background: var(--bg-surface-secondary);
   color: var(--text-primary);
 }
+
 .prot-confirm-btn.is-primary {
-  background: var(--chip-active-bg);
-  color: var(--chip-active-text);
-  border-color: var(--chip-active-bg);
-  flex: 1;
+  background: #2563EB;
+  color: #FFFFFF;
+  border-color: #2563EB;
+}
+[data-theme="dark"] .prot-confirm-btn.is-primary {
+  background: #3B82F6;
+  border-color: #3B82F6;
 }
 
 

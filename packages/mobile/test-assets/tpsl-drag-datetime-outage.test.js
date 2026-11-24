@@ -246,8 +246,8 @@ test('Requirement 3: Draggable chart TP/SL preview, cancel, confirm, and positio
   h.ctx.renderChartProtectionOverlay();
   const layerHtml1 = h.getNode('chart-protection-layer').innerHTML;
   assert.match(layerHtml1, /ENTRY LONG 65/);
-  assert.match(layerHtml1, /TP \(Saved\) ₹25150\.00/);
-  assert.match(layerHtml1, /SL \(Saved\) ₹24920\.00/);
+  assert.match(layerHtml1, /TP ₹25150\.00/);
+  assert.match(layerHtml1, /SL ₹24920\.00/);
   assert.equal(h.getNode('chart-protection-confirm-bar').style.display, 'none');
 
   // 2. Drag TP to an off-tick raw price 25210.03 -> snaps to 25210.05 preview without calling backend
@@ -256,7 +256,10 @@ test('Requirement 3: Draggable chart TP/SL preview, cancel, confirm, and positio
   assert.equal(putPayloads.length, 0, 'Dragging without confirmation must never call backend');
   assert.equal(h.state.positionsData.positions[0].targetPrice, 25150, 'Saved TP must remain unchanged until confirmed');
   assert.equal(h.getNode('chart-protection-confirm-bar').style.display, 'flex');
-  assert.match(h.getNode('chart-protection-confirm-bar').innerHTML, /Saved ₹25150\.00 → Proposed ₹25210\.05/);
+  const confirmHtml = h.getNode('chart-protection-confirm-bar').innerHTML;
+  assert.ok(confirmHtml.includes('Update TP:'));
+  assert.ok(confirmHtml.includes('25150.00'));
+  assert.ok(confirmHtml.includes('25210.05'));
 
   // 3. Cancel drag -> restores original saved line and hides confirmation bar
   h.ctx.cancelChartProtectionDrag();

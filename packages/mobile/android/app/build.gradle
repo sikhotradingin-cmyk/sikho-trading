@@ -9,8 +9,8 @@ android {
         applicationId "com.indianpapertrading"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 30
-        versionName "1.0.20"
+        versionCode 31
+        versionName "1.0.21"
     }
 
     def uploadPropsFile = file("${System.getProperty('user.home')}/.android/sikho-trading-upload.properties")
