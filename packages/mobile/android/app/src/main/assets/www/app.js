@@ -5688,6 +5688,7 @@
       if(!isSnapshot&&!quote.isSnapshot)state.lastChartTickAt=Date.now();
       state.lastRenderByInstrument=state.lastRenderByInstrument||{};state.lastRenderByInstrument[quote.globalId]=Date.now();
       updateChartCountdownUI();
+      updateChartPositionLivePnl(quote.ltp);
     }
 
     // Update visible CE/PE cells from genuine ticks without re-rendering or jumping scroll.
@@ -6481,6 +6482,75 @@
   }
 
   // =========================================================================
+  // POSITION P&L & RISK/REWARD CALCULATIONS
+  // =========================================================================
+  function calcPositionPnlAtPrice(pos, valuationPrice) {
+    if (!pos || Number(pos.quantity) === 0 || !(Number(valuationPrice) > 0)) {
+      return { grossPnl: 0, diffPerUnit: 0, isProfit: false, formatted: '₹0' };
+    }
+    const entryPrice = Number(pos.averageEntryPrice ?? pos.averageEntryPriceINR ?? 0);
+    const currentPrice = Number(valuationPrice);
+    const isLong = Number(pos.quantity) > 0;
+    const diffPerUnit = isLong ? (currentPrice - entryPrice) : (entryPrice - currentPrice);
+    const multiplier = Number(pos.pnlMultiplier) > 0 ? Number(pos.pnlMultiplier) : 1;
+    const absQty = Math.abs(Number(pos.quantity));
+    const grossPnl = Math.round(diffPerUnit * multiplier * absQty * 100) / 100;
+    const isProfit = grossPnl >= 0;
+    const decimals = (Math.abs(grossPnl) % 1 !== 0 && Math.abs(grossPnl) < 1000) ? 2 : 0;
+    return {
+      entryPrice,
+      valuationPrice: currentPrice,
+      isLong,
+      diffPerUnit,
+      multiplier,
+      absQty,
+      grossPnl,
+      isProfit,
+      formatted: (isProfit ? '+' : '−') + '₹' + Math.abs(grossPnl).toLocaleString('en-IN', {
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: 2,
+      }),
+    };
+  }
+
+  function fmtCompactPnl(val) {
+    const n = Number(val || 0);
+    const sign = n >= 0 ? '+' : '−';
+    const abs = Math.abs(n);
+    const decimals = (abs % 1 !== 0 && abs < 1000) ? 2 : 0;
+    return `${sign}₹${abs.toLocaleString('en-IN', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}`;
+  }
+
+  function calcRewardRiskRatio(entryPrice, targetPrice, stopLossPrice, isLong) {
+    if (!(Number(entryPrice) > 0) || !(Number(targetPrice) > 0) || !(Number(stopLossPrice) > 0)) return null;
+    const ep = Number(entryPrice);
+    const tp = Number(targetPrice);
+    const sl = Number(stopLossPrice);
+    const reward = isLong ? (tp - ep) : (ep - tp);
+    const risk = isLong ? (ep - sl) : (sl - ep);
+    // Only meaningful when reward > 0 and risk > 0 (stop loss is not locking profit and target is in profit)
+    if (reward <= 0 || risk <= 0) return null;
+    const ratio = reward / risk;
+    return `1:${ratio.toFixed(1)}`;
+  }
+
+  function selectChartPosition(positionId) {
+    state.selectedChartPositionId = positionId;
+    renderChartProtectionOverlay();
+  }
+
+  function updateChartPositionLivePnl(ltp) {
+    const livePnlEl = document.getElementById('chart-prot-live-pnl');
+    if (!livePnlEl || !state.activeInstrument) return;
+    const pos = getOpenPositionForInstrument(state.activeInstrument.globalId);
+    if (!pos || Number(pos.quantity) === 0) return;
+    const valuation = calcPositionPnlAtPrice(pos, ltp || pos.currentPrice || pos.averageEntryPrice);
+    if (!valuation) return;
+    livePnlEl.textContent = valuation.formatted;
+    livePnlEl.className = 'prot-badge-pnl ' + (valuation.isProfit ? 'is-pos' : 'is-neg');
+  }
+
+  // =========================================================================
   // DRAGGABLE CHART TP/SL LINES & CONFIRMATION BAR
   // =========================================================================
   function renderChartProtectionOverlay() {
@@ -6524,7 +6594,12 @@
     const absQty = Math.abs(Number(pos.quantity));
     const esc = window.SikhoUX?.escape || ((s) => String(s ?? ''));
 
-    const linesHtml = [];
+    // Live P&L valuation at current market price
+    const currentMarketPrice = Number(pos.currentPrice || pos.currentLtpINR || (state.quotesMap?.get?.(gid)?.ltp) || state.quotes?.[gid]?.ltp || pos.averageEntryPrice);
+    const liveValuation = calcPositionPnlAtPrice(pos, currentMarketPrice);
+    const livePnlStr = liveValuation.formatted;
+    const livePnlCls = liveValuation.isProfit ? 'is-pos' : 'is-neg';
+
     const hasSavedTp = Number(pos.targetPrice) > 0;
     const hasSavedSl = Number(pos.stopLossPrice) > 0;
 
@@ -6537,11 +6612,90 @@
     let slRightOffset = 4;
     if (tpRes && !tpRes.offscreen && slRes && !slRes.offscreen) {
       if (Math.abs(tpRes.y - slRes.y) < 24) {
-        slRightOffset = 85;
+        slRightOffset = 120;
       }
     }
 
-    // 1. Executed Entry Line (Distinct thin dashed line) + compact +TP/+SL chips if missing
+    const zonesHtml = [];
+    const linesHtml = [];
+
+    // Helper for zone Y coordinates
+    const getYCoord = (price) => {
+      if (!(Number(price) > 0)) return null;
+      const res = priceToY(price);
+      if (!res) return null;
+      if (res.offscreen) return res.dir === 'ABOVE' ? 0 : paneHeight;
+      return res.y;
+    };
+
+    const entryY = entryRes && !entryRes.offscreen ? entryRes.y : (entryRes?.dir === 'ABOVE' ? 0 : (entryRes?.dir === 'BELOW' ? paneHeight : null));
+
+    // Effective TP and SL prices considering active drag
+    const effectiveTpPrice = (drag && (drag.active || drag.pendingConfirm) && drag.positionId === pos.id && drag.field === 'TP' && Number(drag.proposedPrice) > 0)
+      ? drag.proposedPrice
+      : (hasSavedTp ? Number(pos.targetPrice) : null);
+
+    const effectiveSlPrice = (drag && (drag.active || drag.pendingConfirm) && drag.positionId === pos.id && drag.field === 'SL' && Number(drag.proposedPrice) > 0)
+      ? drag.proposedPrice
+      : (hasSavedSl ? Number(pos.stopLossPrice) : null);
+
+    // Reward-to-Risk ratio calculation
+    const rrRatio = calcRewardRiskRatio(pos.averageEntryPrice, effectiveTpPrice, effectiveSlPrice, isLong);
+
+    // -------------------------------------------------------------------------
+    // 1. SUBTLE RISK / REWARD ZONES
+    // -------------------------------------------------------------------------
+    if (entryY !== null) {
+      // Zone 1: Take Profit (Reward) Zone
+      if (effectiveTpPrice) {
+        let tpY = null;
+        if (drag && drag.active && drag.field === 'TP' && drag.currentY !== undefined) {
+          tpY = drag.currentY;
+        } else {
+          tpY = getYCoord(effectiveTpPrice);
+        }
+        if (tpY !== null) {
+          const top = Math.min(entryY, tpY);
+          const height = Math.abs(entryY - tpY);
+          if (height >= 2) {
+            const tpEst = calcPositionPnlAtPrice(pos, effectiveTpPrice);
+            const zCls = tpEst.isProfit ? 'is-profit' : 'is-loss';
+            zonesHtml.push(`
+              <div class="prot-zone ${zCls}" style="top:${top}px;height:${height}px;" data-prot-zone="TP">
+                <span class="prot-zone-tag ${zCls}">PROFIT ZONE${rrRatio ? ` · R:R ${rrRatio}` : ''}</span>
+              </div>
+            `);
+          }
+        }
+      }
+
+      // Zone 2: Stop Loss (Risk) Zone
+      if (effectiveSlPrice) {
+        let slY = null;
+        if (drag && drag.active && drag.field === 'SL' && drag.currentY !== undefined) {
+          slY = drag.currentY;
+        } else {
+          slY = getYCoord(effectiveSlPrice);
+        }
+        if (slY !== null) {
+          const top = Math.min(entryY, slY);
+          const height = Math.abs(entryY - slY);
+          if (height >= 2) {
+            const slEst = calcPositionPnlAtPrice(pos, effectiveSlPrice);
+            const zCls = slEst.isProfit ? 'is-profit' : 'is-loss';
+            zonesHtml.push(`
+              <div class="prot-zone ${zCls}" style="top:${top}px;height:${height}px;" data-prot-zone="SL">
+                <span class="prot-zone-tag ${zCls}">${slEst.isProfit ? 'PROFIT LOCK' : 'RISK ZONE'}</span>
+              </div>
+            `);
+          }
+        }
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // 2. EXECUTED ENTRY LINE & LIVE POSITION BADGE
+    // -------------------------------------------------------------------------
     if (entryRes && !entryRes.offscreen) {
       let addChipsHtml = '';
       if (!hasSavedTp) {
@@ -6554,16 +6708,20 @@
         <div class="prot-chart-line is-entry" style="top:${entryRes.y}px;" data-prot-line="ENTRY">
           <div class="prot-line-badge is-entry"
                onclick="window.TZApp.openProtectionModal('${esc(pos.id)}')"
-               title="Entry price. Tap for numeric edit.">
-            <span>ENTRY ${sideLabel} ${absQty} • ₹${fmtNum(pos.averageEntryPrice)}</span>
+               title="Entry price: ₹${fmtNum(pos.averageEntryPrice)}. Tap for numeric edit.">
+            <span>ENTRY ${sideLabel} ${absQty} qty · <span id="chart-prot-live-pnl" class="prot-badge-pnl ${livePnlCls}">${livePnlStr}</span></span>
+            ${rrRatio ? `<span class="prot-badge-rr" title="Reward to Risk Ratio">R:R ${rrRatio}</span>` : ''}
             ${addChipsHtml}
           </div>
         </div>
       `);
     }
 
-    // 2. Saved Take Profit (TP) Line (Draggable, independent 1px line)
+    // -------------------------------------------------------------------------
+    // 3. SAVED TAKE PROFIT (TP) LINE & ESTIMATED OUTCOME
+    // -------------------------------------------------------------------------
     if (hasSavedTp) {
+      const tpPnl = calcPositionPnlAtPrice(pos, pos.targetPrice);
       if (tpRes && !tpRes.offscreen) {
         const isBeingDragged = drag && drag.positionId === pos.id && drag.field === 'TP';
         linesHtml.push(`
@@ -6576,7 +6734,7 @@
                  onpointerdown="window.TZApp.startChartProtectionDrag(event, '${esc(pos.id)}', 'TP')"
                  onmousedown="window.TZApp.startChartProtectionDrag(event, '${esc(pos.id)}', 'TP')"
                  ontouchstart="window.TZApp.startChartProtectionDrag(event, '${esc(pos.id)}', 'TP')">
-              <span>⠿ TP ₹${fmtNum(pos.targetPrice)}</span>
+              <span>⠿ TP ₹${fmtNum(pos.targetPrice)} · Est. ${tpPnl.formatted}</span>
             </div>
           </div>
         `);
@@ -6584,19 +6742,23 @@
         const edgeStyle = tpRes.dir === 'ABOVE' ? 'top:4px;' : 'bottom:36px;';
         linesHtml.push(`
           <div class="prot-offscreen-tag is-tp" style="${edgeStyle}" title="Take Profit outside visible chart range">
-            <span>${tpRes.dir === 'ABOVE' ? '▲' : '▼'} TP ₹${fmtNum(pos.targetPrice)}</span>
+            <span>${tpRes.dir === 'ABOVE' ? '▲' : '▼'} TP ₹${fmtNum(pos.targetPrice)} · Est. ${tpPnl.formatted}</span>
           </div>
         `);
       }
     }
 
-    // 3. Saved Stop Loss (SL) Line (Draggable, independent 1px line)
+    // -------------------------------------------------------------------------
+    // 4. SAVED STOP LOSS (SL) LINE & ESTIMATED OUTCOME
+    // -------------------------------------------------------------------------
     if (hasSavedSl) {
+      const slPnl = calcPositionPnlAtPrice(pos, pos.stopLossPrice);
+      const isProfitProtecting = slPnl.isProfit;
       if (slRes && !slRes.offscreen) {
         const isBeingDragged = drag && drag.positionId === pos.id && drag.field === 'SL';
         linesHtml.push(`
-          <div class="prot-chart-line is-sl ${isBeingDragged ? 'is-dimmed' : ''}" style="top:${slRes.y}px;" data-prot-line="SL_SAVED">
-            <div class="prot-drag-handle is-sl"
+          <div class="prot-chart-line is-sl ${isProfitProtecting ? 'is-profit-protecting' : ''} ${isBeingDragged ? 'is-dimmed' : ''}" style="top:${slRes.y}px;" data-prot-line="SL_SAVED">
+            <div class="prot-drag-handle is-sl ${isProfitProtecting ? 'is-profit-protecting' : ''}"
                  style="right:${slRightOffset}px;"
                  role="slider"
                  aria-label="Drag Stop Loss line for ${esc(pos.symbol)}"
@@ -6604,21 +6766,23 @@
                  onpointerdown="window.TZApp.startChartProtectionDrag(event, '${esc(pos.id)}', 'SL')"
                  onmousedown="window.TZApp.startChartProtectionDrag(event, '${esc(pos.id)}', 'SL')"
                  ontouchstart="window.TZApp.startChartProtectionDrag(event, '${esc(pos.id)}', 'SL')">
-              <span>⠿ SL ₹${fmtNum(pos.stopLossPrice)}</span>
+              <span>⠿ SL ₹${fmtNum(pos.stopLossPrice)} · Est. ${slPnl.formatted}</span>
             </div>
           </div>
         `);
       } else if (slRes && slRes.offscreen) {
         const edgeStyle = slRes.dir === 'ABOVE' ? 'top:4px;' : 'bottom:36px;';
         linesHtml.push(`
-          <div class="prot-offscreen-tag is-sl" style="${edgeStyle}" title="Stop Loss outside visible chart range">
-            <span>${slRes.dir === 'ABOVE' ? '▲' : '▼'} SL ₹${fmtNum(pos.stopLossPrice)}</span>
+          <div class="prot-offscreen-tag is-sl ${isProfitProtecting ? 'is-profit-protecting' : ''}" style="${edgeStyle}" title="Stop Loss outside visible chart range">
+            <span>${slRes.dir === 'ABOVE' ? '▲' : '▼'} SL ₹${fmtNum(pos.stopLossPrice)} · Est. ${slPnl.formatted}</span>
           </div>
         `);
       }
     }
 
-    // 4. Temporary Unconfirmed Drag Preview Line (Follows finger/mouse smoothly)
+    // -------------------------------------------------------------------------
+    // 5. UNCONFIRMED DRAG PREVIEW LINE
+    // -------------------------------------------------------------------------
     if (drag && drag.positionId === pos.id && Number(drag.proposedPrice) > 0) {
       let prevY = null;
       if (drag.currentY !== undefined && drag.active) {
@@ -6628,25 +6792,58 @@
         if (pRes && !pRes.offscreen) prevY = pRes.y;
       }
       if (prevY !== null) {
+        const dragPnl = calcPositionPnlAtPrice(pos, drag.proposedPrice);
         linesHtml.push(`
           <div class="prot-chart-line is-preview" style="top:${prevY}px;" data-prot-line="PREVIEW">
             <div class="prot-drag-handle is-preview" style="right:4px;">
-              <span>⠿ ${esc(drag.field)} ₹${fmtNum(drag.proposedPrice)}</span>
+              <span>⠿ ${esc(drag.field)} ₹${fmtNum(drag.proposedPrice)} · Est. ${dragPnl.formatted}</span>
             </div>
           </div>
         `);
       }
     }
 
-    layer.innerHTML = linesHtml.join('');
+    // -------------------------------------------------------------------------
+    // 6. MULTIPLE POSITIONS SELECTOR (if > 1 position for active instrument)
+    // -------------------------------------------------------------------------
+    let posSelectorHtml = '';
+    const allInstrumentPositions = (state.positionsData?.positions || []).filter(
+      (p) => p.globalInstrumentId === gid && Number(p.quantity) !== 0
+    );
+    if (allInstrumentPositions.length > 1) {
+      const pills = allInstrumentPositions.map((p, idx) => {
+        const isSelected = p.id === pos.id;
+        const pSide = Number(p.quantity) > 0 ? 'LONG' : 'SHORT';
+        const pQty = Math.abs(Number(p.quantity));
+        const pPnl = calcPositionPnlAtPrice(p, p.currentPrice || p.averageEntryPrice);
+        return `
+          <button type="button" 
+                  class="prot-pos-pill ${isSelected ? 'is-selected' : ''}"
+                  onclick="window.TZApp.selectChartPosition('${esc(p.id)}')">
+            ${pSide} ${pQty} (${pPnl.formatted})
+          </button>
+        `;
+      }).join('');
+      posSelectorHtml = `
+        <div class="prot-pos-selector">
+          <span class="prot-pos-selector-label">Pos:</span>
+          ${pills}
+        </div>
+      `;
+    }
 
-    // 5. Compact Confirmation Bar after Drag Release
+    layer.innerHTML = posSelectorHtml + zonesHtml.join('') + linesHtml.join('');
+
+    // -------------------------------------------------------------------------
+    // 7. COMPACT CONFIRMATION BAR AFTER DRAG RELEASE
+    // -------------------------------------------------------------------------
     if (confirmBar) {
       if (drag && drag.pendingConfirm && drag.positionId === pos.id) {
+        const dragPnl = calcPositionPnlAtPrice(pos, drag.proposedPrice);
         confirmBar.style.display = 'flex';
         confirmBar.innerHTML = `
           <div class="prot-confirm-msg">
-            Update ${esc(drag.field)}: <b>₹${fmtNum(drag.previousPrice)}</b> → <b>₹${fmtNum(drag.proposedPrice)}</b>?
+            Update ${esc(drag.field)}: <b>₹${fmtNum(drag.previousPrice)}</b> → <b>₹${fmtNum(drag.proposedPrice)}</b> <span class="${dragPnl.isProfit ? 'val-pos' : 'val-neg'}">(Est. ${dragPnl.formatted})</span>?
           </div>
           <div class="prot-confirm-btns">
             <button type="button" class="prot-confirm-btn" ${drag.submitting ? 'disabled' : ''} onclick="window.TZApp.cancelChartProtectionDrag()">Cancel</button>
@@ -7174,6 +7371,11 @@
     confirmChartProtectionDrag,
     cancelChartProtectionDrag,
     openProtectionModalFromDrag,
+    calcPositionPnlAtPrice,
+    calcRewardRiskRatio,
+    fmtCompactPnl,
+    selectChartPosition,
+    updateChartPositionLivePnl,
     openDeleteAccountModal,
     closeDeleteAccountModal,
     submitAccountDeletion,

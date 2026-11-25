@@ -2742,6 +2742,172 @@ html, body, #app-root, #screen-main {
   border-color: #EF4444;
 }
 
+/* Profit-protecting Stop Loss line & handle overrides */
+.prot-chart-line.is-sl.is-profit-protecting {
+  border-top-color: #16A34A;
+}
+[data-theme="dark"] .prot-chart-line.is-sl.is-profit-protecting {
+  border-top-color: #22C55E;
+}
+.prot-drag-handle.is-sl.is-profit-protecting,
+.prot-offscreen-tag.is-sl.is-profit-protecting {
+  background: #DCFCE7;
+  color: #15803D;
+  border-color: #16A34A;
+}
+[data-theme="dark"] .prot-drag-handle.is-sl.is-profit-protecting,
+[data-theme="dark"] .prot-offscreen-tag.is-sl.is-profit-protecting {
+  background: #064E3B;
+  color: #86EFAC;
+  border-color: #22C55E;
+}
+
+/* Subtle Risk & Reward Zones */
+.prot-zone {
+  position: absolute;
+  left: 0;
+  right: 60px;
+  pointer-events: none;
+  z-index: 14;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.prot-zone.is-profit {
+  background: rgba(16, 185, 129, 0.07);
+  border-left: 3px solid rgba(16, 185, 129, 0.5);
+}
+[data-theme="dark"] .prot-zone.is-profit {
+  background: rgba(34, 197, 94, 0.08);
+  border-left: 3px solid rgba(34, 197, 94, 0.6);
+}
+.prot-zone.is-loss {
+  background: rgba(239, 68, 68, 0.07);
+  border-left: 3px solid rgba(239, 68, 68, 0.5);
+}
+[data-theme="dark"] .prot-zone.is-loss {
+  background: rgba(239, 68, 68, 0.08);
+  border-left: 3px solid rgba(239, 68, 68, 0.6);
+}
+.prot-zone-tag {
+  position: absolute;
+  left: 8px;
+  bottom: 3px;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  padding: 1px 4px;
+  border-radius: 3px;
+  opacity: 0.85;
+}
+.prot-zone-tag.is-profit {
+  color: #15803D;
+  background: rgba(220, 252, 231, 0.8);
+}
+[data-theme="dark"] .prot-zone-tag.is-profit {
+  color: #86EFAC;
+  background: rgba(6, 78, 59, 0.8);
+}
+.prot-zone-tag.is-loss {
+  color: #B91C1C;
+  background: rgba(254, 226, 226, 0.8);
+}
+[data-theme="dark"] .prot-zone-tag.is-loss {
+  color: #FCA5A5;
+  background: rgba(69, 10, 10, 0.8);
+}
+
+/* Live P&L and R:R Badge Elements */
+.prot-badge-pnl {
+  font-weight: 800;
+  padding: 0 2px;
+}
+.prot-badge-pnl.is-pos {
+  color: #16A34A;
+}
+[data-theme="dark"] .prot-badge-pnl.is-pos {
+  color: #4ADE80;
+}
+.prot-badge-pnl.is-neg {
+  color: #DC2626;
+}
+[data-theme="dark"] .prot-badge-pnl.is-neg {
+  color: #F87171;
+}
+
+.prot-badge-rr {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 4px;
+  height: 16px;
+  line-height: 16px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 800;
+  margin-left: 4px;
+  background: rgba(59, 130, 246, 0.12);
+  color: #2563EB;
+}
+[data-theme="dark"] .prot-badge-rr {
+  background: rgba(96, 165, 250, 0.18);
+  color: #93C5FD;
+}
+
+/* Position Selector for Multiple Positions */
+.prot-pos-selector {
+  position: absolute;
+  top: 6px;
+  left: 8px;
+  z-index: 18;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  pointer-events: auto;
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  padding: 2px 6px;
+  border-radius: 6px;
+  border: 1px solid rgba(203, 213, 225, 0.8);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+}
+[data-theme="dark"] .prot-pos-selector {
+  background: rgba(15, 23, 42, 0.88);
+  border-color: rgba(51, 65, 85, 0.8);
+}
+.prot-pos-selector-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #64748B;
+  text-transform: uppercase;
+}
+.prot-pos-pill {
+  border: 1px solid #CBD5E1;
+  background: #F1F5F9;
+  color: #334155;
+  font-size: 10.5px;
+  font-weight: 700;
+  border-radius: 4px;
+  padding: 1px 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+[data-theme="dark"] .prot-pos-pill {
+  border-color: #334155;
+  background: #1E293B;
+  color: #94A3B8;
+}
+.prot-pos-pill.is-selected {
+  background: #0F172A;
+  color: #FFFFFF;
+  border-color: #0F172A;
+}
+[data-theme="dark"] .prot-pos-pill.is-selected {
+  background: #C7F542;
+  color: #0F172A;
+  border-color: #C7F542;
+}
+
 .prot-drag-handle.is-preview {
   background: #FEF3C7;
   color: #92400E;
