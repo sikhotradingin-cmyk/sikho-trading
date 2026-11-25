@@ -1,5 +1,6 @@
 import { Readable } from 'node:stream';
 import { historyBounds, readTradeHistory } from './history.js';
+import { previewRetentionCleanup, executeRetentionCleanup, startRetentionCron } from './engine/retention-service.js';
 import { resolveAccessPolicy } from './monetization/access-policy.js';
 import Fastify, { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
@@ -1508,6 +1509,12 @@ export async function buildServer(
     }
     const accessPolicy = resolveAccessPolicy(await billingService.getAccountTier(req.user.userId));
     const tier = accessPolicy.capitalTier;
+    if (tier === 'FREE' && requestedCapitalINR !== 100000) {
+      return reply.status(403).send({
+        error: 'Custom capital amounts above ₹100,000 require Pro tier or active launch access.',
+        code: 'ERR_PRO_TIER_REQUIRED',
+      });
+    }
     const validation = validateResetCapitalAmount(requestedCapitalINR, tier);
     if (!validation.valid) {
       return reply.status(400).send({
@@ -2214,6 +2221,12 @@ export async function buildServer(
     const r=await db.query('SELECT id,started_at,ended_at,is_active FROM practice_sessions WHERE account_id=$1 ORDER BY started_at DESC',[req.user.accountId]);
     return {sessions:r.rows.map(x=>({id:x.id,startedAt:Number(x.started_at),endedAt:x.ended_at?Number(x.ended_at):null,isActive:x.is_active}))};
   });
+  app.get('/api/v1/admin/retention/dry-run', {preHandler:[(app as any).authenticate]}, async (req:any) => {
+    return await previewRetentionCleanup(db, { accountId: req.user.accountId });
+  });
+  app.post('/api/v1/admin/retention/cleanup', {preHandler:[(app as any).authenticate]}, async (req:any) => {
+    return await executeRetentionCleanup(db, { accountId: req.user.accountId });
+  });
   app.get('/api/v1/orders/page', {preHandler:[(app as any).authenticate]}, async (req:any,reply) => {
     try{
       const {from,to}=historyBounds(req.query);
@@ -2817,7 +2830,8 @@ export async function buildServer(
 
 // Start standalone server if invoked directly
 if (process.argv[1]?.endsWith('server.js') || process.argv[1]?.endsWith('server.ts')) {
-  buildServer().then(({ app }) => {
+  buildServer().then(({ app, db }) => {
+    startRetentionCron(db);
     app.listen({ port: config.port, host: config.host }, (err, address) => {
       if (err) {
         console.error(err);

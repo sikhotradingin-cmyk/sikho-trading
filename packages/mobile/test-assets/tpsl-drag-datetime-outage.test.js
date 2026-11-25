@@ -250,9 +250,9 @@ test('Requirement 3: Draggable chart TP/SL preview, cancel, confirm, and positio
   // 1. Render initial protection overlay (Entry, Saved TP, Saved SL)
   h.ctx.renderChartProtectionOverlay();
   const layerHtml1 = h.getNode('chart-protection-layer').innerHTML;
-  assert.match(layerHtml1, /ENTRY LONG 65/);
-  assert.match(layerHtml1, /TP ₹25150\.00/);
-  assert.match(layerHtml1, /SL ₹24920\.00/);
+  assert.match(layerHtml1, /65 qty ·/);
+  assert.match(layerHtml1, /TP · \+₹9,750/);
+  assert.match(layerHtml1, /SL · −₹5,200/);
   assert.equal(h.getNode('chart-protection-confirm-bar').style.display, 'none');
 
   // 2. Drag TP to an off-tick raw price 25210.03 -> snaps to 25210.05 preview without calling backend

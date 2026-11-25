@@ -208,34 +208,28 @@ test('TASK 3 & 4: Overlay Markup, Subtle Zones, and Live Drag Preview', () => {
   extractFn('alignPriceToTick');
   extractFn('getOpenPositionForInstrument');
   extractFn('getPositionById');
+  extractFn('syncProtectionLinePositions');
   extractFn('renderChartProtectionOverlay');
   extractFn('previewChartProtectionDrag');
   extractFn('cancelChartProtectionDrag');
 
-  // 1. Initial render of the 3 levels + Risk/Reward zones
+  // 1. Initial render of the compact levels
   ctx.renderChartProtectionOverlay();
   const layer = getOrCreate('chart-protection-layer');
   const html = layer.innerHTML;
 
-  // Entry reference line with side, quantity, and live unrealized P&L
+  // Entry reference line with compact quantity and live unrealized P&L
   assert.ok(html.includes('data-prot-line="ENTRY"'), 'Entry line must exist');
-  assert.ok(html.includes('ENTRY LONG 65 qty'), 'Entry badge must show side and quantity');
+  assert.ok(html.includes('65 qty ·'), 'Entry badge must show compact quantity');
   assert.ok(html.includes('id="chart-prot-live-pnl"'), 'Live P&L span with chart-prot-live-pnl must exist');
-  assert.ok(html.includes('R:R 1:2.0'), 'R:R 1:2.0 pill must be shown for Entry 100, TP 120, SL 90');
 
-  // TP line with estimated outcome
+  // TP line with compact outcome badge (e.g. "TP · +₹1,300")
   assert.ok(html.includes('data-prot-line="TP_SAVED"'), 'Take Profit line must exist');
-  assert.ok(html.includes('TP ₹120.00 · Est. +₹1,300'), 'TP badge must show price and estimated outcome');
+  assert.ok(html.includes('TP · +₹1,300'), 'TP badge must show compact outcome');
 
-  // SL line with estimated outcome
+  // SL line with compact outcome badge (e.g. "SL · −₹650")
   assert.ok(html.includes('data-prot-line="SL_SAVED"'), 'Stop Loss line must exist');
-  assert.ok(html.includes('SL ₹90.00 · Est. −₹650'), 'SL badge must show price and estimated outcome');
-
-  // Subtle risk/reward zones
-  assert.ok(html.includes('data-prot-zone="TP"'), 'TP reward zone must exist');
-  assert.ok(html.includes('data-prot-zone="SL"'), 'SL risk zone must exist');
-  assert.ok(html.includes('prot-zone is-profit'), 'Reward zone must have is-profit styling');
-  assert.ok(html.includes('prot-zone is-loss'), 'Risk zone must have is-loss styling');
+  assert.ok(html.includes('SL · −₹650'), 'SL badge must show compact outcome');
 
   // 2. Drag TP to ₹125 preview
   ctx.previewChartProtectionDrag('pos-1', 'TP', 125.02);
@@ -259,9 +253,8 @@ test('TASK 3 & 4: Overlay Markup, Subtle Zones, and Live Drag Preview', () => {
   state.positionsData.positions[0].stopLossPrice = 105;
   ctx.renderChartProtectionOverlay();
   const protSlHtml = getOrCreate('chart-protection-layer').innerHTML;
-  assert.ok(protSlHtml.includes('SL ₹105.00 · Est. +₹325'), 'Profit-protecting SL must display positive estimate');
+  assert.ok(protSlHtml.includes('SL · +₹325'), 'Profit-protecting SL must display positive estimate');
   assert.ok(protSlHtml.includes('is-profit-protecting'), 'Profit-protecting SL must have is-profit-protecting class');
-  assert.ok(protSlHtml.includes('PROFIT LOCK'), 'Profit-protecting zone must show profit lock tag');
   assert.ok(!protSlHtml.includes('R:R'), 'Profit-protecting SL must not show misleading R:R ratio');
 
   // 4. Live Tick update

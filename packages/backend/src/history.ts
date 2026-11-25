@@ -1,4 +1,5 @@
 import { IDatabase, IDatabaseClient } from './db/database.js';
+import { getAccountHistoryCheckpoint, getRetentionCutoffTimestamp, RETENTION_DAYS } from './engine/retention-service.js';
 
 /** One completed closing execution is one realized trade; scale-outs are distinct exits, never order updates. */
 export async function recordExecutionHistory(db: IDatabaseClient, order: any, snapshot: any) {
@@ -44,35 +45,140 @@ export async function recordExecutionHistory(db: IDatabaseClient, order: any, sn
 }
 
 export function historyBounds(q: any, now = Date.now()) {
-  const day = 86400000, midnight = Math.floor((now+19800000)/day)*day-19800000;
-  let from = q.range === 'ALL' ? 0 : q.range === 'TODAY' ? midnight : q.range === 'MONTH' ? Date.UTC(new Date(now+19800000).getUTCFullYear(),new Date(now+19800000).getUTCMonth(),1)-19800000 : midnight-6*day;
-  let to=midnight+day;
-  if(q.from !== undefined) from=Number(q.from); if(q.to !== undefined)to=Number(q.to);
-  if(!Number.isFinite(from)||!Number.isFinite(to)||from<0||to<=from||to-from>(q.range==='ALL'?36600:3660)*day)throw Error('Invalid history range (maximum ten years).');
-  return {from,to};
+  const day = 86400000;
+  const midnight = Math.floor((now + 19800000) / day) * day - 19800000;
+  const retentionCutoff = getRetentionCutoffTimestamp(now, RETENTION_DAYS);
+  let from = q.range === 'TODAY' 
+    ? midnight 
+    : q.range === 'WEEK' 
+      ? Math.max(midnight - 6 * day, retentionCutoff) 
+      : retentionCutoff;
+  let to = midnight + day;
+  if (q.from !== undefined) from = Math.max(Number(q.from), retentionCutoff);
+  if (q.to !== undefined) to = Number(q.to);
+  if (!Number.isFinite(from) || !Number.isFinite(to) || from < 0 || to <= from) {
+    throw Error('Invalid history range. Trade history is retained for 30 days.');
+  }
+  return { from, to, retentionCutoff };
 }
 
 export async function readTradeHistory(db: IDatabase, accountId: string, q: any) {
-  let {from,to}=historyBounds(q);
-  if(q.sessionId){const session=await db.query('SELECT started_at,ended_at FROM practice_sessions WHERE account_id=$1 AND id=$2',[accountId,String(q.sessionId)]);if(!session.rows.length)throw Error('Practice session not found');from=Math.max(from,Number(session.rows[0].started_at));to=Math.min(to,Number(session.rows[0].ended_at||to));}
-  const limit=Math.max(1,Math.min(100,Math.floor(Number(q.limit)||30))); const offset=Math.max(0,Math.min(1000000,Math.floor(Number(q.offset)||0)));
-  const params:any[]=[accountId,from,to];
-  const session=q.sessionId ? ' AND session_id=$4' : ''; if(q.sessionId)params.push(String(q.sessionId));
-  const aggregate=await db.query(`SELECT COUNT(*) as count,SUM(gross_paise) as gross,SUM(charges_paise) as charges,
-    SUM(CASE WHEN charges_paise IS NULL THEN 1 ELSE 0 END) as unknown,
-    SUM(CASE WHEN charges_paise IS NOT NULL AND gross_paise > charges_paise THEN 1 ELSE 0 END) as wins,
-    SUM(CASE WHEN charges_paise IS NOT NULL AND gross_paise < charges_paise THEN 1 ELSE 0 END) as losses,
-    SUM(CASE WHEN charges_paise IS NOT NULL AND gross_paise = charges_paise THEN 1 ELSE 0 END) as breakeven
-    FROM trade_closures WHERE account_id=$1 AND exited_at >= $2 AND exited_at < $3${session}`,params);
-  const page=await db.query(`SELECT payload_json FROM trade_closures WHERE account_id=$1 AND exited_at >= $2 AND exited_at < $3${session} ORDER BY exited_at DESC,id DESC LIMIT ${limit} OFFSET ${offset}`,params);
-  const a=aggregate.rows[0];const total=Number(a.count),gross=BigInt(a.gross||0),charges=BigInt(a.charges||0),wins=Number(a.wins||0),losses=Number(a.losses||0),breakeven=Number(a.breakeven||0),unknown=Number(a.unknown||0);
-  const orderCounts=await db.query('SELECT status,COUNT(*) as count FROM orders WHERE account_id=$1 AND created_at >= $2 AND created_at < $3 GROUP BY status',[accountId,from,to]);
-  const legacyOffset=Math.max(0,Math.min(1000000,Math.floor(Number(q.legacyOffset)||0)));
-  const legacyCount=await db.query("SELECT COUNT(*) as count,SUM(l.amount_paise) as gross FROM account_ledger_entries l LEFT JOIN trade_closures t ON t.id=l.reference_id WHERE l.account_id=$1 AND l.entry_type='TRADE_PNL' AND l.created_at >= $2 AND l.created_at < $3 AND t.id IS NULL",[accountId,from,to]);
-  const legacy=await db.query("SELECT l.id,l.reference_id,l.amount_paise,l.created_at,l.note FROM account_ledger_entries l LEFT JOIN trade_closures t ON t.id=l.reference_id WHERE l.account_id=$1 AND l.entry_type='TRADE_PNL' AND l.created_at >= $2 AND l.created_at < $3 AND t.id IS NULL ORDER BY l.created_at DESC,l.id DESC LIMIT 30 OFFSET "+legacyOffset,[accountId,from,to]);
-  return {from,to,timezone:'Asia/Kolkata',methodology:'One realized closing execution; partial reductions count once per executed exit order. Win rate is wins divided by known-cost exits including breakeven, using allocated entry and exit charges. Cancelled/rejected orders and capital resets are excluded.',
-    trades:page.rows.map(r=>JSON.parse(r.payload_json)),total,nextOffset:offset+page.rows.length<total?offset+page.rows.length:null,
-    summary:{closedTrades:total,wins,losses,breakeven,unknownCostTrades:unknown,winRatePct:wins+losses+breakeven?100*wins/(wins+losses+breakeven):null,grossPaise:(gross+BigInt(legacyCount.rows[0].gross||0)).toString(),chargesPaise:unknown||Number(legacyCount.rows[0].count)?null:charges.toString(),netPaise:unknown||Number(legacyCount.rows[0].count)?null:(gross-charges).toString(),legacySettlements:Number(legacyCount.rows[0].count),orderCounts:Object.fromEntries(orderCounts.rows.map(r=>[r.status,Number(r.count)]))},
-    legacyTotal:Number(legacyCount.rows[0].count),legacyGrossPaise:String(legacyCount.rows[0].gross||0),nextLegacyOffset:legacyOffset+legacy.rows.length<Number(legacyCount.rows[0].count)?legacyOffset+legacy.rows.length:null,
-    legacyRealizations:legacy.rows.map(r=>({id:r.id,exitOrderId:r.reference_id,grossPaise:String(r.amount_paise),exitTimestamp:Number(r.created_at),note:r.note,coverage:'LEGACY_ENTRY_DETAILS_UNAVAILABLE'})),legacyNote:'Older ledger settlements are shown separately. Entry/exit matches and allocated costs are not invented.'};
+  let { from, to, retentionCutoff } = historyBounds(q);
+  if (q.sessionId) {
+    const session = await db.query('SELECT started_at,ended_at FROM practice_sessions WHERE account_id=$1 AND id=$2', [accountId, String(q.sessionId)]);
+    if (!session.rows.length) throw Error('Practice session not found');
+    from = Math.max(from, Number(session.rows[0].started_at));
+    to = Math.min(to, Number(session.rows[0].ended_at || to));
+  }
+  const limit = Math.max(1, Math.min(100, Math.floor(Number(q.limit) || 30)));
+  const offset = Math.max(0, Math.min(1000000, Math.floor(Number(q.offset) || 0)));
+  const params: any[] = [accountId, from, to];
+  const session = q.sessionId ? ' AND session_id=$4' : '';
+  if (q.sessionId) params.push(String(q.sessionId));
+
+  const aggregate = await db.query(
+    `SELECT COUNT(*) as count, SUM(gross_paise) as gross, SUM(charges_paise) as charges,
+     SUM(CASE WHEN charges_paise IS NULL THEN 1 ELSE 0 END) as unknown,
+     SUM(CASE WHEN charges_paise IS NOT NULL AND gross_paise > charges_paise THEN 1 ELSE 0 END) as wins,
+     SUM(CASE WHEN charges_paise IS NOT NULL AND gross_paise < charges_paise THEN 1 ELSE 0 END) as losses,
+     SUM(CASE WHEN charges_paise IS NOT NULL AND gross_paise = charges_paise THEN 1 ELSE 0 END) as breakeven
+     FROM trade_closures WHERE account_id=$1 AND exited_at >= $2 AND exited_at < $3${session}`,
+    params
+  );
+  const page = await db.query(
+    `SELECT payload_json FROM trade_closures WHERE account_id=$1 AND exited_at >= $2 AND exited_at < $3${session} ORDER BY exited_at DESC, id DESC LIMIT ${limit} OFFSET ${offset}`,
+    params
+  );
+  const a = aggregate.rows[0];
+  const total = Number(a.count);
+  const gross = BigInt(a.gross || 0);
+  const charges = BigInt(a.charges || 0);
+  const wins = Number(a.wins || 0);
+  const losses = Number(a.losses || 0);
+  const breakeven = Number(a.breakeven || 0);
+  const unknown = Number(a.unknown || 0);
+
+  const orderCounts = await db.query(
+    'SELECT status, COUNT(*) as count FROM orders WHERE account_id=$1 AND created_at >= $2 AND created_at < $3 GROUP BY status',
+    [accountId, from, to]
+  );
+  const legacyOffset = Math.max(0, Math.min(1000000, Math.floor(Number(q.legacyOffset) || 0)));
+  const legacyCount = await db.query(
+    "SELECT COUNT(*) as count, SUM(l.amount_paise) as gross FROM account_ledger_entries l LEFT JOIN trade_closures t ON t.id=l.reference_id WHERE l.account_id=$1 AND l.entry_type='TRADE_PNL' AND l.created_at >= $2 AND l.created_at < $3 AND t.id IS NULL",
+    [accountId, from, to]
+  );
+  const legacy = await db.query(
+    "SELECT l.id, l.reference_id, l.amount_paise, l.created_at, l.note FROM account_ledger_entries l LEFT JOIN trade_closures t ON t.id=l.reference_id WHERE l.account_id=$1 AND l.entry_type='TRADE_PNL' AND l.created_at >= $2 AND l.created_at < $3 AND t.id IS NULL ORDER BY l.created_at DESC, l.id DESC LIMIT 30 OFFSET " + legacyOffset,
+    [accountId, from, to]
+  );
+
+  // Read accounting checkpoint for purged records to provide separate lifetime aggregate
+  const checkpoint = await getAccountHistoryCheckpoint(db, accountId);
+  const lifetimeTrades = total + (checkpoint?.purgedTradesCount || 0);
+  const lifetimeGrossPaise = (gross + BigInt(legacyCount.rows[0].gross || 0) + BigInt(checkpoint?.purgedGrossPaise || 0)).toString();
+  const lifetimeChargesPaise = (charges + BigInt(checkpoint?.purgedChargesPaise || 0)).toString();
+  const lifetimeNetPaise = (BigInt(lifetimeGrossPaise) - BigInt(lifetimeChargesPaise)).toString();
+  const lifetimeWins = wins + (checkpoint?.purgedWinsCount || 0);
+  const lifetimeLosses = losses + (checkpoint?.purgedLossesCount || 0);
+  const lifetimeBreakeven = breakeven + (checkpoint?.purgedBreakevenCount || 0);
+  const lifetimeKnownCostExits = lifetimeWins + lifetimeLosses + lifetimeBreakeven;
+
+  const periodSummary = {
+    closedTrades: total,
+    wins,
+    losses,
+    breakeven,
+    unknownCostTrades: unknown,
+    winRatePct: wins + losses + breakeven ? (100 * wins) / (wins + losses + breakeven) : null,
+    grossPaise: (gross + BigInt(legacyCount.rows[0].gross || 0)).toString(),
+    chargesPaise: unknown || Number(legacyCount.rows[0].count) ? null : charges.toString(),
+    netPaise: unknown || Number(legacyCount.rows[0].count) ? null : (gross - charges).toString(),
+    legacySettlements: Number(legacyCount.rows[0].count),
+    orderCounts: Object.fromEntries(orderCounts.rows.map((r: any) => [r.status, Number(r.count)])),
+  };
+
+  const lifetimeSummary = {
+    closedTrades: lifetimeTrades,
+    wins: lifetimeWins,
+    losses: lifetimeLosses,
+    breakeven: lifetimeBreakeven,
+    winRatePct: lifetimeKnownCostExits > 0 ? (100 * lifetimeWins) / lifetimeKnownCostExits : null,
+    grossPaise: lifetimeGrossPaise,
+    chargesPaise: lifetimeChargesPaise,
+    netPaise: lifetimeNetPaise,
+    purgedTradesCount: checkpoint?.purgedTradesCount || 0,
+    lastPurgedAt: checkpoint?.lastPurgedAt || null,
+  };
+
+  return {
+    from,
+    to,
+    retentionCutoff,
+    retentionDays: RETENTION_DAYS,
+    retentionNotice: 'Trade history is retained for 30 days.',
+    timezone: 'Asia/Kolkata',
+    methodology:
+      'One realized closing execution; partial reductions count once per executed exit order. Win rate is wins divided by known-cost exits including breakeven, using allocated entry and exit charges. Cancelled/rejected orders and capital resets are excluded.',
+    trades: page.rows.map((r: any) => JSON.parse(r.payload_json)),
+    total,
+    nextOffset: offset + page.rows.length < total ? offset + page.rows.length : null,
+    summary: periodSummary,
+    periodSummary,
+    lifetimeSummary,
+    legacyTotal: Number(legacyCount.rows[0].count),
+    legacyGrossPaise: String(legacyCount.rows[0].gross || 0),
+    nextLegacyOffset:
+      legacyOffset + legacy.rows.length < Number(legacyCount.rows[0].count)
+        ? legacyOffset + legacy.rows.length
+        : null,
+    legacyRealizations: legacy.rows.map((r: any) => ({
+      id: r.id,
+      exitOrderId: r.reference_id,
+      grossPaise: String(r.amount_paise),
+      exitTimestamp: Number(r.created_at),
+      note: r.note,
+      coverage: 'LEGACY_ENTRY_DETAILS_UNAVAILABLE',
+    })),
+    legacyNote: 'Older ledger settlements are shown separately. Entry/exit matches and allocated costs are not invented.',
+  };
 }
