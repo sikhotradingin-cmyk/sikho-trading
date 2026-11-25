@@ -660,6 +660,10 @@
       closeSearchModal();
       return true;
     }
+    if (state.isChartFullscreen) {
+      exitChartFullscreen();
+      return true;
+    }
     if (state.chartOpen) {
       closeChartWorkspace();
       return true;
@@ -3109,7 +3113,77 @@
     if (typeof renderChartProtectionOverlay === 'function') renderChartProtectionOverlay();
   }
 
+  function toggleChartFullscreen() {
+    if (state.isChartFullscreen) {
+      exitChartFullscreen();
+    } else {
+      enterChartFullscreen();
+    }
+  }
+
+  function enterChartFullscreen() {
+    if (!state.chartOpen) return;
+    state.isChartFullscreen = true;
+    const chartScreen = document.getElementById('screen-chart');
+    if (chartScreen) chartScreen.classList.add('is-fullscreen');
+    const fsIcon = document.getElementById('chart-fullscreen-icon');
+    if (fsIcon) {
+      fsIcon.innerHTML = `
+        <polyline points="4 14 10 14 10 20"/>
+        <polyline points="20 10 14 10 14 4"/>
+        <line x1="14" y1="10" x2="21" y2="3"/>
+        <line x1="3" y1="21" x2="10" y2="14"/>
+      `;
+    }
+    const fsBtn = document.getElementById('chart-fullscreen-btn');
+    if (fsBtn) {
+      fsBtn.title = 'Exit Fullscreen';
+      fsBtn.setAttribute('aria-label', 'Exit full-screen chart');
+    }
+    // Resize chart to full viewport
+    setTimeout(() => {
+      const c = document.getElementById('tv-main-chart');
+      if (tvChart && c && c.clientWidth > 0 && c.clientHeight > 0) {
+        tvChart.applyOptions({ width: c.clientWidth, height: c.clientHeight });
+        renderDrawingsSvgOverlay();
+        if (typeof renderChartProtectionOverlay === 'function') renderChartProtectionOverlay();
+      }
+    }, 40);
+  }
+
+  function exitChartFullscreen() {
+    state.isChartFullscreen = false;
+    const chartScreen = document.getElementById('screen-chart');
+    if (chartScreen) chartScreen.classList.remove('is-fullscreen');
+    const fsIcon = document.getElementById('chart-fullscreen-icon');
+    if (fsIcon) {
+      fsIcon.innerHTML = `
+        <polyline points="15 3 21 3 21 9"/>
+        <polyline points="9 21 3 21 3 15"/>
+        <line x1="21" y1="3" x2="14" y2="10"/>
+        <line x1="3" y1="21" x2="10" y2="14"/>
+      `;
+    }
+    const fsBtn = document.getElementById('chart-fullscreen-btn');
+    if (fsBtn) {
+      fsBtn.title = 'Full-screen chart';
+      fsBtn.setAttribute('aria-label', 'Toggle full-screen chart');
+    }
+    // Resize chart to normal container bounds
+    setTimeout(() => {
+      const c = document.getElementById('tv-main-chart');
+      if (tvChart && c && c.clientWidth > 0 && c.clientHeight > 0) {
+        tvChart.applyOptions({ width: c.clientWidth, height: c.clientHeight });
+        renderDrawingsSvgOverlay();
+        if (typeof renderChartProtectionOverlay === 'function') renderChartProtectionOverlay();
+      }
+    }, 40);
+  }
+
   function closeChartWorkspace() {
+    if (state.isChartFullscreen) {
+      exitChartFullscreen();
+    }
     if (typeof cancelChartProtectionDrag === 'function') cancelChartProtectionDrag();
     rememberChartViewport();
     chartNavigationSeq++;
@@ -3337,7 +3411,25 @@
     });
 
     setupTouchArbitratedDrawingEvents();
-    new ResizeObserver(()=>{if(tvChart&&container.clientWidth>0){tvChart.applyOptions({width:container.clientWidth,height:container.clientHeight});if(typeof renderChartProtectionOverlay==='function')renderChartProtectionOverlay();}}).observe(container);
+    let lastObsChartW = 0;
+    let lastObsChartH = 0;
+    let chartResizeDebounce = null;
+    new ResizeObserver(() => {
+      if (!tvChart || !container || container.clientWidth <= 0 || container.clientHeight <= 0) return;
+      const curW = container.clientWidth;
+      const curH = container.clientHeight;
+      if (Math.abs(curW - lastObsChartW) < 2 && Math.abs(curH - lastObsChartH) < 2) return;
+      lastObsChartW = curW;
+      lastObsChartH = curH;
+      clearTimeout(chartResizeDebounce);
+      chartResizeDebounce = setTimeout(() => {
+        if (tvChart && container.clientWidth > 0 && container.clientHeight > 0) {
+          tvChart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+          renderDrawingsSvgOverlay();
+          if (typeof renderChartProtectionOverlay === 'function') renderChartProtectionOverlay();
+        }
+      }, 35);
+    }).observe(container);
   }
 
   let chartRequestController=null;
@@ -3772,28 +3864,30 @@
   // =========================================================================
   function recalculateAndRenderIndicators() {
     if (!tvChart || state.candles.length === 0) return;
-    const label=document.getElementById('chart-indicator-label');if(label)label.textContent=Object.keys(state.indicators).filter(k=>state.indicators[k]).map(k=>k==='sma20'?'SMA 20':k==='ema50'?'EMA 50':k).join(' · ')||'Indicators off · dashed line: last price · drawings: user saved';
-    Object.values(indicatorSeriesMap).forEach((s) => {
-      try { tvChart.removeSeries(s); } catch { }
-    });
-    indicatorSeriesMap = {};
+    const label = document.getElementById('chart-indicator-label');
+    if (label) {
+      label.textContent = Object.keys(state.indicators).filter(k => state.indicators[k]).map(k => k === 'sma20' ? 'SMA 20' : k === 'ema50' ? 'EMA 50' : k).join(' · ') || 'Indicators off · dashed line: last price · drawings: user saved';
+    }
 
     const closes = state.candles.map((c) => c.close);
 
     if (state.indicators.sma20 && state.candles.length >= 20) {
-      const smaSeries = tvChart.addLineSeries({ title:'SMA 20',color:'#a78bfa',lineWidth:1,priceLineVisible:false,lastValueVisible:false,autoscaleInfoProvider:()=>null });
       const data = [];
       for (let i = 19; i < state.candles.length; i++) {
         let sum = 0;
         for (let j = i - 19; j <= i; j++) sum += closes[j];
         data.push({ time: state.candles[i].time, value: Number((sum / 20).toFixed(2)) });
       }
-      smaSeries.setData(data);
-      indicatorSeriesMap.sma20 = smaSeries;
+      if (!indicatorSeriesMap.sma20) {
+        indicatorSeriesMap.sma20 = tvChart.addLineSeries({ title: 'SMA 20', color: '#a78bfa', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, autoscaleInfoProvider: () => null });
+      }
+      indicatorSeriesMap.sma20.setData(data);
+    } else if (indicatorSeriesMap.sma20) {
+      try { tvChart.removeSeries(indicatorSeriesMap.sma20); } catch {}
+      delete indicatorSeriesMap.sma20;
     }
 
     if (state.indicators.ema50 && state.candles.length >= 50) {
-      const emaSeries = tvChart.addLineSeries({ title:'EMA 50',color:'#38BDF8',lineWidth:1,priceLineVisible:false,lastValueVisible:false,autoscaleInfoProvider:()=>null });
       const k = 2 / 51;
       let ema = closes.slice(0, 50).reduce((a, b) => a + b, 0) / 50;
       const data = [{ time: state.candles[49].time, value: Number(ema.toFixed(2)) }];
@@ -3801,8 +3895,13 @@
         ema = closes[i] * k + ema * (1 - k);
         data.push({ time: state.candles[i].time, value: Number(ema.toFixed(2)) });
       }
-      emaSeries.setData(data);
-      indicatorSeriesMap.ema50 = emaSeries;
+      if (!indicatorSeriesMap.ema50) {
+        indicatorSeriesMap.ema50 = tvChart.addLineSeries({ title: 'EMA 50', color: '#38BDF8', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, autoscaleInfoProvider: () => null });
+      }
+      indicatorSeriesMap.ema50.setData(data);
+    } else if (indicatorSeriesMap.ema50) {
+      try { tvChart.removeSeries(indicatorSeriesMap.ema50); } catch {}
+      delete indicatorSeriesMap.ema50;
     }
   }
 
@@ -4409,6 +4508,49 @@
     recordEligibleAction('view_portfolio_' + sub);
   }
 
+  function formatTradedContractIdentity(p) {
+    const sym = (p.symbol || p.globalInstrumentId?.split(':')[1] || 'Instrument').trim();
+    const exch = (p.exchange || p.globalInstrumentId?.split(':')[0] || 'NSE').trim();
+    const isOption = Boolean(p.optionType || (p.strikePrice && p.strikePrice > 0));
+    const isFut = (p.instrumentType && p.instrumentType.startsWith('FUT')) || /FUT/i.test(sym) || /FUT/i.test(p.globalInstrumentId || '');
+
+    let primaryName = sym;
+    if (p.instrumentName && p.instrumentName !== sym && p.instrumentName !== p.globalInstrumentId) {
+      if (!primaryName.includes(p.instrumentName) && p.instrumentName.length > primaryName.length) {
+        primaryName = p.instrumentName;
+      }
+    }
+
+    const details = [];
+    if (p.expiry) {
+      details.push(`Exp: ${p.expiry}`);
+    }
+    if (isOption && p.strikePrice) {
+      details.push(`Strike: ₹${fmtNum(p.strikePrice)} ${p.optionType || ''}`);
+    } else if (isFut) {
+      details.push('FUT');
+    }
+    if (p.lotSize && p.lotSize > 1) {
+      details.push(`Lot ${p.lotSize}`);
+    }
+    if (p.tradingUnit) {
+      details.push(p.tradingUnit);
+    }
+
+    const secondaryHtml = details.length > 0
+      ? `<div class="pos-meta-secondary">${details.join(' • ')}</div>`
+      : '';
+
+    return {
+      primaryName,
+      exch,
+      isOption,
+      isFut,
+      secondaryHtml,
+      detailsText: details.join(' • '),
+    };
+  }
+
   function renderPortfolioTab() {
     const container = document.getElementById('portfolio-list-container');
     let list = [];
@@ -4431,6 +4573,8 @@
       return;
     }
 
+    const esc = window.SikhoUX?.escape || ((s) => String(s ?? ''));
+
     container.innerHTML = list
       .map((p) => {
         const isOpen = p.quantity !== 0;
@@ -4440,45 +4584,62 @@
           ? window.InstrumentIdentity.renderInstrumentAvatar(p, 38)
           : `<div class="inst-badge-icon">${p.productType === 'DELIVERY' ? 'CNC' : 'POS'}</div>`;
         const sideLabel = p.quantity > 0 ? 'LONG' : p.quantity < 0 ? 'SHORT' : 'CLOSED';
-        const tpText = Number(p.targetPrice) > 0 ? `TP: ${fmtINR(p.targetPrice)}` : 'TP: None';
-        const slText = Number(p.stopLossPrice) > 0 ? `SL: ${fmtINR(p.stopLossPrice)}` : 'SL: None';
-        const protLine = isOpen
-          ? `<div class="inst-name-sub" style="margin-top:2px;font-weight:600;">${tpText} • ${slText}</div>`
-          : '';
+        const absQty = Math.abs(p.quantity);
+        const tpText = Number(p.targetPrice) > 0 ? `₹${fmtNum(p.targetPrice)}` : 'None';
+        const slText = Number(p.stopLossPrice) > 0 ? `₹${fmtNum(p.stopLossPrice)}` : 'None';
+        const identity = formatTradedContractIdentity(p);
 
         return `
-          <div class="instrument-row-white" onclick="window.TZApp.openChartByGlobalId('${p.globalInstrumentId}')">
-            <div class="inst-left">
+          <div class="position-card-white" onclick="window.TZApp.openChartByGlobalId('${p.globalInstrumentId}')" role="button" tabindex="0" aria-label="${esc(identity.primaryName)}, ${sideLabel} ${absQty}, P&L ${pnl >= 0 ? '+' : ''}${fmtINR(pnl)}">
+            <div class="pos-card-header">
               ${avatarHtml}
-              <div class="inst-meta">
-                <div class="inst-symbol-row">
-                  <span class="inst-symbol">${p.symbol}</span>
-                  <span class="tag-exch">${p.productType || 'INTRADAY'}</span>
-                  <span class="tag-exch">${sideLabel} ${Math.abs(p.quantity)}</span>
+              <div class="pos-card-identity">
+                <div class="pos-contract-name">${esc(identity.primaryName)}</div>
+                <div class="pos-meta-chips">
+                  <span class="tag-exch">${esc(identity.exch)}</span>
+                  <span class="tag-side ${p.quantity > 0 ? 'is-long' : p.quantity < 0 ? 'is-short' : 'is-closed'}">${sideLabel} ${absQty}</span>
+                  <span class="tag-prod">${esc(p.productType || 'INTRADAY')}</span>
                 </div>
-                <div class="inst-name-sub">Avg: ${fmtINR(p.averageEntryPrice)} • LTP: ${fmtINR(p.currentPrice)}</div>
-                ${protLine}
+                ${identity.secondaryHtml}
+              </div>
+              <div class="pos-card-pnl">
+                <div class="pos-pnl-val ${cls}">${pnl >= 0 ? '+' : ''}${fmtINR(pnl)}</div>
+                <div class="pos-pnl-label">${isOpen ? 'Unrealized MTM' : 'Realized P&L'}</div>
               </div>
             </div>
-            <div class="inst-right" style="gap:6px;flex-wrap:wrap;justify-content:flex-end;">
-              <div class="inst-price-col">
-                <span class="inst-ltp-val ${cls}">${pnl >= 0 ? '+' : ''}${fmtINR(pnl)}</span>
-                <span class="inst-chg-val" style="color:var(--text-on-white-secondary);">${isOpen ? 'Unrealized MTM' : 'Realized P&L'}</span>
+
+            <div class="pos-metrics-row">
+              <div class="pos-metric-item">
+                <span class="pos-metric-k">Avg Price</span>
+                <span class="pos-metric-v">${fmtINR(p.averageEntryPrice)}</span>
               </div>
-              ${isOpen
-            ? `<div style="display:flex;gap:6px;align-items:center;">
-                <button class="row-action" style="min-height:34px;padding:0 9px;font-size:11px;font-weight:700;"
-                        onclick="event.stopPropagation(); window.TZApp.openProtectionModal('${p.id}')">
-                  Add / Edit TP &amp; SL
-                </button>
-                <button class="btn-lime-primary" style="width:auto;min-height:34px;padding:0 10px;font-size:11.5px;background:var(--negative-red);color:#fff;"
-                        onclick="event.stopPropagation(); window.TZApp.squareOffPosition('${p.globalInstrumentId}')">
-                  Exit
-                </button>
-               </div>`
-            : ''
-          }
+              <div class="pos-metric-item">
+                <span class="pos-metric-k">LTP</span>
+                <span class="pos-metric-v" data-ltp-id="${p.globalInstrumentId}">${fmtINR(p.currentPrice)}</span>
+              </div>
+              <div class="pos-metric-item">
+                <span class="pos-metric-k">Take Profit</span>
+                <span class="pos-metric-v">${tpText}</span>
+              </div>
+              <div class="pos-metric-item">
+                <span class="pos-metric-k">Stop Loss</span>
+                <span class="pos-metric-v">${slText}</span>
+              </div>
             </div>
+
+            ${isOpen ? `
+            <div class="pos-actions-row">
+              <button type="button" class="btn-action-edit-tpsl"
+                      onclick="event.stopPropagation(); window.TZApp.openProtectionModal('${p.id}')"
+                      aria-label="Edit Take Profit and Stop Loss for ${esc(identity.primaryName)}">
+                <span>🎯</span> Edit TP/SL
+              </button>
+              <button type="button" class="btn-action-exit"
+                      onclick="event.stopPropagation(); window.TZApp.squareOffPosition('${p.globalInstrumentId}')"
+                      aria-label="Exit position for ${esc(identity.primaryName)}">
+                Exit
+              </button>
+            </div>` : ''}
           </div>
         `;
       })
@@ -4486,9 +4647,11 @@
   }
 
   async function squareOffPosition(globalId) {
+    const pos = (state.positionsData?.positions || []).find((p) => p.globalInstrumentId === globalId);
+    const label = pos ? formatTradedContractIdentity(pos).primaryName : (globalId.split(':')[1] || globalId);
     showConfirmSheet(
       'Exit Position',
-      `Square off position for ${globalId.split(':')[1] || globalId}?`,
+      `Square off and close position for ${label}?`,
       async (ok) => {
         if (!ok) return;
         try {
@@ -4571,6 +4734,8 @@
 
     const inputCustom = document.getElementById('input-custom-reset-capital');
     if (inputCustom) inputCustom.value = '';
+    const previewEl = document.getElementById('custom-capital-preview');
+    if (previewEl) previewEl.textContent = `Virtual capital: ${fmtINR(100000)}`;
 
     const grid = document.getElementById('capital-preset-grid');
     if (grid) {
@@ -4593,8 +4758,6 @@
       confirmBtn.textContent = `Confirm Reset to ${fmtINR(selectedResetPresetINR)}`;
     }
 
-    const custom=document.getElementById('input-custom-reset-capital')?.closest('div[style*="margin-top"]');
-    if(custom)custom.hidden=state.access?.accessMode==='FREE_LAUNCH';
     modal.classList.add('active');
     notifyNativeScreenState();
   }
@@ -4603,6 +4766,8 @@
     selectedResetPresetINR = amount;
     const inputCustom = document.getElementById('input-custom-reset-capital');
     if (inputCustom) inputCustom.value = '';
+    const previewEl = document.getElementById('custom-capital-preview');
+    if (previewEl) previewEl.textContent = `Virtual capital: ${fmtINR(amount)}`;
     document.querySelectorAll('#capital-preset-grid .preset-chip').forEach((c) => c.classList.remove('active'));
     if (btn) btn.classList.add('active');
     const confirmBtn = document.getElementById('btn-confirm-capital-reset');
@@ -4613,16 +4778,20 @@
 
   function onCustomCapitalInput(val) {
     const num = Math.round(Number(val) || 0);
+    const previewEl = document.getElementById('custom-capital-preview');
     if (num > 0) {
+      if (previewEl) previewEl.textContent = `Virtual capital: ${fmtINR(num)}`;
+      selectedResetPresetINR = num;
       document.querySelectorAll('#capital-preset-grid .preset-chip').forEach((c) => c.classList.remove('active'));
       const confirmBtn = document.getElementById('btn-confirm-capital-reset');
       if (confirmBtn) confirmBtn.textContent = `Confirm Reset to ${fmtINR(num)}`;
+    } else {
+      if (previewEl) previewEl.textContent = 'Virtual capital: —';
     }
   }
 
   function applyCustomCapital() {
     const input = document.getElementById('input-custom-reset-capital');
-    if(state.access?.accessMode==='FREE_LAUNCH'){showBrandedAlert('Choose a preset','Free Launch includes the approved Premium capital presets.');return;}
     const val = Math.round(Number(input?.value) || 0);
     const isPro = hasFullFeatureAccess();
 
@@ -4632,7 +4801,7 @@
     }
 
     if (!isPro && val > 2000000) {
-      showBrandedAlert('Pro Tier Required', 'Free tier users can select up to ₹20,00,000 (₹20 Lakhs). Upgrade to Pro to trade with practice capital up to ₹10 Crore.');
+      showBrandedAlert('Tier Limit', 'Free tier users can select up to ₹20,00,000 (₹20 Lakhs). Upgrade to Pro for practice capital up to ₹10 Crore.');
       return;
     }
 
@@ -4642,6 +4811,8 @@
     }
 
     selectedResetPresetINR = val;
+    const previewEl = document.getElementById('custom-capital-preview');
+    if (previewEl) previewEl.textContent = `Virtual capital: ${fmtINR(val)}`;
     document.querySelectorAll('#capital-preset-grid .preset-chip').forEach((c) => c.classList.remove('active'));
     const confirmBtn = document.getElementById('btn-confirm-capital-reset');
     if (confirmBtn) confirmBtn.textContent = `Confirm Reset to ${fmtINR(val)}`;
@@ -4659,7 +4830,7 @@
 
     showConfirmSheet(
       'Reset Practice Capital',
-      `Are you sure you want to reset your starting practice balance to ${fmtINR(selectedResetPresetINR)}? This will archive your current session and start fresh. Your lifetime track record will be preserved.`,
+      `Are you sure you want to set your virtual practice capital to ${fmtINR(selectedResetPresetINR)}? This is virtual money for simulated practice. Starting a new practice session will archive your current session while preserving your lifetime trade history.`,
       async (confirmed) => {
         if (!confirmed) return;
         try {
@@ -4669,7 +4840,7 @@
           });
           document.getElementById('modal-capital-reset')?.classList.remove('active');
           await refreshAccountAndPortfolio();
-          showBrandedAlert('Capital Reset Successful', `Your virtual practice account has been reset to ${fmtINR(selectedResetPresetINR)}.`);
+          showBrandedAlert('Practice Capital Set', `Your virtual practice capital has been updated to ${fmtINR(selectedResetPresetINR)}. You can begin trading with your new simulated balance.`);
         } catch (err) {
           showBrandedAlert('Reset Failed', err.message);
         }
@@ -6925,6 +7096,9 @@
     addSymbolToWatchlist,
     openChartByGlobalId,
     closeChartWorkspace,
+    toggleChartFullscreen,
+    enterChartFullscreen,
+    exitChartFullscreen,
     jumpToNearestIndexFuture,
     openOptionChainFromChart,
     selectTimeframe,

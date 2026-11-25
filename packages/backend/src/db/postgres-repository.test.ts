@@ -161,6 +161,13 @@ describe('PostgreSQL Database Repository Integration', () => {
     const ledger = await repo.getLedger(acc.id);
     assert.equal(ledger.length, 4);
     assert.equal(ledger[0].entryType, 'RESET');
+
+    // Custom capital reset: e.g. ₹1,20,000
+    const customRes = await repo.resetAccount(acc.id, [], new Map(), 120000, 'FREE');
+    assert.equal(customRes.success, true);
+    const postCustom = await repo.getAccount(acc.id);
+    assert.equal(postCustom!.cashBalancePaise, Money.fromRupees(120000));
+    assert.equal(postCustom!.availableBalancePaise, Money.fromRupees(120000));
   });
 
   test('application restart recovers persistent orders, positions, and balances from database', async () => {

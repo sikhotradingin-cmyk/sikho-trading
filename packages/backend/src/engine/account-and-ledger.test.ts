@@ -65,5 +65,12 @@ describe('Virtual Account & Ledger Engine', () => {
     assert.equal(ledger.length, 4);
     assert.equal(ledger[0].entryType, 'RESET');
     assert.equal(ledger[0].balanceAfterPaise, Money.fromRupees(100000));
+
+    // Custom practice capital reset: e.g. ₹1,20,000
+    const customRes = engine.resetAccount(acc.id, [], new Map(), 120000);
+    assert.equal(customRes.success, true);
+    const postCustom = engine.getAccount(acc.id)!;
+    assert.equal(postCustom.cashBalancePaise, Money.fromRupees(120000));
+    assert.equal(postCustom.availableBalancePaise, Money.fromRupees(120000));
   });
 });

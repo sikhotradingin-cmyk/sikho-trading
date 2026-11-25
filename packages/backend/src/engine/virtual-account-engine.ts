@@ -135,14 +135,15 @@ export class VirtualAccountEngine {
   }
 
   /**
-   * Reset account back to initial ₹100,000.
+   * Reset account back to initial capital (default ₹100,000, or user-selected practice amount).
    * Preserves full historical ledger while recording a distinct RESET entry.
    * Rejects reset if open positions cannot be priced safely.
    */
   public resetAccount(
     accountId: string,
     openPositions: SimulatedPosition[],
-    currentPrices: Map<string, number>
+    currentPrices: Map<string, number>,
+    requestedCapitalRupees: number = 100000
   ): { success: boolean; error?: string } {
     const acc = this.accounts.get(accountId);
     if (!acc) return { success: false, error: 'Account not found' };
@@ -160,7 +161,7 @@ export class VirtualAccountEngine {
       }
     }
 
-    const initialPaise = Money.fromRupees(100000);
+    const initialPaise = Money.fromRupees(requestedCapitalRupees);
     const adjustmentPaise = initialPaise - acc.cashBalancePaise;
 
     acc.cashBalancePaise = initialPaise;
@@ -173,7 +174,7 @@ export class VirtualAccountEngine {
       'RESET',
       adjustmentPaise,
       initialPaise,
-      `Account virtual balance reset to ₹100,000.00. Previous cash balance: ${Money.formatINR(acc.cashBalancePaise - adjustmentPaise)}`
+      `Account virtual practice balance reset to ${Money.formatINR(initialPaise)}. Previous cash balance: ${Money.formatINR(acc.cashBalancePaise - adjustmentPaise)}`
     );
 
     return { success: true };

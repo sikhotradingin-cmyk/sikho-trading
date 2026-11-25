@@ -17,7 +17,7 @@ import {
   InstrumentMetadata,
   isFreeTierAllowedInstrument,
   UserTier,
-  PREMIUM_CAPITAL_PRESETS_INR,
+  validateResetCapitalAmount,
 } from '@trading/shared';
 import { config, isPlaceholderCredential, validateSmartApiEnv, validateUpstoxEnv } from './config.js';
 import { DeterministicProvider } from './providers/deterministic-provider.js';
@@ -1499,9 +1499,22 @@ export async function buildServer(
       return reply.status(429).send({ error: rl.error, code: 'ERR_RATE_LIMIT_EXCEEDED', retryAfter: rl.retryAfterSec });
     }
     const body = (req.body as { startingCapitalINR?: number }) || {};
-    const requestedCapitalINR = body.startingCapitalINR ?? 100000;
-    if(resolveAccessPolicy(await billingService.getAccountTier(req.user.userId)).accessMode==='FREE_LAUNCH' && !PREMIUM_CAPITAL_PRESETS_INR.includes(requestedCapitalINR))return reply.status(400).send({error:'Choose an approved Free Launch capital preset.',code:'ERR_CAPITAL_PRESET_REQUIRED'});
-    const tier = resolveAccessPolicy(await billingService.getAccountTier(req.user.userId)).capitalTier;
+    const requestedCapitalINR = Math.round(Number(body.startingCapitalINR ?? 100000));
+    if (!Number.isFinite(requestedCapitalINR) || requestedCapitalINR <= 0) {
+      return reply.status(400).send({
+        error: 'Starting practice capital must be a positive integer amount.',
+        code: 'ERR_INVALID_CAPITAL',
+      });
+    }
+    const accessPolicy = resolveAccessPolicy(await billingService.getAccountTier(req.user.userId));
+    const tier = accessPolicy.capitalTier;
+    const validation = validateResetCapitalAmount(requestedCapitalINR, tier);
+    if (!validation.valid) {
+      return reply.status(400).send({
+        error: validation.error || 'Invalid capital amount requested.',
+        code: 'ERR_INVALID_CAPITAL_AMOUNT',
+      });
+    }
 
     const positions = await repo.getPositions(accountId);
     const quotes = new Map<string, number>();
@@ -1534,7 +1547,7 @@ export async function buildServer(
       });
     }
 
-    accountEngine.resetAccount(accountId, positions, quotes);
+    accountEngine.resetAccount(accountId, positions, quotes, requestedCapitalINR);
 
     const updated = await repo.getAccount(accountId);
     const session = await repo.getActiveSession(accountId);
@@ -1905,6 +1918,14 @@ export async function buildServer(
           instrumentName: inst?.name || p.globalInstrumentId,
           instrumentType: inst?.instrumentType || 'EQUITY_STOCK',
           exchange: inst?.exchange || p.globalInstrumentId.split(':')[0] || 'NSE',
+          expiry: inst?.expiry,
+          strikePrice: inst?.strikePrice,
+          optionType: inst?.optionType,
+          underlying: inst?.underlying,
+          segment: inst?.segment,
+          commodityCategory: inst?.commodityCategory,
+          tradingUnit: inst?.tradingUnit,
+          quotationUnit: inst?.quotationUnit,
           lotSize: inst?.lotSize || 1,
           tickSize: inst?.tickSize || 0.05,
           protectionVersion: p.protectionVersion || 1,

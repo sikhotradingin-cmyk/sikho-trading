@@ -490,18 +490,18 @@
          ================================================================== -->
     <div id="screen-chart" class="chart-overlay-screen">
       <div class="chart-top-bar">
-        <div style="display:flex;align-items:center;gap:10px;min-width:0;">
-          <button class="chart-back-btn" onclick="window.TZApp.closeChartWorkspace()">
+        <div style="display:flex;align-items:center;gap:10px;min-width:0;flex:1;">
+          <button class="chart-back-btn" onclick="window.TZApp.closeChartWorkspace()" aria-label="Back to markets">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
               <path d="M19 12H5M12 19l-7-7 7-7"/>
             </svg>
           </button>
-          <div style="min-width:0;">
+          <div style="min-width:0;flex:1;">
             <div style="display:flex;align-items:center;gap:6px;">
               <span id="chart-sym-title" style="font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">NIFTY 50</span>
               <span id="chart-seg-badge" class="paper-badge-header">INDEX</span>
             </div>
-            <div style="display:flex;align-items:center;gap:8px;margin-top:2px;flex-wrap:wrap;">
+            <div class="chart-meta-row">
               <span id="chart-ltp-display" class="tabular-nums price-val" style="font-size:14px;font-weight:700;">—</span>
               <span id="chart-chg-display" class="tabular-nums" style="font-size:11.5px;font-weight:600;">—</span>
               <span id="chart-ist-clock" class="chart-meta-chip tabular-nums" title="Current time in India Standard Time (UTC+5:30)">--:--:-- IST</span>
@@ -512,8 +512,16 @@
           </div>
         </div>
 
-        <div style="display:flex;align-items:center;gap:6px;">
+        <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">
           <button id="chart-theme-btn" class="tool-action-pill" onclick="window.TZApp.toggleThemeQuick()" aria-label="Toggle Day/Night theme" title="Toggle Day / Night theme">🌙</button>
+          <button id="chart-fullscreen-btn" class="tool-action-pill" onclick="window.TZApp.toggleChartFullscreen()" aria-label="Toggle full-screen chart" title="Toggle Fullscreen">
+            <svg id="chart-fullscreen-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="15 3 21 3 21 9"/>
+              <polyline points="9 21 3 21 3 15"/>
+              <line x1="21" y1="3" x2="14" y2="10"/>
+              <line x1="3" y1="21" x2="10" y2="14"/>
+            </svg>
+          </button>
           <button id="chart-btn-option-chain" class="tool-action-pill" onclick="window.TZApp.openOptionChainFromChart()">
             <span>Option Chain</span>
           </button>
@@ -1108,14 +1116,16 @@
         <div style="margin-top:14px;">
           <label class="form-label" for="input-custom-reset-capital" style="font-size:12px;font-weight:700;color:#0F172A;">Or Enter Custom Amount (₹)</label>
           <div style="display:flex;gap:8px;align-items:center;">
-            <input id="input-custom-reset-capital" class="form-input" type="number" placeholder="e.g. 500000" style="flex:1;" oninput="window.TZApp.onCustomCapitalInput(this.value)" />
+            <input id="input-custom-reset-capital" class="form-input" type="number" min="100000" step="1000" placeholder="e.g. 120000" style="flex:1;" oninput="window.TZApp.onCustomCapitalInput(this.value)" />
             <button type="button" class="btn-lime-primary" style="width:auto;min-height:46px;padding:0 14px;font-size:13px;font-weight:700;" onclick="window.TZApp.applyCustomCapital()">Set</button>
           </div>
-          <div id="custom-capital-tier-hint" style="font-size:11.5px;color:#64748B;margin-top:4px;">Free tier: ₹1,00,000 to ₹20,00,000 • Pro tier: up to ₹10 Crore</div>
+          <div id="custom-capital-preview" style="font-size:13px;font-weight:700;color:var(--accent-lime-dark, #4D7C0F);margin-top:5px;min-height:18px;">Virtual capital: ₹1,00,000</div>
+          <div id="custom-capital-tier-hint" style="font-size:11.5px;color:#64748B;margin-top:2px;">Free tier: ₹1,00,000 to ₹20,00,000 • Pro / Free Launch: up to ₹10 Crore</div>
         </div>
 
         <div style="margin:14px 0;padding:12px;border-radius:12px;background:#F8FAFC;border:1px solid #E2E8F0;font-size:12px;color:#64748B;line-height:1.45;">
-          Start a new practice session after closing positions and cancelling pending orders. Existing orders, settlements and lifetime history are preserved.
+          <div style="font-weight:700;color:#0F172A;margin-bottom:2px;">ℹ️ Practice Virtual Capital Notice</div>
+          Virtual practice capital. Simulated practice balance for educational training. Starting a new session archives your current practice session while preserving your lifetime P&amp;L and trade history. Open positions and pending orders must be squared off or cancelled first.
         </div>
 
         <button id="btn-confirm-capital-reset" class="btn-lime-primary" onclick="window.TZApp.executeCapitalReset()">
