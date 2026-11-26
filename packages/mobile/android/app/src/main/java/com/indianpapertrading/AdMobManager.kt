@@ -267,6 +267,19 @@ class AdMobManager(
         }
     }
 
+    fun getPrivacyOptionsRequirementStatus(): String {
+        return try {
+            when (consentInformation.privacyOptionsRequirementStatus) {
+                ConsentInformation.PrivacyOptionsRequirementStatus.REQUIRED -> "REQUIRED"
+                ConsentInformation.PrivacyOptionsRequirementStatus.NOT_REQUIRED -> "NOT_REQUIRED"
+                ConsentInformation.PrivacyOptionsRequirementStatus.UNKNOWN -> "UNKNOWN"
+                else -> "UNKNOWN"
+            }
+        } catch (t: Throwable) {
+            "UNKNOWN"
+        }
+    }
+
     fun showPrivacyOptionsForm(onResult: (Boolean, String?) -> Unit) {
         activity.runOnUiThread {
             UserMessagingPlatform.showPrivacyOptionsForm(activity) { formError ->

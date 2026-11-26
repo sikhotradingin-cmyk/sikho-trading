@@ -1,6 +1,13 @@
 import { Readable } from 'node:stream';
 import { historyBounds, readTradeHistory } from './history.js';
 import { previewRetentionCleanup, executeRetentionCleanup, startRetentionCron } from './engine/retention-service.js';
+import {
+  getVersionPolicy,
+  updateVersionPolicy,
+  registerDeviceInstallation,
+  checkClientVersionSupported,
+  dispatchReleaseAnnouncement,
+} from './engine/version-policy-service.js';
 import { resolveAccessPolicy } from './monetization/access-policy.js';
 import Fastify, { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
@@ -1582,8 +1589,25 @@ export async function buildServer(
     };
   });
 
+  // Version-gate middleware for mutating trading actions
+  const requireSupportedAppVersion = async (req: any, reply: any) => {
+    const rawVersion = req.headers['x-app-version-code'];
+    if (!rawVersion) return;
+    const check = await checkClientVersionSupported(db, rawVersion);
+    if (!check.supported) {
+      return reply.status(426).send({
+        error: 'ERR_UPDATE_REQUIRED',
+        message: check.policy.updateMessage || 'Your app version is no longer supported. Please update to continue.',
+        minimumSupportedVersionCode: check.policy.minimumSupportedVersionCode,
+        latestVersionCode: check.policy.latestVersionCode,
+        latestVersionName: check.policy.latestVersionName,
+        playStoreUrl: check.policy.playStoreUrl,
+      });
+    }
+  };
+
   // 9. Place Simulated Order (with Free vs Pro tier & Discipline checks)
-  app.post('/api/v1/orders/place', { preHandler: [(app as any).authenticate] }, async (req: any, reply) => {
+  app.post('/api/v1/orders/place', { preHandler: [(app as any).authenticate, requireSupportedAppVersion] }, async (req: any, reply) => {
     const accountId = req.user.accountId;
     const userId = req.user.userId;
 
@@ -1771,7 +1795,7 @@ export async function buildServer(
   });
 
   // 9B. Cancel Pending Order
-  app.post('/api/v1/orders/:orderId/cancel', { preHandler: [(app as any).authenticate] }, async (req: any, reply) => {
+  app.post('/api/v1/orders/:orderId/cancel', { preHandler: [(app as any).authenticate, requireSupportedAppVersion] }, async (req: any, reply) => {
     const { orderId } = req.params as { orderId: string };
     try {
       const cancelled = await simEngine.cancelOrder(req.user.accountId, orderId);
@@ -1787,7 +1811,7 @@ export async function buildServer(
     }
   });
 
-  app.post('/api/v1/orders/cancel', { preHandler: [(app as any).authenticate] }, async (req: any, reply) => {
+  app.post('/api/v1/orders/cancel', { preHandler: [(app as any).authenticate, requireSupportedAppVersion] }, async (req: any, reply) => {
     const body = (req.body as { orderId?: string }) || {};
     if (!body.orderId) return reply.status(400).send({ error: 'Missing orderId' });
     try {
@@ -1805,7 +1829,7 @@ export async function buildServer(
   });
 
   // 10. Square-off Position
-  app.post('/api/v1/positions/square-off', { preHandler: [(app as any).authenticate] }, async (req: any, reply) => {
+  app.post('/api/v1/positions/square-off', { preHandler: [(app as any).authenticate, requireSupportedAppVersion] }, async (req: any, reply) => {
     const body = req.body as { globalInstrumentId: string };
     const accountId = req.user.accountId;
 
@@ -2113,8 +2137,8 @@ export async function buildServer(
     }
   };
 
-  app.put('/api/v1/positions/:positionId/protection', { preHandler: [(app as any).authenticate] }, handleUpdatePositionProtection);
-  app.post('/api/v1/positions/:positionId/protection', { preHandler: [(app as any).authenticate] }, handleUpdatePositionProtection);
+  app.put('/api/v1/positions/:positionId/protection', { preHandler: [(app as any).authenticate, requireSupportedAppVersion] }, handleUpdatePositionProtection);
+  app.post('/api/v1/positions/:positionId/protection', { preHandler: [(app as any).authenticate, requireSupportedAppVersion] }, handleUpdatePositionProtection);
 
   // 11D. Idempotency Status Lookup for Timed-Out Protection Modifications
   app.get('/api/v1/positions/protection-by-idempotency/:key', { preHandler: [(app as any).authenticate] }, async (req: any, reply) => {
@@ -2435,6 +2459,59 @@ export async function buildServer(
     const body = req.body as { opportunityToken: string };
     const recorded = adsCoordinator.confirmImpression(body.opportunityToken);
     return { recorded };
+  });
+
+  // 14B2. Version Policy & Push Notification Release Management
+  app.get('/api/v1/app/version-policy', async (_req, reply) => {
+    reply.header('Cache-Control', 'public, max-age=15');
+    const policy = await getVersionPolicy(db);
+    return policy;
+  });
+
+  app.put('/api/v1/admin/app/version-policy', async (req: any, reply) => {
+    if (!verifyAdminSecret(req, reply)) return reply;
+    const body = req.body || {};
+    const updated = await updateVersionPolicy(db, body);
+    return { success: true, policy: updated };
+  });
+
+  app.post('/api/v1/devices/register', async (req: any, reply) => {
+    const body = (req.body as { token?: string; platform?: string; appVersionCode?: number }) || {};
+    if (!body.token || typeof body.token !== 'string') {
+      return reply.status(400).send({ error: 'Device token is required', code: 'ERR_INVALID_TOKEN' });
+    }
+    let userId: string | null = null;
+    const rawAuth = (req.headers.authorization || '').replace(/^Bearer /, '');
+    if (rawAuth) {
+      try {
+        const decoded: any = (app as any).jwt.verify(rawAuth);
+        if (decoded?.userId) userId = decoded.userId;
+      } catch {}
+    }
+    try {
+      const reg = await registerDeviceInstallation(db, {
+        token: body.token,
+        userId,
+        platform: body.platform,
+        appVersionCode: body.appVersionCode,
+      });
+      return { success: true, installationId: reg.id };
+    } catch (err: any) {
+      return reply.status(400).send({ error: err.message, code: 'ERR_REGISTRATION_FAILED' });
+    }
+  });
+
+  app.post('/api/v1/admin/notifications/release-announcement', async (req: any, reply) => {
+    if (!verifyAdminSecret(req, reply)) return reply;
+    const body = (req.body as {
+      title?: string;
+      message?: string;
+      targetVersionCode?: number;
+      dryRun?: boolean;
+      testToken?: string;
+    }) || {};
+    const res = await dispatchReleaseAnnouncement(db, body);
+    return res;
   });
 
   // 14C. Ownership-Verified Permanent Account & Associated-Data Deletion

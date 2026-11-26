@@ -409,23 +409,13 @@
 
         <div id="prof-ledger-box" style="display:none;padding:12px 16px;background:#F8FAFC;border-bottom:1px solid #E2E8F0;"></div>
 
-        <div style="padding:14px 16px 0 16px;">
+        <div id="prof-ad-privacy-wrap" style="display:none;padding:14px 16px 0 16px;">
           <button onclick="window.TZApp.openAdPrivacyOptions()" style="width:100%;min-height:44px;border-radius:12px;border:1px solid #E2E8F0;background:#FFFFFF;color:#0F172A;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:space-between;padding:0 14px;cursor:pointer;">
             <span style="display:flex;align-items:center;gap:8px;">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
               <span>Privacy &amp; Ad Consent Settings</span>
             </span>
             <span style="font-size:12px;color:#64748B;">Manage ➔</span>
-          </button>
-        </div>
-
-        <div style="padding:10px 16px 0 16px;">
-          <button onclick="window.TZApp.showAdDiagnostics()" style="width:100%;min-height:44px;border-radius:12px;border:1px solid #E2E8F0;background:#FFFFFF;color:#0F172A;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:space-between;padding:0 14px;cursor:pointer;">
-            <span style="display:flex;align-items:center;gap:8px;">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
-              <span>Ad diagnostics (support)</span>
-            </span>
-            <span style="font-size:12px;color:#64748B;">View ➜</span>
           </button>
         </div>
 
@@ -439,10 +429,15 @@
           </button>
         </div>
 
-        <div style="padding:16px 16px 20px 16px;">
+        <div style="padding:16px 16px 10px 16px;">
           <button onclick="window.TZApp.signOut()" style="width:100%;min-height:46px;border-radius:12px;border:1.5px solid #EF4444;background:#FFFFFF;color:#EF4444;font-size:14px;font-weight:700;cursor:pointer;">
             Sign Out of Sikho Trading
           </button>
+        </div>
+
+        <div style="padding:0 16px 24px 16px;text-align:center;">
+          <div id="prof-app-version" style="font-size:12px;font-weight:600;color:#64748B;cursor:pointer;user-select:none;-webkit-user-select:none;" onclick="window.TZApp.onVersionLabelClick()">Sikho Trading v1.0.1 (Build 36)</div>
+          <div style="font-size:11px;color:#94A3B8;margin-top:4px;">Virtual Paper Trading &middot; All Market Data Simulated</div>
         </div>
       </main>
 
@@ -498,8 +493,8 @@
           </button>
           <div style="min-width:0;flex:1;">
             <div style="display:flex;align-items:center;gap:6px;">
-              <span id="chart-sym-title" style="font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">NIFTY 50</span>
-              <span id="chart-seg-badge" class="paper-badge-header">INDEX</span>
+              <span id="chart-sym-title" style="font-size:15px;font-weight:700;line-height:1.2;word-break:break-word;">NIFTY 50</span>
+              <span id="chart-seg-badge" class="paper-badge-header" style="display:none;">INDEX</span>
             </div>
             <div class="chart-meta-row">
               <span id="chart-ltp-display" class="tabular-nums price-val" style="font-size:14px;font-weight:700;">—</span>
@@ -510,21 +505,6 @@
               <span id="chart-feed-status" class="chart-feed-status-text" role="status">Awaiting instrument feed</span>
             </div>
           </div>
-        </div>
-
-        <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">
-          <button id="chart-theme-btn" class="tool-action-pill" onclick="window.TZApp.toggleThemeQuick()" aria-label="Toggle Day/Night theme" title="Toggle Day / Night theme">🌙</button>
-          <button id="chart-fullscreen-btn" class="tool-action-pill" onclick="window.TZApp.toggleChartFullscreen()" aria-label="Toggle full-screen chart" title="Toggle Fullscreen">
-            <svg id="chart-fullscreen-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <polyline points="15 3 21 3 21 9"/>
-              <polyline points="9 21 3 21 3 15"/>
-              <line x1="21" y1="3" x2="14" y2="10"/>
-              <line x1="3" y1="21" x2="10" y2="14"/>
-            </svg>
-          </button>
-          <button id="chart-btn-option-chain" class="tool-action-pill" onclick="window.TZApp.openOptionChainFromChart()">
-            <span>Option Chain</span>
-          </button>
         </div>
       </div>
 
@@ -570,6 +550,14 @@
       <div class="chart-stage-wrap">
         <div id="chart-indicator-label" class="chart-indicator-label">Candle time: IST open · dashed line: last price · drawings: user saved</div>
         <div id="chart-ohlc-legend" class="ohlc-floating-legend">O — H — L — C —</div>
+        <button id="chart-fullscreen-btn" class="chart-onplot-fullscreen-btn" type="button" aria-label="Toggle full-screen chart" title="Toggle Fullscreen" onclick="window.TZApp.toggleChartFullscreen()">
+          <svg id="chart-fullscreen-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="15 3 21 3 21 9"/>
+            <polyline points="9 21 3 21 3 15"/>
+            <line x1="21" y1="3" x2="14" y2="10"/>
+            <line x1="3" y1="21" x2="10" y2="14"/>
+          </svg>
+        </button>
         <div id="tv-main-chart"></div>
         <svg id="drawing-svg-layer"></svg>
         <div id="chart-protection-layer" class="chart-protection-layer" aria-label="Position protection lines"></div>
@@ -1301,6 +1289,31 @@
           <button id="delete-acc-submit-btn" type="button" class="btn-lime-primary" style="flex:1.4;background:#EF4444;color:#FFFFFF;" onclick="window.TZApp.submitAccountDeletion()">
             Permanently Delete
           </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================================================================
+         MODAL: MANDATORY UPDATE REQUIRED
+         ================================================================== -->
+    <div id="modal-update-required" class="blocking-update-modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="update-modal-title">
+      <div class="blocking-update-card">
+        <div class="update-icon-circle">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+        </div>
+        <h2 id="update-modal-title" style="margin:12px 0 6px 0;font-size:18px;font-weight:700;color:var(--text-on-white-primary,#FFFFFF);">Update Required</h2>
+        <div id="update-modal-version" style="font-size:12px;font-weight:600;color:#38BDF8;margin-bottom:12px;">Sikho Trading v1.0.1</div>
+        <p id="update-modal-message" style="margin:0 0 14px 0;font-size:13.5px;line-height:1.45;color:var(--text-secondary,#94A3B8);">A mandatory update is required to continue trading securely.</p>
+        <div id="update-modal-notes" class="update-release-notes" style="margin-bottom:18px;text-align:left;font-size:12px;color:var(--text-secondary,#CBD5E1);background:rgba(15,23,42,0.6);padding:10px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.08);white-space:pre-line;">• Enhanced chart header and full-plot fullscreen mode
+• Server-controlled security updates
+• Seamless in-app updates</div>
+        <div style="display:flex;flex-direction:column;gap:10px;width:100%;">
+          <button id="btn-update-now" class="btn-primary-blue" style="width:100%;height:46px;font-size:14px;font-weight:700;border-radius:12px;background:#38BDF8;color:#0F172A;border:none;cursor:pointer;" onclick="window.TZApp.onUpdateNowClicked()">Update Now</button>
+          <button id="btn-update-close-app" class="tool-action-pill" style="width:100%;height:40px;font-size:13px;font-weight:600;border-radius:10px;background:transparent;border:1px solid rgba(255,255,255,0.15);color:#94A3B8;cursor:pointer;" onclick="window.TZApp.onCloseAppClicked()">Close App</button>
         </div>
       </div>
     </div>

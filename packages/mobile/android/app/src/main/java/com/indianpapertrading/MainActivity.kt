@@ -24,6 +24,8 @@ import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -47,6 +49,11 @@ import com.google.android.gms.common.GoogleApiAvailability
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
+import com.google.android.play.core.appupdate.AppUpdateManager
+import com.google.android.play.core.appupdate.AppUpdateManagerFactory
+import com.google.android.play.core.install.model.AppUpdateType
+import com.google.android.play.core.install.model.UpdateAvailability
+import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
@@ -63,6 +70,13 @@ import kotlin.math.roundToInt
 
 class MainActivity : AppCompatActivity() {
 
+    companion object {
+        const val REQUEST_CODE_IMMEDIATE_UPDATE = 5201
+        const val REQUEST_CODE_NOTIFICATIONS = 5202
+        @Volatile var activeInstance: MainActivity? = null
+    }
+
+    private var appUpdateManager: AppUpdateManager? = null
     private lateinit var webView: WebView
     private lateinit var bannerContainer: FrameLayout
     private lateinit var appRoot: FrameLayout
@@ -603,6 +617,57 @@ class MainActivity : AppCompatActivity() {
         }
 
         @JavascriptInterface
+        fun getPrivacyOptionsRequirementStatus(): String {
+            if (!verifyCallerIsTrusted()) return "UNKNOWN"
+            return if (::adMobManager.isInitialized) {
+                adMobManager.getPrivacyOptionsRequirementStatus()
+            } else {
+                "UNKNOWN"
+            }
+        }
+
+        @JavascriptInterface
+        fun getAppVersionInfo(): String {
+            if (!verifyCallerIsTrusted()) return "{}"
+            val info = JSONObject().apply {
+                put("versionCode", BuildConfig.VERSION_CODE)
+                put("versionName", BuildConfig.VERSION_NAME)
+                put("packageName", packageName)
+                put("isDebug", BuildConfig.DEBUG)
+            }
+            return info.toString()
+        }
+
+        @JavascriptInterface
+        fun startPlayStoreUpdate(playStoreUrl: String): Boolean {
+            if (!verifyCallerIsTrusted()) return false
+            runOnUiThread {
+                triggerAppUpdate(playStoreUrl)
+            }
+            return true
+        }
+
+        @JavascriptInterface
+        fun closeApp() {
+            if (!verifyCallerIsTrusted()) return
+            runOnUiThread {
+                finishAffinity()
+            }
+        }
+
+        @JavascriptInterface
+        fun getFcmToken(): String {
+            if (!verifyCallerIsTrusted()) return ""
+            return SikhoFirebaseMessagingService.getCachedToken(this@MainActivity) ?: ""
+        }
+
+        @JavascriptInterface
+        fun registerFcmToken(token: String) {
+            if (!verifyCallerIsTrusted()) return
+            SikhoFirebaseMessagingService.saveToken(this@MainActivity, token)
+        }
+
+        @JavascriptInterface
         fun configureAppOpenUnit(unitId:String){
             if(!verifyCallerIsTrusted())return
             runOnUiThread{if(::adMobManager.isInitialized)adMobManager.configureAppOpenUnit(unitId)}
@@ -792,6 +857,15 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        activeInstance = this
+        try {
+            appUpdateManager = AppUpdateManagerFactory.create(this)
+        } catch (t: Throwable) {
+            Log.w("TradingzoneUpdate", "AppUpdateManager initialization failed: ${t.message}")
+        }
+        SikhoFirebaseMessagingService.createNotificationChannels(this)
+        requestNotificationPermissionIfRequired()
+        fetchFcmTokenSafely()
 
         credentialManager = CredentialManager.create(this)
         // Inspect only isolated/debug builds through Chrome DevTools; release stays disabled.
@@ -988,8 +1062,121 @@ class MainActivity : AppCompatActivity() {
         if(::adMobManager.isInitialized)adMobManager.cancelForegroundOpportunity()
     }
 
+    private fun requestNotificationPermissionIfRequired() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(this, arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), REQUEST_CODE_NOTIFICATIONS)
+            }
+        }
+    }
+
+    private fun fetchFcmTokenSafely() {
+        try {
+            FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+                if (task.isSuccessful && !task.result.isNullOrBlank()) {
+                    val token = task.result
+                    SikhoFirebaseMessagingService.saveToken(this, token)
+                    onNewFcmToken(token)
+                }
+            }
+        } catch (t: Throwable) {
+            Log.w("TradingzoneFCM", "Firebase token initialization bypassed: ${t.message}")
+        }
+    }
+
+    fun onNewFcmToken(token: String) {
+        if (::webView.isInitialized) {
+            webView.post {
+                val safeToken = JSONObject.quote(token)
+                webView.evaluateJavascript(
+                    "if (window.onFcmTokenReceived) window.onFcmTokenReceived($safeToken);",
+                    null
+                )
+            }
+        }
+    }
+
+    private fun triggerAppUpdate(fallbackUrl: String) {
+        val manager = appUpdateManager
+        if (manager == null) {
+            openPlayStoreFallback(fallbackUrl)
+            return
+        }
+        val appUpdateInfoTask = manager.appUpdateInfo
+        appUpdateInfoTask.addOnSuccessListener { appUpdateInfo ->
+            if (appUpdateInfo.updateAvailability() == UpdateAvailability.UPDATE_AVAILABLE
+                && appUpdateInfo.isUpdateTypeAllowed(AppUpdateType.IMMEDIATE)
+            ) {
+                try {
+                    manager.startUpdateFlowForResult(
+                        appUpdateInfo,
+                        AppUpdateType.IMMEDIATE,
+                        this,
+                        REQUEST_CODE_IMMEDIATE_UPDATE
+                    )
+                } catch (t: Throwable) {
+                    Log.w("TradingzoneUpdate", "Play Core update flow launch failed: ${t.message}. Falling back to Store URL.")
+                    openPlayStoreFallback(fallbackUrl)
+                }
+            } else {
+                Log.i("TradingzoneUpdate", "In-app update not available via Play Core (availability=${appUpdateInfo.updateAvailability()}). Falling back to Store URL.")
+                openPlayStoreFallback(fallbackUrl)
+            }
+        }.addOnFailureListener { e ->
+            Log.w("TradingzoneUpdate", "Check appUpdateInfo failed: ${e.message}. Falling back to Store URL.")
+            openPlayStoreFallback(fallbackUrl)
+        }
+    }
+
+    private fun openPlayStoreFallback(url: String) {
+        try {
+            val target = if (url.isNotBlank()) url else "market://details?id=$packageName"
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(target)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+        } catch (t: Throwable) {
+            try {
+                val webUrl = "https://play.google.com/store/apps/details?id=$packageName"
+                val webIntent = Intent(Intent.ACTION_VIEW, Uri.parse(webUrl)).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                startActivity(webIntent)
+            } catch (t2: Throwable) {
+                Log.e("TradingzoneUpdate", "Cannot open Play Store: ${t2.message}")
+            }
+        }
+    }
+
+    private fun resumeUpdateIfInProgress() {
+        appUpdateManager?.appUpdateInfo?.addOnSuccessListener { appUpdateInfo ->
+            if (appUpdateInfo.updateAvailability() == UpdateAvailability.DEVELOPER_TRIGGERED_UPDATE_IN_PROGRESS) {
+                try {
+                    appUpdateManager?.startUpdateFlowForResult(
+                        appUpdateInfo,
+                        AppUpdateType.IMMEDIATE,
+                        this,
+                        REQUEST_CODE_IMMEDIATE_UPDATE
+                    )
+                } catch (e: Exception) {
+                    Log.w("TradingzoneUpdate", "Failed to resume immediate update: ${e.message}")
+                }
+            }
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_CODE_IMMEDIATE_UPDATE) {
+            if (resultCode != RESULT_OK) {
+                Log.w("TradingzoneUpdate", "Update flow failed or canceled by user: code=$resultCode")
+            }
+        }
+    }
+
     override fun onResume() {
         super.onResume()
+        resumeUpdateIfInProgress()
         if (googleSignInInFlight.get()) recordGoogleStage(activeGoogleRequestKey, "ACTIVITY_RESUME", "request_preserved")
         if (::adMobManager.isInitialized) {
             adMobManager.onResume(googleSignInInFlight.get())
@@ -1005,6 +1192,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        if (activeInstance == this) {
+            activeInstance = null
+        }
         if (::adMobManager.isInitialized) {
             adMobManager.onDestroy()
         }

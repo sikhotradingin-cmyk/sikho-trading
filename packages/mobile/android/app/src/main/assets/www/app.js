@@ -359,12 +359,23 @@
     }
   }
 
+  function getNativeVersionCode() {
+    if (window.TradingzoneNative && typeof window.TradingzoneNative.getAppVersionInfo === 'function') {
+      try {
+        const info = JSON.parse(window.TradingzoneNative.getAppVersionInfo() || '{}');
+        if (info.versionCode) return Number(info.versionCode);
+      } catch {}
+    }
+    return 36;
+  }
+
   async function apiFetch(path, opts = {}) {
     const requestToken=state.token;
     const headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
     if (state.token) {
       headers['Authorization'] = `Bearer ${state.token}`;
     }
+    headers['x-app-version-code'] = String(typeof getNativeVersionCode === 'function' ? getNativeVersionCode() : 36);
 
     const timeoutMs = opts.timeoutMs || 10000;
     const controller = new AbortController();
@@ -401,6 +412,15 @@
       const expiredEmail = state.user?.email || '';
       signOut('Your session expired for your security. Please sign in again to continue.', { preserveEmail: expiredEmail });
       throw new Error(data.error || 'Session expired');
+    }
+    if (res.status === 426 || data.error === 'ERR_UPDATE_REQUIRED') {
+      if (typeof showBlockingUpdateRequired === 'function') {
+        showBlockingUpdateRequired(data, typeof getNativeVersionCode === 'function' ? getNativeVersionCode() : 36);
+      }
+      const updateErr = new Error(data.message || 'A mandatory update is required to continue trading securely.');
+      updateErr.code = 'ERR_UPDATE_REQUIRED';
+      updateErr.status = 426;
+      throw updateErr;
     }
     if (!res.ok) {
       const err = new Error(data.error || data.message || `Request failed (${res.status})`);
@@ -552,59 +572,166 @@
     }
   }
 
+  function updatePrivacyOptionsVisibility() {
+    const wrap = document.getElementById('prof-ad-privacy-wrap');
+    if (!wrap) return;
+    if (window.TradingzoneNative && typeof window.TradingzoneNative.getPrivacyOptionsRequirementStatus === 'function') {
+      try {
+        const status = window.TradingzoneNative.getPrivacyOptionsRequirementStatus();
+        // Show entry point ONLY when REQUIRED. Do NOT treat UNKNOWN as NOT_REQUIRED.
+        if (status === 'REQUIRED') {
+          wrap.style.display = 'block';
+        } else if (status === 'NOT_REQUIRED') {
+          wrap.style.display = 'none';
+        } else {
+          // UNKNOWN: do not treat as NOT_REQUIRED
+          wrap.style.display = 'block';
+        }
+      } catch {
+        wrap.style.display = 'block';
+      }
+    } else {
+      wrap.style.display = 'none';
+    }
+  }
+
   function openAdPrivacyOptions() {
     if (window.TradingzoneNative && typeof window.TradingzoneNative.showPrivacyOptions === 'function') {
       window.TradingzoneNative.showPrivacyOptions();
     } else {
-      alert('Ad consent and privacy choices are managed on the native Android device via Google UMP.');
+      showBrandedAlert('Privacy & Ad Consent', 'Ad consent and privacy choices are managed on your Android device via Google UMP when required.');
     }
   }
 
-  /**
-   * Support surface for ads: entitlement, consent, SDK init, load errors (code/domain/message/
-   * response id), banner attachment/dimensions and the exact eligibility block reason.
-   */
-  function showAdDiagnostics() {
+  let versionClickTimestamps = [];
+  function onVersionLabelClick() {
+    const now = Date.now();
+    versionClickTimestamps = versionClickTimestamps.filter(t => now - t < 3000);
+    versionClickTimestamps.push(now);
+    if (versionClickTimestamps.length >= 5) {
+      versionClickTimestamps = [];
+      showSanitizedDiagnostics();
+    }
+  }
+
+  function showSanitizedDiagnostics() {
     let diag = {};
     try {
       if (window.TradingzoneNative && typeof window.TradingzoneNative.getAdDiagnostics === 'function') {
         const raw = window.TradingzoneNative.getAdDiagnostics();
         diag = typeof raw === 'string' ? JSON.parse(raw || '{}') : raw;
       }
-    } catch (e) {
-      diag = { error: String(e && e.message || e) };
-    }
-    console.log('[AdDiagnostics]', diag);
+    } catch {}
+    let ver = { versionCode: 36, versionName: 'v1.0.1' };
+    try {
+      if (window.TradingzoneNative && typeof window.TradingzoneNative.getAppVersionInfo === 'function') {
+        ver = JSON.parse(window.TradingzoneNative.getAppVersionInfo() || '{}');
+      }
+    } catch {}
     const lines = [
-      `Tier: ${diag.tier || '?'} • User: ${diag.userId || '(none)'}`,
-      `Screen: ${diag.currentScreen || '?'} • Trading workspace: ${diag.isTradingWorkspaceOpen} • Open positions: ${diag.hasOpenPositions} • Pending orders: ${diag.hasPendingOrders}`,
-      `AdMob App ID: ${diag.admobAppId || '?'}`,
-      `Banner unit: ${diag.bannerAdUnitId || '?'}`,
-      `Interstitial unit: ${diag.interstitialAdUnitId || '?'}`,
-      `Test ad units: ${diag.usingOfficialTestAdUnits} • Debug build: ${diag.isDebugBuild}`,
-      '',
-      `SDK initialized: ${diag.sdkInitialized} (${diag.sdkInitStatus})`,
-      `SDK detail: ${diag.sdkInitDetail || '—'}`,
-      `Consent status: ${diag.consentStatus} • canRequestAds: ${diag.canRequestAds}`,
-      `Consent callback: ${diag.consentCallbackAgoSec >= 0 ? diag.consentCallbackAgoSec + 's ago' : 'not received'}`,
-      `Consent form error: ${diag.consentFormError || 'none'}`,
-      `Consent request error: ${diag.consentRequestError || 'none'}`,
-      '',
-      `Banner: requests=${diag.bannerRequestCount} loaded=${diag.bannerLoaded} visible=${diag.bannerVisible} attached=${diag.bannerAttached}`,
-      `Banner size: ${diag.bannerMeasuredWidthPx}x${diag.bannerMeasuredHeightPx}px (container ${diag.bannerContainerWidthPx}x${diag.bannerContainerHeightPx}px)`,
-      `Banner last error: ${diag.lastBannerLoadError || 'none'}`,
-      `Interstitial: requests=${diag.interstitialRequestCount} loaded=${diag.interstitialLoaded} loading=${diag.isInterstitialLoading} shown=${diag.interstitialShownCount}`,
-      `Interstitial last error: ${diag.lastInterstitialLoadError || 'none'}`,
-      '',
-      `Actions: ${diag.eligibleActionCounter}/${diag.actionsRequired} • Foreground: ${diag.foregroundSec}s of ${diag.minForegroundSec}s required`,
-      `Caps: session ${diag.sessionInterstitialCount}/${diag.maxSessionInterstitials} • 24h ${diag.recent24hCount}/${diag.max24hInterstitials}`,
-      `Blocked reason: ${diag.lastEligibilityCheckReason || '—'}`,
-      `Preload/display reason: ${diag.lastPreloadBlockedReason || '—'}`,
-      '',
-      'Ads are test/dev units in debug builds. Production serving additionally requires the AdMob account/app to be approved and linked.',
+      `Version: ${ver.versionName || 'v1.0.1'} (Build ${ver.versionCode || 36})`,
+      `User Tier: ${state.user?.tier || 'FREE'}`,
+      `Consent Requirement: ${window.TradingzoneNative?.getPrivacyOptionsRequirementStatus?.() || 'UNKNOWN'}`,
+      `SDK Initialized: ${diag.sdkInitialized || false}`,
+      `Banner: ${diag.bannerVisible ? 'Visible' : 'Hidden'} (${diag.lastEligibilityCheckReason || 'OK'})`,
+      `Server: ${state.apiBaseUrl || 'Production'}`,
     ].join('\n');
-    showBrandedAlert('Ad diagnostics', lines);
+    showBrandedAlert('App Diagnostics', lines);
   }
+
+  function showAdDiagnostics() {
+    showSanitizedDiagnostics();
+  }
+
+  let lastVersionCheckAt = 0;
+  let activeVersionPolicy = null;
+
+  async function checkAppVersionPolicy(reason = 'routine') {
+    const now = Date.now();
+    if (reason === 'routine' && now - lastVersionCheckAt < 30000 && activeVersionPolicy) {
+      return activeVersionPolicy;
+    }
+    lastVersionCheckAt = now;
+
+    const installedVersionCode = getNativeVersionCode();
+    try {
+      const res = await fetch(`${state.apiBaseUrl}/api/v1/app/version-policy`, {
+        headers: { 'x-app-version-code': String(installedVersionCode) },
+      });
+      if (res.ok) {
+        const policy = await res.json();
+        activeVersionPolicy = policy;
+        if (policy.isActive && installedVersionCode < Number(policy.minimumSupportedVersionCode)) {
+          showBlockingUpdateRequired(policy, installedVersionCode);
+          return policy;
+        } else {
+          hideBlockingUpdateRequired();
+        }
+      }
+    } catch (e) {
+      console.warn('[VersionPolicy] Failed to check version policy:', e);
+    }
+    return activeVersionPolicy;
+  }
+
+  function showBlockingUpdateRequired(policy, installedVersionCode) {
+    state.isUpdateRequired = true;
+    const modal = document.getElementById('modal-update-required');
+    if (!modal) return;
+    const verEl = document.getElementById('update-modal-version');
+    const msgEl = document.getElementById('update-modal-message');
+    const notesEl = document.getElementById('update-modal-notes');
+
+    if (verEl) verEl.textContent = `Installed: Build ${installedVersionCode} · Required: Build ${policy?.minimumSupportedVersionCode || 36}+`;
+    if (msgEl && policy?.updateMessage) msgEl.textContent = policy.updateMessage;
+    if (notesEl && policy?.releaseNotes) notesEl.textContent = policy.releaseNotes;
+
+    modal.style.display = 'flex';
+  }
+
+  function hideBlockingUpdateRequired() {
+    state.isUpdateRequired = false;
+    const modal = document.getElementById('modal-update-required');
+    if (modal) modal.style.display = 'none';
+  }
+
+  function onUpdateNowClicked() {
+    const targetUrl = activeVersionPolicy?.playStoreUrl || 'https://play.google.com/store/apps/details?id=com.indianpapertrading';
+    if (window.TradingzoneNative && typeof window.TradingzoneNative.startPlayStoreUpdate === 'function') {
+      window.TradingzoneNative.startPlayStoreUpdate(targetUrl);
+    } else {
+      window.open(targetUrl, '_blank');
+    }
+  }
+
+  function onCloseAppClicked() {
+    if (window.TradingzoneNative && typeof window.TradingzoneNative.closeApp === 'function') {
+      window.TradingzoneNative.closeApp();
+    } else {
+      hideBlockingUpdateRequired();
+    }
+  }
+
+  window.onFcmTokenReceived = async function (token) {
+    if (!token) return;
+    try {
+      const installedVersionCode = getNativeVersionCode();
+      await fetch(`${state.apiBaseUrl}/api/v1/devices/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(state.token ? { Authorization: `Bearer ${state.token}` } : {}),
+        },
+        body: JSON.stringify({
+          token,
+          platform: 'android',
+          appVersionCode: installedVersionCode,
+        }),
+      });
+    } catch (e) {
+      console.warn('[FCM] Failed to register token with backend:', e);
+    }
+  };
 
   window.onAdBannerStateChanged = function (isVisible, heightDp) {
     const spacer = document.getElementById('native-ad-banner-spacer');
@@ -619,8 +746,12 @@
   };
 
   window.onAdPrivacyOptionsResult = function (success, errorMsg) {
-    if (!success && errorMsg) {
-      console.log('Ad privacy form returned: ' + errorMsg);
+    if (!success) {
+      const msg = errorMsg || 'No consent form is currently required or available for your region.';
+      showToast(msg);
+      updatePrivacyOptionsVisibility();
+    } else {
+      showToast('Consent preferences updated.');
     }
   };
 
@@ -1511,6 +1642,11 @@
     await apiFetch('/api/v1/watchlists',{method:'POST',body:JSON.stringify({id:list.id,name:list.name,instruments:[]})});await loadWatchlists();
   }
   async function enterMainWorkspace() {
+    await checkAppVersionPolicy('workspace_entry');
+    if (state.isUpdateRequired) {
+      return;
+    }
+    updatePrivacyOptionsVisibility();
     clearInterval(accessPollTimer);accessPollTimer=setInterval(pollAccessPolicy,30000);
     pollAccessPolicy();
     showTopScreen('screen-main');
@@ -3004,8 +3140,36 @@
     return inst;
   }
 
+  function formatChartHeaderContractIdentity(inst) {
+    if (!inst) return 'Instrument';
+    const sym = (inst.symbol || inst.name || inst.globalId?.split(':')[1] || 'Instrument').trim();
+    const isOption = Boolean(inst.optionType || (inst.strikePrice && inst.strikePrice > 0) || inst.instrumentType?.includes('OPT'));
+    const isFut = (inst.instrumentType && inst.instrumentType.startsWith('FUT')) || /FUT/i.test(sym) || /FUT/i.test(inst.globalId || '');
+
+    if (!isOption && !isFut) {
+      return inst.name && inst.name.length > sym.length ? inst.name : sym;
+    }
+
+    const parts = [sym];
+    if (inst.expiry && !sym.includes(inst.expiry)) {
+      parts.push(inst.expiry);
+    }
+    if (isOption && inst.strikePrice && !sym.includes(String(inst.strikePrice))) {
+      parts.push(`₹${inst.strikePrice} ${inst.optionType || ''}`.trim());
+    } else if (isFut && !sym.includes('FUT')) {
+      parts.push('FUT');
+    }
+    return parts.join(' ');
+  }
+
   async function openChartByGlobalId(globalId) {
     if (!globalId) return;
+    if (state.isUpdateRequired) {
+      if (typeof showBlockingUpdateRequired === 'function') {
+        showBlockingUpdateRequired(activeVersionPolicy, typeof getNativeVersionCode === 'function' ? getNativeVersionCode() : 36);
+      }
+      return;
+    }
     const navigationSeq=++chartNavigationSeq, sessionToken=state.token;
     const prevGid = state.activeInstrument?.globalId || null;
     if (prevGid && prevGid !== globalId) {
@@ -3081,8 +3245,14 @@
     try{const saved=JSON.parse(localStorage.getItem('tz_indicators_'+(state.user?.userId||state.user?.id))||'null');if(saved)Object.assign(state.indicators,saved);}catch{}
     document.getElementById('chart-ltp-display').textContent='—';
     document.getElementById('chart-chg-display').textContent='';
-    document.getElementById('chart-sym-title').textContent = inst.symbol;
-    document.getElementById('chart-seg-badge').textContent = `${inst.exchange} • ${inst.instrumentType}`;
+    const chartTitleEl = document.getElementById('chart-sym-title');
+    if (chartTitleEl) {
+      chartTitleEl.textContent = typeof formatChartHeaderContractIdentity === 'function'
+        ? formatChartHeaderContractIdentity(inst)
+        : (inst.symbol || inst.displayName || inst.name || inst.globalId || 'Instrument');
+    }
+    const chartSegBadge = document.getElementById('chart-seg-badge');
+    if (chartSegBadge) chartSegBadge.style.display = 'none';
 
     // Manage active chart WebSocket subscription without duplicates
     if (state.activeChartSubId && state.activeChartSubId !== inst.globalId) {
@@ -3126,14 +3296,20 @@
     state.isChartFullscreen = true;
     const chartScreen = document.getElementById('screen-chart');
     if (chartScreen) chartScreen.classList.add('is-fullscreen');
+    const exitIconSvg = `
+      <polyline points="4 14 10 14 10 20"/>
+      <polyline points="20 10 14 10 14 4"/>
+      <line x1="14" y1="10" x2="21" y2="3"/>
+      <line x1="3" y1="21" x2="10" y2="14"/>
+    `;
     const fsIcon = document.getElementById('chart-fullscreen-icon');
-    if (fsIcon) {
-      fsIcon.innerHTML = `
-        <polyline points="4 14 10 14 10 20"/>
-        <polyline points="20 10 14 10 14 4"/>
-        <line x1="14" y1="10" x2="21" y2="3"/>
-        <line x1="3" y1="21" x2="10" y2="14"/>
-      `;
+    if (fsIcon) fsIcon.innerHTML = exitIconSvg;
+    const onplotIcon = document.getElementById('chart-onplot-fullscreen-icon');
+    if (onplotIcon) onplotIcon.innerHTML = exitIconSvg;
+    const onplotBtn = document.getElementById('btn-chart-onplot-fullscreen');
+    if (onplotBtn) {
+      onplotBtn.title = 'Exit Fullscreen';
+      onplotBtn.setAttribute('aria-label', 'Exit full-screen chart');
     }
     const fsBtn = document.getElementById('chart-fullscreen-btn');
     if (fsBtn) {
@@ -3155,14 +3331,20 @@
     state.isChartFullscreen = false;
     const chartScreen = document.getElementById('screen-chart');
     if (chartScreen) chartScreen.classList.remove('is-fullscreen');
+    const expandIconSvg = `
+      <polyline points="15 3 21 3 21 9"/>
+      <polyline points="9 21 3 21 3 15"/>
+      <line x1="21" y1="3" x2="14" y2="10"/>
+      <line x1="3" y1="21" x2="10" y2="14"/>
+    `;
     const fsIcon = document.getElementById('chart-fullscreen-icon');
-    if (fsIcon) {
-      fsIcon.innerHTML = `
-        <polyline points="15 3 21 3 21 9"/>
-        <polyline points="9 21 3 21 3 15"/>
-        <line x1="21" y1="3" x2="14" y2="10"/>
-        <line x1="3" y1="21" x2="10" y2="14"/>
-      `;
+    if (fsIcon) fsIcon.innerHTML = expandIconSvg;
+    const onplotIcon = document.getElementById('chart-onplot-fullscreen-icon');
+    if (onplotIcon) onplotIcon.innerHTML = expandIconSvg;
+    const onplotBtn = document.getElementById('btn-chart-onplot-fullscreen');
+    if (onplotBtn) {
+      onplotBtn.title = 'Full-screen chart';
+      onplotBtn.setAttribute('aria-label', 'Toggle full-screen chart');
     }
     const fsBtn = document.getElementById('chart-fullscreen-btn');
     if (fsBtn) {
@@ -3871,14 +4053,33 @@
     const ltpEl = document.getElementById('chart-ltp-display');
     const chgEl = document.getElementById('chart-chg-display');
     if (!ltpEl || !quote) return;
+    const ltp = Number(quote.ltp);
+    if (!Number.isFinite(ltp) || ltp <= 0) {
+      ltpEl.textContent = '—';
+      if (chgEl) {
+        chgEl.textContent = 'Quote unavailable';
+        chgEl.className = 'tabular-nums text-muted';
+      }
+      return;
+    }
+    ltpEl.textContent = fmtINR(ltp);
+
+    // Calculate against previous trading-session close (quote.close)
     const base = Number(quote.close);
-    if(!(base>0)){ltpEl.textContent=fmtINR(quote.ltp);chgEl.textContent='Change unavailable';return;}
-    const diff = quote.ltp - base;
-    const pct = base > 0 ? (diff / base) * 100 : 0;
+    if (!(base > 0)) {
+      if (chgEl) {
+        chgEl.textContent = 'Change unavailable';
+        chgEl.className = 'tabular-nums text-muted';
+      }
+      return;
+    }
+    const diff = ltp - base;
+    const pct = (diff / base) * 100;
     const sign = diff >= 0 ? '+' : '';
-    ltpEl.textContent = fmtINR(quote.ltp);
-    chgEl.textContent = `${sign}${diff.toFixed(2)} (${formatChangePct(pct)})`;
-    chgEl.className = 'tabular-nums ' + (diff >= 0 ? 'val-pos-dark' : 'val-neg');
+    if (chgEl) {
+      chgEl.textContent = `${sign}${diff.toFixed(2)} (${formatChangePct(pct)})`;
+      chgEl.className = 'tabular-nums ' + (diff >= 0 ? 'val-pos-dark' : 'val-neg');
+    }
     checkPriceAlerts(quote);
   }
 
@@ -7362,6 +7563,12 @@
     openDeleteAccountModal,
     closeDeleteAccountModal,
     submitAccountDeletion,
+    onUpdateNowClicked,
+    onCloseAppClicked,
+    onVersionLabelClick,
+    showSanitizedDiagnostics,
+    checkAppVersionPolicy,
+    updatePrivacyOptionsVisibility,
     _state: state,
   };
 
@@ -7376,10 +7583,16 @@
       });
     } catch {}
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && state.token) {
-        pollAccessPolicy();
+      if (!document.hidden) {
+        checkAppVersionPolicy('foreground_resume');
+        updatePrivacyOptionsVisibility();
+        if (state.token) {
+          pollAccessPolicy();
+        }
       }
     });
+    checkAppVersionPolicy('app_launch');
+    updatePrivacyOptionsVisibility();
     probeAndSelectServer();
     const saved = readSessionSecure();
     if (saved && saved.token && saved.user) {
