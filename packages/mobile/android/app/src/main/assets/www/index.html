@@ -883,22 +883,94 @@
     <!-- ==================================================================
          MODAL 5: INDICATORS & DRAWINGS CONFIGURATION SHEETS
          ================================================================== -->
+    <!-- ==================================================================
+         MODAL 5A: TECHNICAL INDICATORS SEARCHABLE BOTTOM SHEET
+         ================================================================== -->
     <div id="modal-indicators" class="modal-backdrop" onclick="if(event.target===this) this.classList.remove('active')">
-      <div class="white-bottom-sheet">
+      <div class="white-bottom-sheet indicator-bottom-sheet">
         <div class="sheet-handle"></div>
-        <div class="auth-card-title">Technical Indicators</div>
-        <div class="auth-card-sub">Toggle overlays and oscillators on the active chart</div>
-        <div id="indicators-list-box"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <div>
+            <div class="auth-card-title" style="margin-bottom:2px;">Technical Indicators</div>
+            <div class="auth-card-sub" style="margin-bottom:0;">Searchable library of overlays &amp; oscillators</div>
+          </div>
+          <button type="button" class="tool-action-pill" style="font-size:11px;padding:4px 8px;" onclick="window.TZApp.toggleChartEngineRollback()">
+            <span id="chart-engine-badge">Engine: KLineChart</span>
+          </button>
+        </div>
+
+        <!-- Search Bar -->
+        <div style="position:relative;margin-bottom:10px;">
+          <input id="indicator-search-input" type="search" class="search-input" placeholder="Search (e.g. RSI, EMA, BOLL, MACD, VWAP)..." oninput="window.TZApp.onIndicatorSearchInput(this.value)" autocomplete="off" autocorrect="off">
+        </div>
+
+        <!-- Category Tabs -->
+        <div class="indicator-category-tabs">
+          <button id="tab-ind-all" class="ind-cat-pill active" onclick="window.TZApp.filterIndicatorCategory('all')">All</button>
+          <button id="tab-ind-active" class="ind-cat-pill" onclick="window.TZApp.filterIndicatorCategory('active')">Active (<span id="ind-active-count">0</span>)</button>
+          <button id="tab-ind-fav" class="ind-cat-pill" onclick="window.TZApp.filterIndicatorCategory('favorites')">★ Favorites</button>
+          <button id="tab-ind-main" class="ind-cat-pill" onclick="window.TZApp.filterIndicatorCategory('main')">Main Chart</button>
+          <button id="tab-ind-osc" class="ind-cat-pill" onclick="window.TZApp.filterIndicatorCategory('oscillator')">Oscillators</button>
+          <button id="tab-ind-vol" class="ind-cat-pill" onclick="window.TZApp.filterIndicatorCategory('volume')">Volume</button>
+        </div>
+
+        <!-- Indicator Items Container -->
+        <div id="indicators-list-box" class="indicators-scroll-box"></div>
       </div>
     </div>
 
-    <div id="modal-drawings" class="modal-backdrop" onclick="if(event.target===this) this.classList.remove('active')">
-      <div class="white-bottom-sheet">
+    <!-- ==================================================================
+         MODAL 5B: INDICATOR PARAMETER SETTINGS DIALOG
+         ================================================================== -->
+    <div id="modal-indicator-settings" class="modal-backdrop" onclick="if(event.target===this) this.classList.remove('active')">
+      <div class="white-bottom-sheet indicator-settings-sheet">
         <div class="sheet-handle"></div>
-        <div class="auth-card-title">Chart Drawing Tools</div>
-        <div class="auth-card-sub">Touch-arbitrated vector tools (chart pan locks automatically while drawing)</div>
-        <div id="drawings-tools-box" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;"></div>
-        <button onclick="window.TZApp.clearAllDrawings()" style="width:100%;min-height:42px;border-radius:10px;border:1px solid var(--negative-red);background:var(--bg-white);color:var(--negative-red);font-weight:700;cursor:pointer;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+          <div id="indicator-settings-title" class="auth-card-title" style="margin-bottom:0;">Configure Indicator</div>
+          <button type="button" class="modal-close-cross" onclick="document.getElementById('modal-indicator-settings').classList.remove('active')" aria-label="Close settings">✕</button>
+        </div>
+        <div id="indicator-settings-fields" style="display:flex;flex-direction:column;gap:12px;margin-bottom:16px;"></div>
+        <div style="display:flex;gap:10px;">
+          <button type="button" class="tool-action-pill" style="flex:1;height:42px;font-weight:600;" onclick="window.TZApp.resetIndicatorParamsToDefault()">Reset Defaults</button>
+          <button type="button" class="btn-primary-blue" style="flex:1;height:42px;font-weight:700;border-radius:10px;background:#38BDF8;color:#0F172A;border:none;" onclick="window.TZApp.saveIndicatorParams()">Apply Settings</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================================================================
+         MODAL 5C: CATEGORIZED DRAWING TOOL WORKSPACE
+         ================================================================== -->
+    <div id="modal-drawings" class="modal-backdrop" onclick="if(event.target===this) this.classList.remove('active')">
+      <div class="white-bottom-sheet drawings-bottom-sheet">
+        <div class="sheet-handle"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <div>
+            <div class="auth-card-title" style="margin-bottom:2px;">Drawing Tool Workspace</div>
+            <div class="auth-card-sub" style="margin-bottom:0;">Vectors anchored to instrument price &amp; time</div>
+          </div>
+          <button type="button" class="modal-close-cross" onclick="document.getElementById('modal-drawings').classList.remove('active')" aria-label="Close drawings menu">✕</button>
+        </div>
+
+        <!-- Quick Controls Toolbar: Cursor, Magnet, Undo, Redo, Clear -->
+        <div class="drawing-quick-bar">
+          <button id="btn-draw-cursor" class="tool-action-pill active" onclick="window.TZApp.selectDrawingTool('cursor')">
+            <span>👆 Cursor</span>
+          </button>
+          <button id="btn-draw-magnet" class="tool-action-pill" onclick="window.TZApp.cycleDrawingMagnet()">
+            <span id="label-draw-magnet">🧲 Magnet: Off</span>
+          </button>
+          <button id="btn-draw-undo" class="tool-action-pill" onclick="window.TZApp.undoDrawingAction()" title="Undo Drawing">
+            <span>↩ Undo</span>
+          </button>
+          <button id="btn-draw-redo" class="tool-action-pill" onclick="window.TZApp.redoDrawingAction()" title="Redo Drawing">
+            <span>↪ Redo</span>
+          </button>
+        </div>
+
+        <!-- Categorized Tool Box -->
+        <div id="drawings-tools-box" class="drawings-tools-container"></div>
+
+        <button onclick="window.TZApp.promptClearAllDrawings()" style="width:100%;min-height:40px;border-radius:10px;border:1px solid var(--negative-red);background:transparent;color:var(--negative-red);font-weight:700;cursor:pointer;margin-top:10px;">
           Clear All Drawings on Symbol
         </button>
       </div>
@@ -1324,6 +1396,8 @@
   <script src="free-access.js"></script>
   <script src="ux.js"></script>
   <script src="history.js"></script>
+  <script src="klinecharts.min.js"></script>
+  <script src="chart-adapter.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

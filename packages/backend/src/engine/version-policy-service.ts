@@ -33,11 +33,11 @@ export interface AnnouncementResult {
 }
 
 const DEFAULT_POLICY: AppVersionPolicy = {
-  latestVersionCode: 36,
+  latestVersionCode: 37,
   minimumSupportedVersionCode: 35,
   latestVersionName: 'v1.0.1',
   updateMessage: 'A mandatory update is required to continue trading securely.',
-  releaseNotes: '• Improved chart header and fullscreen plot mode\n• Server-controlled security updates\n• Seamless in-app updates',
+  releaseNotes: '• Professional KLineChart v10 integration with decoupled adapter\n• Technical indicator library with custom session VWAP and ATR\n• Vector drawing workspace with measurement and risk/reward overlays\n• Draggable on-chart TP/SL protection lines with real-time P&L',
   playStoreUrl: 'https://play.google.com/store/apps/details?id=com.indianpapertrading',
   isActive: true,
   updatedAt: 1732665600000,
@@ -250,7 +250,7 @@ export async function dispatchReleaseAnnouncement(
 ): Promise<AnnouncementResult> {
   const title = (params.title || 'Sikho Trading Update Available').trim();
   const message = (params.message || 'A new Sikho Trading update is available. Please update to continue.').trim();
-  const targetVersionCode = params.targetVersionCode ? Number(params.targetVersionCode) : 36;
+  const targetVersionCode = params.targetVersionCode ? Number(params.targetVersionCode) : 37;
   const isDryRun = Boolean(params.dryRun);
 
   // Compute duplicate-detection hash: sha256(targetVersionCode + title + message)

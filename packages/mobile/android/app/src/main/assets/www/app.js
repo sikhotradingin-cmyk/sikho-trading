@@ -113,11 +113,44 @@
     },
   };
 
-  let chartLibraryPromise=null;
-  function ensureChartLibrary(){
-   if(window.LightweightCharts)return Promise.resolve();
-   if(!chartLibraryPromise)chartLibraryPromise=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='lightweight-charts.standalone.production.js';script.onload=resolve;script.onerror=()=>{chartLibraryPromise=null;reject(Error('Chart engine unavailable. Reopen the chart to retry.'));};document.head.appendChild(script);});
-   return chartLibraryPromise;
+  let chartLibraryPromise = null;
+  let activeChartAdapter = null;
+  function getActiveChartAdapter() {
+    if (typeof activeChartAdapter !== 'undefined') return activeChartAdapter;
+    if (typeof window !== 'undefined' && window.activeChartAdapter) return window.activeChartAdapter;
+    return null;
+  }
+  function setActiveChartAdapter(adp) {
+    activeChartAdapter = adp;
+    if (typeof window !== 'undefined') window.activeChartAdapter = adp;
+  }
+  function ensureChartLibrary() {
+    if (window.klinecharts || window.LightweightCharts) return Promise.resolve();
+    if (!chartLibraryPromise) {
+      chartLibraryPromise = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'klinecharts.min.js';
+        script.onload = () => {
+          const adapterScript = document.createElement('script');
+          adapterScript.src = 'chart-adapter.js';
+          adapterScript.onload = resolve;
+          adapterScript.onerror = resolve;
+          document.head.appendChild(adapterScript);
+        };
+        script.onerror = () => {
+          const lwScript = document.createElement('script');
+          lwScript.src = 'lightweight-charts.standalone.production.js';
+          lwScript.onload = resolve;
+          lwScript.onerror = () => {
+            chartLibraryPromise = null;
+            reject(Error('Chart engine unavailable. Reopen the chart to retry.'));
+          };
+          document.head.appendChild(lwScript);
+        };
+        document.head.appendChild(script);
+      });
+    }
+    return chartLibraryPromise;
   }
   let tvChart = null;
   let candleSeries = null;
@@ -3513,7 +3546,25 @@
   }
   function initLightweightChartInstance() {
     const container = document.getElementById('tv-main-chart');
-    if (tvChart) {
+    const isKlineEngine = typeof SikhoChartAdapter !== 'undefined' &&
+      SikhoChartAdapter.getEngine() === 'klinechart' &&
+      typeof klinecharts !== 'undefined';
+
+    const currentAdp = (typeof getActiveChartAdapter === 'function') ? getActiveChartAdapter() : (typeof window !== 'undefined' ? window.activeChartAdapter : null);
+    if (currentAdp) {
+      const targetKey = (state.activeInstrument?.globalId || '') + ':' + (state.activeTimeframe || '5m');
+      if (state.chartDataKey !== targetKey) {
+        state.candles = [];
+        currentAdp.applyNewData([]);
+      }
+      if (state.activeInstrument) {
+        currentAdp.setInstrumentAndPeriod(state.activeInstrument, state.activeTimeframe || '5m');
+      }
+      currentAdp.resize();
+      return;
+    }
+
+    if (tvChart && !isKlineEngine) {
       const targetKey = (state.activeInstrument?.globalId || '') + ':' + (state.activeTimeframe || '5m');
       if (state.chartDataKey !== targetKey) {
         state.candles=[]; candleSeries.setData([]);
@@ -3530,6 +3581,114 @@
         candleSeries?.priceScale?.()?.applyOptions?.({ autoScale: true, mode: 0, scaleMargins: { top: 0.1, bottom: 0.14 } });
         tvChart.timeScale()?.resetTimeScale?.();
       } catch {}
+      return;
+    }
+
+    if (container) container.innerHTML = '';
+
+    if (isKlineEngine) {
+      setActiveChartAdapter(SikhoChartAdapter.createAdapter('klinechart'));
+      activeChartAdapter.init(container, {
+        isDark: state.theme !== 'light',
+        onCrosshair: (param) => {
+          if (!param || !param.kLineData) {
+            if (!state.isUserScrolledBack && !state.historicalInspection) {
+              inspectedCandleTime = null;
+            }
+            return;
+          }
+          const bar = param.kLineData;
+          inspectedCandleTime = Math.floor(bar.timestamp / 1000);
+          const legend = document.getElementById('chart-ohlc-legend');
+          if (legend) {
+            legend.textContent = `${formatChartTime(inspectedCandleTime, true)} · O ${fmtNum(bar.open)}  H ${fmtNum(bar.high)}  L ${fmtNum(bar.low)}  C ${fmtNum(bar.close)}`;
+          }
+        },
+        onVisibleRangeChange: () => {
+          if (typeof updateProtectionCoordinatesRAF === 'function') updateProtectionCoordinatesRAF();
+          renderDrawingsSvgOverlay();
+          if (state.candles.length === 0) return;
+          const btn = document.getElementById('btn-go-latest');
+          if (btn) {
+            btn.style.display = 'inline-flex';
+            btn.classList?.toggle?.('is-scrolled', Boolean(state.isUserScrolledBack || state.historicalInspection));
+          }
+        },
+      });
+
+      if (state.activeInstrument) {
+        activeChartAdapter.setInstrumentAndPeriod(state.activeInstrument, state.activeTimeframe || '5m');
+      }
+
+      // Proxy candleSeries for trading/feed compatibility
+      candleSeries = {
+        setData: (candles) => {
+          if (activeChartAdapter) activeChartAdapter.applyNewData(candles);
+        },
+        update: (bar) => {
+          if (activeChartAdapter) activeChartAdapter.updateData(bar);
+        },
+        priceToCoordinate: (price) => {
+          if (!activeChartAdapter) return null;
+          const res = activeChartAdapter.priceToCoordinate(price);
+          return res ? (res.offscreen ? null : res.y) : null;
+        },
+        coordinateToPrice: (y) => {
+          if (!activeChartAdapter) return null;
+          return activeChartAdapter.coordinateToPrice(y);
+        },
+        priceScale: () => ({
+          applyOptions: () => {},
+        }),
+      };
+
+      // Proxy tvChart for layout and time scale compatibility
+      tvChart = {
+        applyOptions: (opts) => {
+          if (activeChartAdapter) activeChartAdapter.resize();
+        },
+        removeSeries: () => {},
+        addLineSeries: () => ({ setData: () => {}, update: () => {} }),
+        timeScale: () => ({
+          resetTimeScale: () => {
+            if (activeChartAdapter) activeChartAdapter.scrollToRealTime();
+          },
+          setVisibleLogicalRange: () => {},
+          setVisibleRange: () => {},
+          getVisibleRange: () => null,
+          subscribeVisibleLogicalRangeChange: () => {},
+          timeToCoordinate: (time) => {
+            return activeChartAdapter ? activeChartAdapter.timeToCoordinate(time) : null;
+          },
+          coordinateToTime: (x) => {
+            return activeChartAdapter ? activeChartAdapter.coordinateToTime(x) : null;
+          },
+        }),
+        priceScale: () => ({
+          applyOptions: () => {},
+        }),
+        paneSize: () => ({
+          height: (container.clientHeight || 420) - 30,
+        }),
+      };
+
+      // Pan & drag tracking for protection lines
+      const chartPanEl = container;
+      if (chartPanEl && !chartPanEl._protPanBound) {
+        chartPanEl._protPanBound = true;
+        const onChartInteraction = () => {
+          if (typeof updateProtectionCoordinatesRAF === 'function') updateProtectionCoordinatesRAF();
+        };
+        if (typeof chartPanEl.addEventListener === 'function') {
+          chartPanEl.addEventListener('pointermove', (e) => {
+            if (e.buttons > 0) onChartInteraction();
+          }, { passive: true });
+          chartPanEl.addEventListener('touchmove', onChartInteraction, { passive: true });
+          chartPanEl.addEventListener('wheel', onChartInteraction, { passive: true });
+        }
+      }
+
+      setupTouchArbitratedDrawingEvents();
       return;
     }
 
@@ -4087,6 +4246,18 @@
   // INDICATORS & TOUCH-ARBITRATED VECTOR DRAWINGS
   // =========================================================================
   function recalculateAndRenderIndicators() {
+    const activeAdp = (typeof getActiveChartAdapter === 'function') ? getActiveChartAdapter() : null;
+    if (activeAdp) {
+      const activeList = Array.from(activeAdp.activeIndicators.keys());
+      const label = document.getElementById('chart-indicator-label');
+      if (label) {
+        label.textContent = activeList.length > 0
+          ? activeList.map(k => k === 'VOL' ? 'VOL (Volume)' : k).join(' · ')
+          : 'Candle time: IST open · dashed line: last price · drawings: user saved';
+      }
+      return;
+    }
+
     if (!tvChart || state.candles.length === 0) return;
     const label = document.getElementById('chart-indicator-label');
     if (label) {
@@ -4134,6 +4305,7 @@
    * indicators stay continuous with the candle series without a full rebuild on every tick.
    */
   function updateIndicatorsForLastBar() {
+    if ((typeof getActiveChartAdapter === 'function') && getActiveChartAdapter()) return;
     if (!tvChart || state.candles.length === 0) return;
     const closes = state.candles.map((c) => c.close);
     const lastIdx = state.candles.length - 1;
@@ -4150,80 +4322,377 @@
         for (let i = 50; i <= lastIdx; i++) ema = closes[i] * k + ema * (1 - k);
         indicatorSeriesMap.ema50.update({ time: lastTime, value: Number(ema.toFixed(2)) });
       }
-    } catch {
-      // Series may have been removed by the user toggling indicators.
-    }
+    } catch {}
   }
+
+  // =========================================================================
+  // TECHNICAL INDICATORS BOTTOM SHEET & SETTINGS CONTROLLER
+  // =========================================================================
+  let currentIndicatorCategory = 'all';
+  let indicatorSearchQuery = '';
+  let editingIndicatorName = null;
+  let activeDrawingMagnetMode = 'none';
 
   function openIndicatorsModal() {
-    const box = document.getElementById('indicators-list-box');
-    const items = [
-      { key: 'sma20', label: 'SMA 20 (Simple Moving Average — Lime)' },
-      { key: 'ema50', label: 'EMA 50 (Exponential Moving Average — Cyan)' },
-    ];
-    box.innerHTML = items
-      .map(
-        (it) => `
-        <div class="instrument-row-white" onclick="window.TZApp.toggleIndicator('${it.key}')">
-          <span class="inst-symbol">${it.label}</span>
-          <span style="font-weight:700;color:${state.indicators[it.key] ? 'var(--positive-on-white)' : '#9CA3AF'};">
-            ${state.indicators[it.key] ? 'ACTIVE ✓' : 'OFF'}
-          </span>
-        </div>
-      `
-      )
-      .join('');
-    document.getElementById('modal-indicators').classList.add('active');
+    renderIndicatorsList();
+    const modal = document.getElementById('modal-indicators');
+    if (modal) modal.classList.add('active');
   }
 
-  function toggleIndicator(key) {
-    state.indicators[key] = !state.indicators[key];
-    localStorage.setItem('tz_indicators_'+(state.user?.userId||state.user?.id),JSON.stringify(state.indicators));
+  function filterIndicatorCategory(cat) {
+    currentIndicatorCategory = cat;
+    const catTabs = ['all', 'active', 'favorites', 'main', 'oscillator', 'volume'];
+    catTabs.forEach((c) => {
+      const btnId = `tab-ind-${c === 'favorites' ? 'fav' : c === 'oscillator' ? 'osc' : c === 'volume' ? 'vol' : c}`;
+      const btn = document.getElementById(btnId);
+      if (btn) btn.classList.toggle('active', c === cat);
+    });
+    renderIndicatorsList();
+  }
+
+  function onIndicatorSearchInput(query) {
+    indicatorSearchQuery = (query || '').trim().toLowerCase();
+    renderIndicatorsList();
+  }
+
+  function renderIndicatorsList() {
+    const box = document.getElementById('indicators-list-box');
+    if (!box) return;
+    const reg = (typeof SikhoChartAdapter !== 'undefined') ? SikhoChartAdapter.INDICATOR_REGISTRY : {};
+    const userId = state.user?.userId || state.user?.id || 'anon';
+    const favs = (typeof SikhoChartAdapter !== 'undefined') ? SikhoChartAdapter.getUserFavorites(userId) : [];
+
+    let activeKeys = [];
+    const indAdp = (typeof getActiveChartAdapter === 'function') ? getActiveChartAdapter() : null;
+    if (indAdp) {
+      activeKeys = Array.from(indAdp.activeIndicators.keys());
+    } else {
+      activeKeys = Object.keys(state.indicators).filter(k => state.indicators[k]).map(k => k === 'sma20' ? 'MA' : k === 'ema50' ? 'EMA' : k);
+    }
+    const countBadge = document.getElementById('ind-active-count');
+    if (countBadge) countBadge.textContent = String(activeKeys.length);
+
+    const isSpotIndex = state.activeInstrument?.instrumentType === 'INDEX_SPOT';
+
+    let keys = Object.keys(reg);
+    if (keys.length === 0) {
+      keys = ['MA', 'EMA', 'BOLL', 'RSI', 'MACD', 'VOL'];
+    }
+
+    if (currentIndicatorCategory === 'active') {
+      keys = keys.filter(k => activeKeys.includes(k));
+    } else if (currentIndicatorCategory === 'favorites') {
+      keys = keys.filter(k => favs.includes(k));
+    } else if (currentIndicatorCategory !== 'all') {
+      keys = keys.filter(k => reg[k]?.category === currentIndicatorCategory);
+    }
+
+    if (indicatorSearchQuery) {
+      keys = keys.filter(k => {
+        const item = reg[k] || { name: k, label: k, description: '' };
+        return item.name.toLowerCase().includes(indicatorSearchQuery) ||
+               (item.label && item.label.toLowerCase().includes(indicatorSearchQuery)) ||
+               (item.description && item.description.toLowerCase().includes(indicatorSearchQuery));
+      });
+    }
+
+    if (keys.length === 0) {
+      box.innerHTML = `<div style="text-align:center;padding:24px 16px;color:#94A3B8;font-size:13px;">No matching indicators found.</div>`;
+      return;
+    }
+
+    box.innerHTML = keys.map(k => {
+      const it = reg[k] || { name: k, label: k, category: 'main', description: '', paramDefs: [] };
+      const isActive = activeKeys.includes(k);
+      const isFav = favs.includes(k);
+      const hasParams = (it.paramDefs && it.paramDefs.length > 0);
+      const hasSpotWarning = isSpotIndex && it.requiresVolume;
+
+      const warningHtml = hasSpotWarning
+        ? `<div class="spot-volume-warning" style="margin-top:6px;font-size:11px;color:#F59E0B;background:rgba(245,158,11,0.1);padding:4px 8px;border-radius:6px;">⚠️ Volume data is unavailable for index spot. For volume-based indicators, please open NIFTY Futures.</div>`
+        : '';
+
+      return `
+        <div class="indicator-item-card ${isActive ? 'is-active' : ''}">
+          <div class="ind-card-top">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <button type="button" class="ind-fav-star ${isFav ? 'is-fav' : ''}" onclick="window.TZApp.toggleIndicatorFavorite('${k}')" title="Toggle Favorite">
+                ${isFav ? '★' : '☆'}
+              </button>
+              <div>
+                <span class="ind-name">${it.label || it.name}</span>
+                <span class="ind-category-tag">${it.category}</span>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              ${hasParams ? `
+                <button type="button" class="ind-settings-btn" onclick="window.TZApp.openIndicatorSettingsModal('${k}')" title="Configure Parameters">
+                  ⚙
+                </button>
+              ` : ''}
+              <button type="button" class="ind-toggle-btn ${isActive ? 'is-on' : 'is-off'}" onclick="window.TZApp.toggleIndicator('${k}')">
+                ${isActive ? 'ACTIVE' : 'OFF'}
+              </button>
+            </div>
+          </div>
+          ${it.description ? `<div class="ind-desc">${it.description}</div>` : ''}
+          ${warningHtml}
+        </div>
+      `;
+    }).join('');
+  }
+
+  function toggleIndicator(k) {
+    const reg = (typeof SikhoChartAdapter !== 'undefined') ? SikhoChartAdapter.INDICATOR_REGISTRY : {};
+    const meta = reg[k] || { isStack: true };
+
+    const togAdp = (typeof getActiveChartAdapter === 'function') ? getActiveChartAdapter() : null;
+    if (togAdp) {
+      const isCurrentlyActive = togAdp.activeIndicators.has(k);
+      if (isCurrentlyActive) {
+        activeChartAdapter.removeIndicator(k);
+      } else {
+        if (!meta.isStack) {
+          let lowerPanesCount = 0;
+          for (const [, entry] of activeChartAdapter.activeIndicators.entries()) {
+            if (!entry.isStack) lowerPanesCount++;
+          }
+          if (lowerPanesCount >= 2) {
+            showBrandedAlert('Sub-Pane Limit Reached', 'For optimal mobile view, at most 2 lower indicator panes are permitted. Remove an active oscillator or volume pane before adding another.');
+            return;
+          }
+        }
+        activeChartAdapter.createIndicator(k, meta.isStack);
+      }
+      const activeList = Array.from(activeChartAdapter.activeIndicators.keys());
+      const userId = state.user?.userId || state.user?.id || 'anon';
+      if (typeof SikhoChartAdapter !== 'undefined') {
+        SikhoChartAdapter.saveUserIndicatorSettings(userId, activeList);
+      }
+      recalculateAndRenderIndicators();
+      renderIndicatorsList();
+      return;
+    }
+
+    const keyMap = { MA: 'sma20', EMA: 'ema50', sma20: 'sma20', ema50: 'ema50' };
+    const mappedKey = keyMap[k] || k;
+    state.indicators[mappedKey] = !state.indicators[mappedKey];
+    localStorage.setItem('tz_indicators_' + (state.user?.userId || state.user?.id), JSON.stringify(state.indicators));
     recalculateAndRenderIndicators();
-    openIndicatorsModal();
+    renderIndicatorsList();
+  }
+
+  function openIndicatorSettingsModal(name) {
+    editingIndicatorName = name;
+    const reg = (typeof SikhoChartAdapter !== 'undefined') ? SikhoChartAdapter.INDICATOR_REGISTRY : {};
+    const meta = reg[name];
+    if (!meta || !meta.paramDefs || meta.paramDefs.length === 0) return;
+
+    const titleEl = document.getElementById('indicator-settings-title');
+    if (titleEl) titleEl.textContent = `Configure ${meta.label || meta.name}`;
+    const fieldsContainer = document.getElementById('indicator-settings-fields');
+    if (!fieldsContainer) return;
+
+    let currentParams = meta.defaultParams;
+    const setAdp = (typeof getActiveChartAdapter === 'function') ? getActiveChartAdapter() : null;
+    if (setAdp && setAdp.activeIndicators.has(name)) {
+      currentParams = setAdp.activeIndicators.get(name).params || meta.defaultParams;
+    }
+
+    fieldsContainer.innerHTML = meta.paramDefs.map((def, idx) => {
+      const val = currentParams[idx] !== undefined ? currentParams[idx] : meta.defaultParams[idx];
+      return `
+        <div class="form-group" style="margin-bottom:10px;">
+          <label class="form-label" for="ind-param-${idx}" style="font-size:12px;color:#64748B;">${def.name} (${def.min} - ${def.max})</label>
+          <input id="ind-param-${idx}" class="form-input tabular-nums" type="number" 
+                 min="${def.min}" max="${def.max}" step="${def.step || 1}" value="${val}" />
+        </div>
+      `;
+    }).join('');
+
+    const modal = document.getElementById('modal-indicator-settings');
+    if (modal) modal.classList.add('active');
+  }
+
+  function saveIndicatorParams() {
+    if (!editingIndicatorName) return;
+    const reg = (typeof SikhoChartAdapter !== 'undefined') ? SikhoChartAdapter.INDICATOR_REGISTRY : {};
+    const meta = reg[editingIndicatorName];
+    if (!meta) return;
+
+    const newParams = [];
+    for (let idx = 0; idx < meta.paramDefs.length; idx++) {
+      const input = document.getElementById(`ind-param-${idx}`);
+      if (input) {
+        let val = parseFloat(input.value);
+        if (isNaN(val)) val = meta.defaultParams[idx];
+        val = Math.max(meta.paramDefs[idx].min, Math.min(meta.paramDefs[idx].max, val));
+        newParams.push(val);
+      }
+    }
+
+    const saveAdp = (typeof getActiveChartAdapter === 'function') ? getActiveChartAdapter() : null;
+    if (saveAdp) {
+      saveAdp.overrideIndicator(editingIndicatorName, newParams);
+    }
+    const modal = document.getElementById('modal-indicator-settings');
+    if (modal) modal.classList.remove('active');
+    renderIndicatorsList();
+  }
+
+  function resetIndicatorParamsToDefault() {
+    if (!editingIndicatorName) return;
+    const reg = (typeof SikhoChartAdapter !== 'undefined') ? SikhoChartAdapter.INDICATOR_REGISTRY : {};
+    const meta = reg[editingIndicatorName];
+    if (!meta) return;
+
+    meta.defaultParams.forEach((val, idx) => {
+      const input = document.getElementById(`ind-param-${idx}`);
+      if (input) input.value = String(val);
+    });
+  }
+
+  function toggleIndicatorFavorite(name) {
+    const userId = state.user?.userId || state.user?.id || 'anon';
+    if (typeof SikhoChartAdapter !== 'undefined') {
+      SikhoChartAdapter.toggleUserFavorite(userId, name);
+    }
+    renderIndicatorsList();
+  }
+
+  function toggleChartEngineRollback() {
+    if (typeof SikhoChartAdapter === 'undefined') return;
+    const current = SikhoChartAdapter.getEngine();
+    const next = current === 'klinechart' ? 'lightweight' : 'klinechart';
+    SikhoChartAdapter.setEngine(next);
+
+    const badge = document.getElementById('chart-engine-badge');
+    if (badge) badge.textContent = `Engine: ${next === 'klinechart' ? 'KLineChart' : 'Lightweight (Rollback)'}`;
+
+    const rollAdp = (typeof getActiveChartAdapter === 'function') ? getActiveChartAdapter() : null;
+    if (rollAdp) {
+      rollAdp.destroy();
+      setActiveChartAdapter(null);
+    }
+    tvChart = null;
+    candleSeries = null;
+    const modal = document.getElementById('modal-indicators');
+    if (modal) modal.classList.remove('active');
+    initLightweightChartInstance();
+    if (state.candles && state.candles.length > 0) {
+      candleSeries.setData(state.candles);
+    }
+    showBrandedAlert('Chart Engine Changed', `Switched to ${next === 'klinechart' ? 'KLineChart v10' : 'Lightweight Charts (Fallback)'}.`);
   }
 
   function openDrawingsModal() {
-    const tools = [
-      { id: 'cursor', name: 'Cursor (Pan / Zoom)' },
-      { id: 'trendline', name: 'Trendline (2-Point)' },
-      { id: 'hline', name: 'Horizontal Level' },
-      { id: 'rect', name: 'Supply/Demand Zone' },
-      { id: 'fib', name: 'Fib Retracement' },
-      { id: 'rr_long', name: 'Long Risk/Reward' },
-    ];
+    renderDrawingsWorkspace();
+    const modal = document.getElementById('modal-drawings');
+    if (modal) modal.classList.add('active');
+  }
+
+  function renderDrawingsWorkspace() {
     const box = document.getElementById('drawings-tools-box');
-    box.innerHTML = tools
-      .map(
-        (t) => `
-        <button class="filter-chip ${state.activeDrawingTool === t.id ? 'active' : ''}"
-                style="padding:10px;text-align:left;"
-                onclick="window.TZApp.selectDrawingTool('${t.id}')">
-          ${t.name}
-        </button>
-      `
-      )
-      .join('');
-    document.getElementById('modal-drawings').classList.add('active');
+    if (!box) return;
+    const cats = (typeof SikhoChartAdapter !== 'undefined') ? SikhoChartAdapter.DRAWING_TOOL_CATEGORIES : [];
+
+    box.innerHTML = cats.map(cat => {
+      const toolsHtml = cat.tools.map(t => {
+        const isActive = state.activeDrawingTool === t.id;
+        return `
+          <div class="drawing-tool-card ${isActive ? 'is-active' : ''}" onclick="window.TZApp.selectDrawingTool('${t.id}')">
+            <div class="drawing-tool-icon">${t.icon}</div>
+            <div class="drawing-tool-info">
+              <div class="drawing-tool-name">${t.name}</div>
+              <div class="drawing-tool-desc">${t.desc}</div>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      return `
+        <div class="drawing-cat-section">
+          <div class="drawing-cat-title">${cat.title}</div>
+          <div class="drawing-cat-grid">${toolsHtml}</div>
+        </div>
+      `;
+    }).join('');
   }
 
   function setChartTouchLock(locked) {
     if (!tvChart) return;
-    tvChart.applyOptions({
-      handleScroll: !locked,
-      handleScale: !locked,
-    });
+    try {
+      tvChart.applyOptions({
+        handleScroll: !locked,
+        handleScale: !locked,
+      });
+    } catch {}
     const svg = document.getElementById('drawing-svg-layer');
     if (svg) svg.classList.toggle('interactive-mode', locked);
   }
 
   function selectDrawingTool(toolId) {
     state.activeDrawingTool = toolId;
-    document.getElementById('active-drawing-label').textContent =
-      toolId === 'cursor' ? '✎ Draw' : `✎ ${toolId.toUpperCase()}`;
-    document.getElementById('btn-chart-drawings').classList.toggle('active', toolId !== 'cursor');
-    setChartTouchLock(toolId !== 'cursor');
-    document.getElementById('modal-drawings').classList.remove('active');
+    const isCursor = (toolId === 'cursor');
+    const label = document.getElementById('active-drawing-label');
+    if (label) {
+      label.textContent = isCursor ? '✎ Draw' : `✎ ${toolId.toUpperCase()}`;
+    }
+    const btn = document.getElementById('btn-chart-drawings');
+    if (btn) btn.classList.toggle('active', !isCursor);
+
+    const cursorBtn = document.getElementById('btn-draw-cursor');
+    if (cursorBtn) cursorBtn.classList.toggle('active', isCursor);
+
+    const selDrawAdp = (typeof getActiveChartAdapter === 'function') ? getActiveChartAdapter() : null;
+    if (selDrawAdp) {
+      if (!isCursor) {
+        selDrawAdp.createOverlay(toolId);
+      }
+    } else {
+      setChartTouchLock(!isCursor);
+    }
+    const modal = document.getElementById('modal-drawings');
+    if (modal) modal.classList.remove('active');
+  }
+
+  function cycleDrawingMagnet() {
+    const modes = ['none', 'weak', 'strong'];
+    const idx = (modes.indexOf(activeDrawingMagnetMode) + 1) % modes.length;
+    activeDrawingMagnetMode = modes[idx];
+    const lbl = document.getElementById('label-draw-magnet');
+    if (lbl) {
+      lbl.textContent = `🧲 Magnet: ${activeDrawingMagnetMode === 'none' ? 'Off' : activeDrawingMagnetMode.charAt(0).toUpperCase() + activeDrawingMagnetMode.slice(1)}`;
+    }
+  }
+
+  function undoDrawingAction() {
+    const unAdp = (typeof getActiveChartAdapter === 'function') ? getActiveChartAdapter() : null;
+    if (unAdp) {
+      unAdp.undoDrawing();
+    } else if (state.drawings.length > 0) {
+      state.drawings.pop();
+      renderDrawingsSvgOverlay();
+      persistDrawingsToServer();
+    }
+  }
+
+  function redoDrawingAction() {
+    const reAdp = (typeof getActiveChartAdapter === 'function') ? getActiveChartAdapter() : null;
+    if (reAdp) {
+      reAdp.redoDrawing();
+    }
+  }
+
+  function promptClearAllDrawings() {
+    showConfirmSheet(
+      'Clear All Drawings',
+      'Remove all drawings and technical markups for this contract? This cannot be undone.',
+      'Clear Drawings',
+      () => {
+        clearAllDrawings();
+      }
+    );
   }
 
   function setupTouchArbitratedDrawingEvents() {
@@ -4330,30 +4799,68 @@
       const res = await apiFetch(`/api/v1/drawings?instrumentId=${encodeURIComponent(gid)}`);
       if(state.activeInstrument?.globalId!==gid||state.token!==sessionToken)return;
       state.drawings = res.drawings || [];
-      renderDrawingsSvgOverlay();
+
+      const loadDrawAdp = (typeof getActiveChartAdapter === 'function') ? getActiveChartAdapter() : null;
+      if (loadDrawAdp && state.drawings.length > 0) {
+        const legacyTypeMap = {
+          trendline: 'straightLine',
+          hline: 'horizontalStraightLine',
+          rect: 'rectZone',
+          fib: 'fibonacciLine',
+          rr_long: 'riskRewardLong',
+        };
+        state.drawings.forEach((d) => {
+          if (d.name) {
+            loadDrawAdp.createOverlay(d.name, { points: d.points, skipHistory: true });
+          } else if (d.type && legacyTypeMap[d.type]) {
+            const kName = legacyTypeMap[d.type];
+            const p1 = d.p1 ? { timestamp: (d.p1.time > 1e11 ? d.p1.time : d.p1.time * 1000), value: Number(d.p1.price) } : null;
+            const p2 = d.p2 ? { timestamp: (d.p2.time > 1e11 ? d.p2.time : d.p2.time * 1000), value: Number(d.p2.price) } : null;
+            const points = [p1, p2].filter(Boolean);
+            loadDrawAdp.createOverlay(kName, { points, skipHistory: true });
+          }
+        });
+      } else {
+        renderDrawingsSvgOverlay();
+      }
     } catch { }
   }
 
   async function persistDrawingsToServer() {
     if (!state.activeInstrument || !state.token) return;
     try {
+      let drawingsToSave = state.drawings;
+      const saveDrawAdp = (typeof getActiveChartAdapter === 'function') ? getActiveChartAdapter() : null;
+      if (saveDrawAdp) {
+        const overlays = saveDrawAdp.getOverlays();
+        drawingsToSave = overlays.map(o => ({
+          name: o.name,
+          id: o.id,
+          points: o.points,
+          styles: o.styles,
+        }));
+      }
       await apiFetch('/api/v1/drawings', {
         method: 'POST',
         body: JSON.stringify({
           instrumentId: state.activeInstrument.globalId,
-          drawings: state.drawings,
+          drawings: drawingsToSave,
         }),
       });
     } catch { }
   }
 
   function clearAllDrawings() {
+    const clrDrawAdp = (typeof getActiveChartAdapter === 'function') ? getActiveChartAdapter() : null;
+    if (clrDrawAdp) {
+      clrDrawAdp.clearAllOverlays();
+    }
     state.drawings = [];
     renderDrawingsSvgOverlay();
     persistDrawingsToServer();
-    document.getElementById('modal-drawings').classList.remove('active');
+    const modal = document.getElementById('modal-drawings');
+    if (modal) modal.classList.remove('active');
   }
-
   // =========================================================================
   // 7. WHITE ORDER ENTRY BOTTOM SHEET & PAPER ORDER SUBMISSION
   // =========================================================================
@@ -6800,7 +7307,14 @@
 
     const priceToY = (price) => {
       if (!(Number(price) > 0)) return null;
-      const coord = candleSeries.priceToCoordinate(Number(price));
+      const chAdp = (typeof getActiveChartAdapter === 'function') ? getActiveChartAdapter() : (typeof window !== 'undefined' ? window.activeChartAdapter : null);
+      if (chAdp && typeof chAdp.priceToCoordinate === 'function') {
+        const res = chAdp.priceToCoordinate(Number(price), paneHeight);
+        if (!res) return null;
+        if (res.offscreen) return { offscreen: true, coord: res.coord };
+        return { offscreen: false, y: res.y };
+      }
+      const coord = candleSeries?.priceToCoordinate?.(Number(price));
       if (coord === null || coord === undefined || !Number.isFinite(coord)) return null;
       if (coord < 0 || coord > paneHeight) return { offscreen: true, coord };
       return { offscreen: false, y: Math.round(coord) };
@@ -7094,7 +7608,10 @@
       if (!state.protectionDrag || !state.protectionDrag.active || !chartEl) return;
       const rect = chartEl.getBoundingClientRect();
       const relY = Math.max(4, Math.min(paneHeight - 4, clientY - rect.top));
-      const rawPrice = candleSeries.coordinateToPrice(relY);
+      const chAdp = (typeof getActiveChartAdapter === 'function') ? getActiveChartAdapter() : (typeof window !== 'undefined' ? window.activeChartAdapter : null);
+      const rawPrice = (chAdp && typeof chAdp.coordinateToPrice === 'function')
+        ? chAdp.coordinateToPrice(relY)
+        : candleSeries?.coordinateToPrice?.(relY);
       if (rawPrice !== null && rawPrice !== undefined && Number.isFinite(rawPrice) && rawPrice > 0) {
         state.protectionDrag.proposedPrice = alignPriceToTick(rawPrice, tickSize);
         state.protectionDrag.currentY = relY;
@@ -7486,9 +8003,20 @@
     refreshActiveChart,
     resetChartScaleAndFitRecent,
     openIndicatorsModal,
+    filterIndicatorCategory,
+    onIndicatorSearchInput,
     toggleIndicator,
+    openIndicatorSettingsModal,
+    saveIndicatorParams,
+    resetIndicatorParamsToDefault,
+    toggleIndicatorFavorite,
+    toggleChartEngineRollback,
     openDrawingsModal,
     selectDrawingTool,
+    cycleDrawingMagnet,
+    undoDrawingAction,
+    redoDrawingAction,
+    promptClearAllDrawings,
     clearAllDrawings,
     openOrderTicket,
     getMarketDataDiagnostics,

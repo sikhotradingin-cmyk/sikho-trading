@@ -110,7 +110,8 @@ test('BUILD 36: Native Android Bridge & Manifest Capabilities', () => {
   const fcmService = fs.readFileSync(fcmServicePath, 'utf8');
 
   // Gradle version and dependencies
-  assert.ok(gradle.includes('versionCode 36'), 'versionCode bumped to 36');
+  const vcMatch = gradle.match(/versionCode\s+(\d+)/);
+  assert.ok(vcMatch && parseInt(vcMatch[1], 10) >= 36, 'versionCode must be at least 36');
   assert.ok(gradle.includes('versionName "v1.0.1"'), 'versionName is v1.0.1');
   assert.ok(gradle.includes('com.google.android.play:app-update'), 'Play App Update library included');
   assert.ok(gradle.includes('com.google.firebase:firebase-messaging'), 'FCM messaging library included');

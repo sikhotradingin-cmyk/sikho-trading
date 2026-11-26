@@ -3397,6 +3397,158 @@ html, body, #app-root, #screen-main {
   margin-bottom: 6px;
 }
 
+/* =========================================================================
+   KLINECHART MOBILE INDICATOR & DRAWING WORKSPACE STYLES
+   ========================================================================= */
+.indicator-bottom-sheet, .drawings-bottom-sheet {
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+.indicator-category-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+  margin-bottom: 10px;
+  scrollbar-width: none;
+}
+.indicator-category-tabs::-webkit-scrollbar {
+  display: none;
+}
+.ind-cat-pill {
+  padding: 6px 12px;
+  border-radius: 16px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.ind-cat-pill.active {
+  background: var(--primary-accent);
+  color: #0F172A;
+  border-color: var(--primary-accent);
+  font-weight: 700;
+}
+.indicators-scroll-box {
+  overflow-y: auto;
+  max-height: 52vh;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 4px;
+}
+.indicator-item-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  gap: 10px;
+}
+.indicator-fav-btn {
+  background: transparent;
+  border: none;
+  font-size: 16px;
+  color: #94A3B8;
+  cursor: pointer;
+  padding: 4px;
+}
+.indicator-fav-btn.is-fav {
+  color: #F59E0B;
+}
+.indicator-badge-cat {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 6px;
+  text-transform: uppercase;
+  margin-left: 6px;
+}
+.cat-main { background: rgba(56, 189, 248, 0.15); color: #38BDF8; }
+.cat-oscillator { background: rgba(168, 85, 247, 0.15); color: #C084FC; }
+.cat-volume { background: rgba(245, 158, 11, 0.15); color: #FBBF24; }
+.indicator-toggle-btn {
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  border: none;
+}
+.indicator-toggle-btn.is-on {
+  background: rgba(16, 185, 129, 0.18);
+  color: #10B981;
+}
+.indicator-toggle-btn.is-off {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+}
+.drawing-quick-bar {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  margin-bottom: 12px;
+  padding-bottom: 4px;
+  scrollbar-width: none;
+}
+.drawing-quick-bar::-webkit-scrollbar {
+  display: none;
+}
+.drawings-tools-container {
+  overflow-y: auto;
+  max-height: 52vh;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-right: 4px;
+}
+.drawing-category-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.drawing-category-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.drawing-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.drawing-tool-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s ease;
+}
+.drawing-tool-card.active {
+  border-color: #38BDF8;
+  background: rgba(56, 189, 248, 0.12);
+}
+.drawing-tool-icon {
+  font-size: 16px;
+  width: 24px;
+  text-align: center;
+}
+
 
 
 
