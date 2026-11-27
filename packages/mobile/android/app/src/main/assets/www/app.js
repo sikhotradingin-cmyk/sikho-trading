@@ -309,6 +309,19 @@
   }
 
   function applyChartTheme(effectiveTheme) {
+    const isDark = (effectiveTheme || resolveEffectiveTheme()) === 'dark';
+    const chAdp = (typeof getActiveChartAdapter === 'function') ? getActiveChartAdapter() : (typeof window !== 'undefined' ? window.activeChartAdapter : null);
+    if (chAdp && typeof chAdp.setTheme === 'function') {
+      try {
+        chAdp.setTheme(isDark);
+      } catch (err) {
+        console.warn('Failed to set chart adapter theme:', err);
+      }
+    }
+    const container = document.getElementById('tv-main-chart');
+    if (container) {
+      container.style.backgroundColor = isDark ? '#0B1220' : '#F6F8FC';
+    }
     if (!tvChart) return;
     const opts = getChartThemeOptions(effectiveTheme);
     try {
@@ -3422,7 +3435,7 @@
     if (!inst.isTradable || inst.instrumentType === 'INDEX_SPOT') {
       const und = inst.underlying || (inst.symbol.includes('BANK') ? 'BANKNIFTY' : inst.symbol.includes('SENSEX') ? 'SENSEX' : 'NIFTY');
       bar.innerHTML = `
-        <button class="btn-trade-sell" style="background:#1E293B;border:1px solid #334155;color:#F8FAFC;font-size:12px;font-weight:700;flex:1.2;" onclick="window.TZApp.openOptionChainModal('${und}')">
+        <button class="btn-trade-secondary" style="flex:1.2;" onclick="window.TZApp.openOptionChainModal('${und}')">
           Option Chain
         </button>
         <button class="btn-trade-sell" style="flex:1;" title="Trade the nearest ${und} index future" onclick="window.TZApp.tradeIndexFutureDirect('${und}', 'SELL')">
@@ -3435,7 +3448,7 @@
     } else {
       const openPos = getOpenPositionForInstrument(inst.globalId);
       const protBtnHtml = openPos
-        ? `<button class="btn-trade-sell" style="background:#0F172A;border:1px solid #334155;color:#C7F542;font-size:12px;font-weight:700;flex:1.15;" onclick="window.TZApp.openProtectionModal('${openPos.id}')">
+        ? `<button class="btn-trade-secondary" style="color:var(--primary-accent);flex:1.15;" onclick="window.TZApp.openProtectionModal('${openPos.id}')">
             TP / SL
            </button>`
         : '';
@@ -3589,7 +3602,7 @@
     if (isKlineEngine) {
       setActiveChartAdapter(SikhoChartAdapter.createAdapter('klinechart'));
       activeChartAdapter.init(container, {
-        isDark: state.theme !== 'light',
+        isDark: resolveEffectiveTheme() === 'dark',
         onCrosshair: (param) => {
           if (!param || !param.kLineData) {
             if (!state.isUserScrolledBack && !state.historicalInspection) {
@@ -4943,8 +4956,8 @@
     document.getElementById('ticket-side-sell').classList.toggle('active', side === 'SELL');
     const btn = document.getElementById('ticket-submit-btn');
     btn.textContent = `Place Paper ${side} Order`;
-    btn.style.background = side === 'BUY' ? 'var(--accent-lime)' : 'var(--negative-red)';
-    btn.style.color = side === 'BUY' ? 'var(--bg-midnight)' : 'var(--bg-white)';
+    btn.style.background = side === 'BUY' ? 'var(--positive-text)' : 'var(--negative-text)';
+    btn.style.color = '#FFFFFF';
     recalcOrderMarginPreview();
   }
 

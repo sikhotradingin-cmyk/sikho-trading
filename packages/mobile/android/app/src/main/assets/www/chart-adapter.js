@@ -747,6 +747,9 @@
       this.container = typeof containerEl === 'string' ? document.getElementById(containerEl) : containerEl;
       if (!this.container) return null;
 
+      const isDark = options.isDark !== false;
+      this.container.style.backgroundColor = isDark ? '#0B1220' : '#F6F8FC';
+
       // Register custom indicators and overlays on klinecharts engine
       registerCustomKLineExtensions(global.klinecharts);
 
@@ -756,7 +759,7 @@
       // Initialize KLineChart instance
       this.chart = global.klinecharts.init(this.container, {
         timezone: 'Asia/Kolkata',
-        styles: this.getThemeStyles(options.isDark !== false),
+        styles: this.getThemeStyles(isDark),
       });
 
       // Bind crosshair action
@@ -787,21 +790,21 @@
           candle: {
             type: 'candle_solid',
             bar: {
-              upColor: '#10B981',
-              downColor: '#EF4444',
+              upColor: '#34D399',
+              downColor: '#FB7185',
               noChangeColor: '#888888',
-              upBorderColor: '#10B981',
-              downBorderColor: '#EF4444',
+              upBorderColor: '#34D399',
+              downBorderColor: '#FB7185',
               noChangeBorderColor: '#888888',
-              upWickColor: '#10B981',
-              downWickColor: '#EF4444',
+              upWickColor: '#34D399',
+              downWickColor: '#FB7185',
               noChangeWickColor: '#888888',
             },
             priceMark: {
               last: {
                 show: true,
-                upColor: '#10B981',
-                downColor: '#EF4444',
+                upColor: '#34D399',
+                downColor: '#FB7185',
                 noChangeColor: '#888888',
                 line: { show: true, style: 'dashed', dashedValue: [3, 3] },
                 text: { color: '#FFFFFF', size: 11, paddingLeft: 4, paddingRight: 4 },
@@ -813,32 +816,32 @@
           },
           xAxis: {
             show: true,
-            axisLine: { color: 'rgba(255, 255, 255, 0.1)', size: 1 },
-            tickText: { color: '#94A3B8', size: 11 },
+            axisLine: { color: '#30415B', size: 1 },
+            tickText: { color: '#B2BFD1', size: 11 },
           },
           yAxis: {
             show: true,
-            axisLine: { color: 'rgba(255, 255, 255, 0.1)', size: 1 },
-            tickText: { color: '#94A3B8', size: 11 },
+            axisLine: { color: '#30415B', size: 1 },
+            tickText: { color: '#B2BFD1', size: 11 },
           },
           separator: {
-            color: 'rgba(255, 255, 255, 0.08)',
-            size: 2,
+            color: '#30415B',
+            size: 1,
           },
           crosshair: {
             show: true,
             horizontal: {
-              line: { color: 'rgba(255, 255, 255, 0.35)', style: 'dashed', dashedValue: [3, 3] },
-              text: { color: '#FFFFFF', backgroundColor: '#1E293B' },
+              line: { color: 'rgba(241, 245, 249, 0.35)', style: 'dashed', dashedValue: [3, 3] },
+              text: { color: '#F1F5F9', backgroundColor: '#1B283D' },
             },
             vertical: {
-              line: { color: 'rgba(255, 255, 255, 0.35)', style: 'dashed', dashedValue: [3, 3] },
-              text: { color: '#FFFFFF', backgroundColor: '#1E293B' },
+              line: { color: 'rgba(241, 245, 249, 0.35)', style: 'dashed', dashedValue: [3, 3] },
+              text: { color: '#F1F5F9', backgroundColor: '#1B283D' },
             },
           },
           overlay: {
-            point: { color: '#3B82F6', borderColor: '#FFFFFF', radius: 4 },
-            line: { color: '#3B82F6', size: 1.5 },
+            point: { color: '#60A5FA', borderColor: '#FFFFFF', radius: 4 },
+            line: { color: '#60A5FA', size: 1.5 },
           },
         };
       } else {
@@ -851,21 +854,21 @@
           candle: {
             type: 'candle_solid',
             bar: {
-              upColor: '#059669',
-              downColor: '#DC2626',
+              upColor: '#047857',
+              downColor: '#BE123C',
               noChangeColor: '#666666',
-              upBorderColor: '#059669',
-              downBorderColor: '#DC2626',
+              upBorderColor: '#047857',
+              downBorderColor: '#BE123C',
               noChangeBorderColor: '#666666',
-              upWickColor: '#059669',
-              downWickColor: '#DC2626',
+              upWickColor: '#047857',
+              downWickColor: '#BE123C',
               noChangeWickColor: '#666666',
             },
             priceMark: {
               last: {
                 show: true,
-                upColor: '#059669',
-                downColor: '#DC2626',
+                upColor: '#047857',
+                downColor: '#BE123C',
                 noChangeColor: '#666666',
                 line: { show: true, style: 'dashed', dashedValue: [3, 3] },
                 text: { color: '#FFFFFF', size: 11, paddingLeft: 4, paddingRight: 4 },
@@ -877,38 +880,41 @@
           },
           xAxis: {
             show: true,
-            axisLine: { color: 'rgba(0, 0, 0, 0.1)', size: 1 },
-            tickText: { color: '#4B5563', size: 11 },
+            axisLine: { color: '#D8E0EB', size: 1 },
+            tickText: { color: '#526176', size: 11 },
           },
           yAxis: {
             show: true,
-            axisLine: { color: 'rgba(0, 0, 0, 0.1)', size: 1 },
-            tickText: { color: '#4B5563', size: 11 },
+            axisLine: { color: '#D8E0EB', size: 1 },
+            tickText: { color: '#526176', size: 11 },
           },
           separator: {
-            color: 'rgba(0, 0, 0, 0.08)',
-            size: 2,
+            color: '#D8E0EB',
+            size: 1,
           },
           crosshair: {
             show: true,
             horizontal: {
-              line: { color: 'rgba(0, 0, 0, 0.35)', style: 'dashed', dashedValue: [3, 3] },
-              text: { color: '#FFFFFF', backgroundColor: '#334155' },
+              line: { color: 'rgba(23, 32, 51, 0.35)', style: 'dashed', dashedValue: [3, 3] },
+              text: { color: '#FFFFFF', backgroundColor: '#172033' },
             },
             vertical: {
-              line: { color: 'rgba(0, 0, 0, 0.35)', style: 'dashed', dashedValue: [3, 3] },
-              text: { color: '#FFFFFF', backgroundColor: '#334155' },
+              line: { color: 'rgba(23, 32, 51, 0.35)', style: 'dashed', dashedValue: [3, 3] },
+              text: { color: '#FFFFFF', backgroundColor: '#172033' },
             },
           },
           overlay: {
-            point: { color: '#2563EB', borderColor: '#FFFFFF', radius: 4 },
-            line: { color: '#2563EB', size: 1.5 },
+            point: { color: '#1D4ED8', borderColor: '#FFFFFF', radius: 4 },
+            line: { color: '#1D4ED8', size: 1.5 },
           },
         };
       }
     }
 
     setTheme(isDark) {
+      if (this.container) {
+        this.container.style.backgroundColor = isDark ? '#0B1220' : '#F6F8FC';
+      }
       if (!this.chart) return;
       this.chart.setStyles(this.getThemeStyles(isDark));
     }

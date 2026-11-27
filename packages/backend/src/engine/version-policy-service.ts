@@ -33,7 +33,7 @@ export interface AnnouncementResult {
 }
 
 const DEFAULT_POLICY: AppVersionPolicy = {
-  latestVersionCode: 37,
+  latestVersionCode: 38,
   minimumSupportedVersionCode: 35,
   latestVersionName: 'v1.0.1',
   updateMessage: 'A mandatory update is required to continue trading securely.',
@@ -250,7 +250,7 @@ export async function dispatchReleaseAnnouncement(
 ): Promise<AnnouncementResult> {
   const title = (params.title || 'Sikho Trading Update Available').trim();
   const message = (params.message || 'A new Sikho Trading update is available. Please update to continue.').trim();
-  const targetVersionCode = params.targetVersionCode ? Number(params.targetVersionCode) : 37;
+  const targetVersionCode = params.targetVersionCode ? Number(params.targetVersionCode) : 38;
   const isDryRun = Boolean(params.dryRun);
 
   // Compute duplicate-detection hash: sha256(targetVersionCode + title + message)
