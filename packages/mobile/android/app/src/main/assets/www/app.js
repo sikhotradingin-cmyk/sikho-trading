@@ -1780,13 +1780,18 @@
   async function refreshAccountAndPortfolio() {
     try {
       const sessionToken=state.token;
-      const [acc, posRes, ordRes, perfRes] = await Promise.all([
+      const [acc, posRes, ordRes, perfRes, meRes] = await Promise.all([
         apiFetch('/api/v1/account').catch(() => null),
         apiFetch('/api/v1/positions').catch(() => null),
         apiFetch('/api/v1/orders').catch(() => null),
         apiFetch('/api/v1/account/performance').catch(() => null),
+        apiFetch('/api/v1/auth/me').catch(() => null),
       ]);
       if(state.token!==sessionToken)return;
+      if (meRes && meRes.user) {
+        state.user = Object.assign({}, state.user || {}, meRes.user);
+        updateProfileHeaderUI();
+      }
       if (acc && !acc.error) {
         state.account = acc;
         applyAccessPolicy(acc.access);
@@ -3684,7 +3689,7 @@
             legend.textContent = `${formatChartTime(inspectedCandleTime, true)} · O ${fmtNum(o)}  H ${fmtNum(h)}  L ${fmtNum(l)}  C ${fmtNum(c)}`;
           }
         },
-        onVisibleRangeChange: () => {
+        onVisibleRangeChange: (param) => {
           if (typeof updateProtectionCoordinatesRAF === 'function') updateProtectionCoordinatesRAF();
           renderDrawingsSvgOverlay();
           if (state.candles.length === 0) return;
@@ -3692,6 +3697,9 @@
           if (btn) {
             btn.style.display = 'inline-flex';
             btn.classList?.toggle?.('is-scrolled', Boolean(state.isUserScrolledBack || state.historicalInspection));
+          }
+          if (param && typeof param.from === 'number' && param.from < 20 && state.hasMoreHistory && !state.isFetchingOlder) {
+            fetchOlderCandlePage();
           }
         },
       });
@@ -3704,6 +3712,13 @@
       candleSeries = {
         setData: (candles) => {
           if (activeChartAdapter) activeChartAdapter.applyNewData(candles);
+        },
+        appendOlder: (candles) => {
+          if (activeChartAdapter && typeof activeChartAdapter.appendOlderData === 'function') {
+            activeChartAdapter.appendOlderData(candles);
+          } else if (activeChartAdapter) {
+            activeChartAdapter.applyNewData(state.candles);
+          }
         },
         update: (bar) => {
           if (activeChartAdapter) activeChartAdapter.updateData(bar);
@@ -3960,6 +3975,27 @@
     if (legendEl) legendEl.textContent = isRefresh ? 'Refreshing chart…' : 'Loading price history…';
     if (statsEl) statsEl.textContent = isRefresh ? 'Reloading latest candles…' : 'Loading current data…';
 
+    let fetchLimit = 800;
+    if (state.activeRange === '1D') {
+      fetchLimit = tf === '1m' ? 400 : 150;
+    } else if (state.activeRange === '5D') {
+      fetchLimit = tf === '1m' ? 1875 : 600;
+    } else if (state.activeRange === '1M') {
+      fetchLimit = 1500;
+    } else if (state.activeRange === '3M') {
+      fetchLimit = 3000;
+    } else if (state.activeRange === '6M') {
+      fetchLimit = 4000;
+    } else if (state.activeRange === '1Y' || state.activeRange === 'ALL') {
+      fetchLimit = 5000;
+    } else if (tf === '1D') {
+      fetchLimit = 1000;
+    } else if (tf === '1m') {
+      fetchLimit = 800;
+    } else if (tf === '3m' || tf === '5m') {
+      fetchLimit = 750;
+    }
+
     const rangeParam = state.activeRange ? `&range=${encodeURIComponent(state.activeRange)}` : '';
     const cacheKey = `${state.user?.userId || state.user?.id || 'anon'}|${gid}|${tf}|${state.activeRange || ''}`;
     // When switching to a different instrument or timeframe, immediately clear the previous series so old candles never display as the new instrument
@@ -3970,7 +4006,7 @@
 
     try {
       const data = await apiFetch(
-        `/api/v1/market-data/candles?globalId=${encodeURIComponent(gid)}&timeframe=${encodeURIComponent(tf)}${rangeParam}&limit=200`, {signal:chartRequestController.signal}
+        `/api/v1/market-data/candles?globalId=${encodeURIComponent(gid)}&timeframe=${encodeURIComponent(tf)}${rangeParam}&limit=${fetchLimit}`, {signal:chartRequestController.signal}
       );
       if (seq !== state.chartLoadSeq || (token !== undefined && state.token !== token) || state.activeInstrument?.globalId !== gid || state.activeTimeframe !== tf) return; // Discard stale response from earlier switch
 
@@ -4170,9 +4206,13 @@
       state.hasMoreHistory = Boolean(data.hasMore);
 
       if (candleSeries) {
-        candleSeries.setData(state.candles);
+        if (typeof candleSeries.appendOlder === 'function') {
+          candleSeries.appendOlder(older);
+        } else {
+          candleSeries.setData(state.candles);
+        }
         if (prevVisibleTimeRange && prevVisibleTimeRange.from && prevVisibleTimeRange.to) {
-          tvChart.timeScale().setVisibleRange(prevVisibleTimeRange);
+          tvChart.timeScale?.()?.setVisibleRange?.(prevVisibleTimeRange);
         }
       }
       document.getElementById('chart-candle-stats').textContent = `${state.candles.length} bars loaded`;

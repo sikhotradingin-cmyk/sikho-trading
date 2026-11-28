@@ -981,6 +981,21 @@
       }
     }
 
+    appendOlderData(candles) {
+      if (!this.chart || !Array.isArray(candles) || candles.length === 0) return;
+      const formatted = candles.map((c) => ({
+        timestamp: c.time > 1e11 ? c.time : c.time * 1000,
+        open: Number(c.open),
+        high: Number(c.high),
+        low: Number(c.low),
+        close: Number(c.close),
+        volume: Number(c.volume) || 0,
+      }));
+      if (this.chart.getChartStore && typeof this.chart.getChartStore()._addData === 'function') {
+        this.chart.getChartStore()._addData(formatted, 'backward', true);
+      }
+    }
+
     updateData(candle) {
       if (!this.chart || !candle) return;
       const formatted = {

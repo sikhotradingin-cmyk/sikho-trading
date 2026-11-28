@@ -204,10 +204,10 @@ export class DeterministicProvider implements IMarketDataProvider {
     const nowSec = Math.floor(Date.now() / 1000);
     const minuteSec = Math.floor(nowSec / 60) * 60;
 
-    // Generate past 150 1-minute candles
+    // Generate past 1000 1-minute candles (~16 hours of historical bars)
     const c1m: Candle[] = [];
     let currentClose = basePrice;
-    for (let i = 150; i >= 0; i--) {
+    for (let i = 1000; i >= 0; i--) {
       const time = minuteSec - i * 60;
       const step = (Math.sin(i / 5) * 4 + (Math.random() - 0.49) * 6);
       const open = Number(currentClose.toFixed(2));
