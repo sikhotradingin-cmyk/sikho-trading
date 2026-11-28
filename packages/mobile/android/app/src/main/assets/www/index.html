@@ -275,7 +275,20 @@
         <div id="portfolio-list-container"></div>
       </main>
 
-      <div id="tab-orders" style="display:none;"></div>
+      <!-- TAB 4: ORDERS (Pending | Executed | Cancelled | Rejected) -->
+      <main id="tab-orders" class="white-content-scroll" style="display:none;">
+        <div class="filter-chips-scroll" style="padding:10px 16px 8px;">
+          <button class="filter-chip active" onclick="window.TZApp.setOrdersFilter('ALL', this)">All Orders</button>
+          <button class="filter-chip" onclick="window.TZApp.setOrdersFilter('PENDING', this)">Pending</button>
+          <button class="filter-chip" onclick="window.TZApp.setOrdersFilter('EXECUTED', this)">Executed</button>
+          <button class="filter-chip" onclick="window.TZApp.setOrdersFilter('CANCELLED', this)">Cancelled</button>
+          <button class="filter-chip" onclick="window.TZApp.setOrdersFilter('REJECTED', this)">Rejected</button>
+        </div>
+        <div id="orders-list-container"></div>
+      </main>
+
+      <!-- TAB / SUBVIEW: TRADE HISTORY (Last 30 Days Only) -->
+      <main id="tab-history" class="white-content-scroll" style="display:none;"></main>
 
       <!-- TAB 4: PROFILE & PRACTICE PERFORMANCE (Shared Theme System) -->
       <main id="tab-profile" class="white-content-scroll" style="display:none;">
@@ -329,28 +342,18 @@
           </div>
         </div>
 
-        <!-- Unified Orders & Trade History Section -->
+        <!-- Dedicated Trade History Card (Last 30 Days Only) -->
         <div class="profile-surface-card" style="margin:0 16px 14px;border-radius:14px;padding:16px;">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-            <div class="section-title-dark" style="font-size:13px;text-transform:uppercase;letter-spacing:0.5px;">Orders &amp; Trade History</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+            <div class="section-title-dark" style="font-size:13px;text-transform:uppercase;letter-spacing:0.5px;">Trade History</div>
+            <span style="font-size:11px;font-weight:700;color:var(--accent-lime);background:rgba(199,245,66,0.12);padding:2px 8px;border-radius:6px;border:1px solid rgba(199,245,66,0.25);">LAST 30 DAYS</span>
           </div>
-          <div class="segmented-pill-group" style="width:100%;display:grid;grid-template-columns:repeat(2,1fr);margin-bottom:14px;">
-            <button id="prof-btn-sub-orders" class="seg-pill-btn active" onclick="window.TZApp.switchProfileSubTab('orders')">Orders</button>
-            <button id="prof-btn-sub-history" class="seg-pill-btn" onclick="window.TZApp.switchProfileSubTab('history')">Trade History</button>
+          <div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;line-height:1.45;">
+            Detailed execution records and realized P&amp;L for closed positions retained over the rolling 30-day window.
           </div>
-          <div id="prof-subview-orders">
-            <div class="filter-chips-scroll" style="margin:0 0 10px 0;padding:0;">
-              <button class="filter-chip active" onclick="window.TZApp.setOrdersFilter('ALL', this)">All Orders</button>
-              <button class="filter-chip" onclick="window.TZApp.setOrdersFilter('PENDING', this)">Pending</button>
-              <button class="filter-chip" onclick="window.TZApp.setOrdersFilter('EXECUTED', this)">Executed</button>
-              <button class="filter-chip" onclick="window.TZApp.setOrdersFilter('CANCELLED', this)">Cancelled</button>
-              <button class="filter-chip" onclick="window.TZApp.setOrdersFilter('REJECTED', this)">Rejected</button>
-            </div>
-            <div id="orders-list-container"></div>
-          </div>
-          <div id="prof-subview-history" style="display:none;">
-            <div id="tab-history"></div>
-          </div>
+          <button type="button" class="btn-lime-primary" style="width:100%;min-height:38px;font-size:13px;font-weight:700;" onclick="window.TZApp.switchMainTab('history')">
+            View 30-Day Trade History ➔
+          </button>
         </div>
 
         <!-- Appearance / Theme Setting Card -->
@@ -455,25 +458,31 @@
       <!-- Native Banner Ad Reserved Space (Directly above Bottom Navigation) -->
       <div id="native-ad-banner-spacer" style="display:none;width:100%;height:50px;background:#080C12;border-top:1px solid rgba(255,255,255,0.06);flex-shrink:0;"></div>
 
-      <!-- Bottom Navigation Bar (4 Tabs: Markets, Watchlists, Portfolio, Profile) -->
+      <!-- Bottom Navigation Bar (5 Tabs: Market, Watchlist, Portfolio, Order, Profile) -->
       <nav class="bottom-nav-bar">
         <button id="nav-btn-explore" class="nav-tab-btn active" onclick="window.TZApp.switchMainTab('explore')">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/>
           </svg>
-          <span>Markets</span>
+          <span>Market</span>
         </button>
         <button id="nav-btn-watchlists" class="nav-tab-btn" onclick="window.TZApp.switchMainTab('watchlists')">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
           </svg>
-          <span>Watchlists</span>
+          <span>Watchlist</span>
         </button>
         <button id="nav-btn-portfolio" class="nav-tab-btn" onclick="window.TZApp.switchMainTab('portfolio')">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
           </svg>
           <span>Portfolio</span>
+        </button>
+        <button id="nav-btn-orders" class="nav-tab-btn" onclick="window.TZApp.switchMainTab('orders')">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+          </svg>
+          <span>Order</span>
         </button>
         <button id="nav-btn-profile" class="nav-tab-btn" onclick="window.TZApp.switchMainTab('profile')">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

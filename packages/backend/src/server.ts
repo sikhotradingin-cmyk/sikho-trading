@@ -1494,7 +1494,7 @@ export async function buildServer(
   app.get('/api/v1/account/performance', { preHandler: [(app as any).authenticate] }, async (req: any) => {
     const accountId = req.user.accountId;
     const session = await repo.getActiveSession(accountId);
-    const lifetime = await repo.getLifetimePerformance(req.user.userId);
+    const lifetime = await repo.getLifetimePerformance(req.user.userId, accountId);
     return { session, lifetime };
   });
 

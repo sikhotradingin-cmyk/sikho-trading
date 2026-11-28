@@ -1811,6 +1811,12 @@
       if (perfRes) {
         state.performance = perfRes;
       }
+      apiFetch('/api/v1/history?range=MONTH&limit=1').then((h) => {
+        if (h && (h.lifetimeSummary || h.summary)) {
+          state.historySummary = { lifetime: h.lifetimeSummary, summary: h.summary };
+          updateAccountPerformanceStats();
+        }
+      }).catch(() => {});
 
       const resolvedSub = acc?.entitlement || null;
       if (resolvedSub && (resolvedSub.tier === 'PRO' || resolvedSub.tier === 'FREE')) {
@@ -1908,20 +1914,33 @@
       if (subBanner) subBanner.style.display = 'none';
     } else if (subBtn) subBtn.hidden = false;
 
-    if (state.performance) {
-      const session = state.performance.session || state.performance.currentSession || {};
-      const lifetime = state.performance.lifetime || {};
+    if (state.performance || state.historySummary) {
+      const session = state.performance?.session || state.performance?.currentSession || {};
+      const lifetime = state.performance?.lifetime || {};
       const cur = {
         ...session,
         realizedPnlINR: Number(session.realizedPnlPaise || 0) / 100,
         winRatePercent: session.tradesCount ? (100 * Number(session.winTradesCount || 0)) / session.tradesCount : 0
       };
+
+      const histSummary = state.historySummary?.lifetime || state.historySummary?.summary;
+      let netPaise = Number(lifetime.lifetimeNetTradingPnlPaise ?? lifetime.netPaise ?? 0);
+      let chargesPaise = Number(lifetime.lifetimeChargesPaise ?? lifetime.chargesPaise ?? 0);
+      let tradesCount = Number(lifetime.lifetimeTradesCount ?? lifetime.closedTrades ?? 0);
+      let winRatePct = Number(lifetime.winRatePct ?? 0);
+
+      if (tradesCount === 0 && histSummary && Number(histSummary.closedTrades || 0) > 0) {
+        tradesCount = Number(histSummary.closedTrades || 0);
+        netPaise = Number(histSummary.netPaise || histSummary.grossPaise || 0);
+        chargesPaise = Number(histSummary.chargesPaise || 0);
+        winRatePct = Number(histSummary.winRatePct || 0);
+      }
+
       const life = {
-        ...lifetime,
-        netPnlINR: Number(lifetime.lifetimeNetTradingPnlPaise || lifetime.netPaise || 0) / 100,
-        totalChargesINR: Number(lifetime.lifetimeChargesPaise || lifetime.chargesPaise || 0) / 100,
-        totalClosedTrades: Number(lifetime.lifetimeTradesCount ?? lifetime.closedTrades ?? 0),
-        winRatePercent: Number(lifetime.winRatePct ?? 0)
+        netPnlINR: netPaise / 100,
+        totalChargesINR: chargesPaise / 100,
+        totalClosedTrades: tradesCount,
+        winRatePercent: winRatePct
       };
 
       const sessPnlEl = document.getElementById('prof-session-pnl');
@@ -5669,7 +5688,7 @@
   let selectedPlanId = 'plan_month_100';
 
   function openSubscriptionPlansModal() {
-    if(state.access?.accessMode==='FREE_LAUNCH'){showBrandedAlert('Free Launch','All supported paper-trading features are unlocked. Your account remains Free unless you hold verified ad-free access.');return;}
+    if(state.access?.accessMode==='FREE_LAUNCH'){showBrandedAlert('Account Access','All supported paper-trading features are unlocked.');return;}
     const modal = document.getElementById('modal-subscription');
     if (!modal) return;
     selectPlanCard('plan_month_100');
@@ -5780,48 +5799,32 @@
 
   function switchProfileSubTab(subTab) {
     state.profileSubTab = subTab;
-    const btnOrders = document.getElementById('prof-btn-sub-orders');
-    const btnHistory = document.getElementById('prof-btn-sub-history');
-    const viewOrders = document.getElementById('prof-subview-orders');
-    const viewHistory = document.getElementById('prof-subview-history');
-    if (btnOrders) btnOrders.classList.toggle('active', subTab === 'orders');
-    if (btnHistory) btnHistory.classList.toggle('active', subTab === 'history');
-    if (viewOrders) viewOrders.style.display = subTab === 'orders' ? 'block' : 'none';
-    if (viewHistory) viewHistory.style.display = subTab === 'history' ? 'block' : 'none';
-    if (subTab === 'orders') {
-      window.SikhoHistory?.showOrders(apiFetch, state.ordersFilter);
-    } else if (subTab === 'history') {
-      window.SikhoHistory?.show(apiFetch);
-    }
   }
 
   function switchMainTab(tab) {
-    if (tab === 'orders') {
-      switchMainTab('profile');
-      switchProfileSubTab('orders');
-      return;
-    }
-    if (tab === 'history') {
-      switchMainTab('profile');
-      switchProfileSubTab('history');
-      return;
-    }
     const activeTab = tab === 'markets' ? 'explore' : tab;
     const changed = state.mainTab !== activeTab;
     state.mainTab = activeTab;
     const strip=document.getElementById('benchmark-index-strip');if(strip)strip.style.display=activeTab==='explore'?'flex':'none';
     const launch=document.getElementById('launch-access-label');if(launch)launch.style.display='none';
-    const tabs = ['explore', 'watchlists', 'portfolio', 'profile'];
+    const tabs = ['explore', 'watchlists', 'portfolio', 'orders', 'history', 'profile'];
     tabs.forEach((t) => {
       const el = document.getElementById(`tab-${t}`);
       const btn = document.getElementById(`nav-btn-${t}`);
       if (el) el.style.display = t === activeTab ? 'block' : 'none';
       if (btn) btn.classList.toggle('active', t === activeTab);
     });
-    if (activeTab === 'profile') {
-      switchProfileSubTab(state.profileSubTab || 'orders');
+    const profBtn = document.getElementById('nav-btn-profile');
+    if (profBtn && activeTab === 'history') {
+      profBtn.classList.add('active');
     }
-    if (activeTab === 'portfolio' || activeTab === 'profile') {
+    if (activeTab === 'history') {
+      window.SikhoHistory?.show(apiFetch);
+    }
+    if (activeTab === 'orders') {
+      window.SikhoHistory?.showOrders(apiFetch, state.ordersFilter);
+    }
+    if (activeTab === 'portfolio' || activeTab === 'orders' || activeTab === 'profile') {
       refreshAccountAndPortfolio();
     }
     syncNativeSystemBarTheme();
@@ -6223,6 +6226,13 @@
         wsReconnectAttempts = 0;
         state.wsConnected = true;
         clearTimeout(reconnectBannerTimer);
+        if (state.feedHealth) {
+          state.feedHealth.delayed = false;
+          state.feedHealth.isDelayedQuotes = false;
+          state.feedHealth.isFallbackQuotes = false;
+        }
+        state.isDelayedQuotes = false;
+        state.lastAnyTickReceiveMs = Date.now();
         updateAppStatusBanner();
         state.wsSubscribed=new Set();
         if (wsReconnectTimer) clearTimeout(wsReconnectTimer);

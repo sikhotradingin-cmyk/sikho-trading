@@ -698,9 +698,12 @@ export class PostgresRepository {
     return s;
   }
 
-  public async getLifetimePerformance(userId: string): Promise<LifetimePerformance> {
-    const accRes = await this.db.query('SELECT id FROM virtual_accounts WHERE user_id = $1 LIMIT 1', [userId]);
-    const accountId = accRes.rows[0]?.id;
+  public async getLifetimePerformance(userId: string, targetAccountId?: string): Promise<LifetimePerformance> {
+    let accountId = targetAccountId;
+    if (!accountId) {
+      const accRes = await this.db.query('SELECT id FROM virtual_accounts WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 1', [userId]);
+      accountId = accRes.rows[0]?.id;
+    }
 
     let totalGross = 0n;
     let totalCharges = 0n;

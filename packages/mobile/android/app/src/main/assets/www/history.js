@@ -28,9 +28,12 @@
     if(!box||box.dataset.ready)return;
     box.dataset.ready='true';
     box.innerHTML=`
-      <div class="history-heading">
-        <h2>Trade history</h2>
-        <p>Realized exits, separate from open positions and order status.</p>
+      <div class="history-heading" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+        <div>
+          <h2>Trade history</h2>
+          <p>Realized exits, separate from open positions and order status.</p>
+        </div>
+        <button type="button" class="btn-card-details" onclick="window.TZApp.switchMainTab('profile')" style="padding:6px 14px;font-size:12px;border-radius:8px;background:var(--bg-elevated);border:1px solid var(--border-subtle);color:var(--text-primary);cursor:pointer;flex-shrink:0;">← Profile</button>
       </div>
       ${filters('history')}
       <label class="history-session">Practice session <select id="history-session"><option value="">All sessions</option></select></label>
