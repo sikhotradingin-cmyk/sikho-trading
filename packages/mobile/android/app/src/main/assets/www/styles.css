@@ -2067,7 +2067,7 @@ button:focus-visible,[role=button]:focus-visible { outline:2px solid #2275c9; ou
   -webkit-backdrop-filter: blur(4px);
   z-index: 15;
   pointer-events: none;
-  display: block !important;
+  display: none !important;
 }
 .ohlc-floating-legend {max-width:calc(100% - 48px);font-size:10px;overflow-wrap:anywhere;}
 .range-footer-strip {flex-wrap:wrap;height:auto;min-height:36px;gap:6px;flex-shrink:0;}
@@ -2389,7 +2389,7 @@ html, body, #app-root, #screen-main {
   -webkit-backdrop-filter: blur(4px);
   z-index: 15;
   pointer-events: none;
-  display: block !important;
+  display: none !important;
 }
 
 /* Modals, Bottom Sheets, Forms, Option Chain, History */
@@ -3850,6 +3850,102 @@ html, body, #app-root, #screen-main {
   width: 24px;
   text-align: center;
 }
+
+/* ==========================================================================
+   TRADINGVIEW-STYLE VERTICAL LEFT DRAWING TOOLBAR & CHART OVERHAUL
+   ========================================================================== */
+.tv-drawing-toolbar-left {
+  position: absolute;
+  top: 48px;
+  left: 6px;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: rgba(20, 25, 35, 0.75);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 4px 2px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  touch-action: manipulation;
+}
+
+.tv-draw-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: #94A3B8;
+  cursor: pointer;
+  padding: 0;
+  transition: all 0.15s ease;
+}
+
+.tv-draw-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #FFFFFF;
+}
+
+.tv-draw-btn.active {
+  background: rgba(56, 189, 248, 0.2);
+  border-color: rgba(56, 189, 248, 0.5);
+  color: #38BDF8;
+}
+
+[data-theme="light"] .tv-drawing-toolbar-left {
+  background: rgba(246, 248, 252, 0.85);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+[data-theme="light"] .tv-draw-btn {
+  color: #64748B;
+}
+
+[data-theme="light"] .tv-draw-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: #0F172A;
+}
+
+[data-theme="light"] .tv-draw-btn.active {
+  background: rgba(29, 78, 216, 0.12);
+  border-color: rgba(29, 78, 216, 0.4);
+  color: #1D4ED8;
+}
+
+/* Semi-transparent dark floating boxes & Single-line contract title */
+.chart-indicator-label {
+  background: rgba(20, 25, 35, 0.75) !important;
+  backdrop-filter: blur(8px) !important;
+  -webkit-backdrop-filter: blur(8px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  color: #F1F5F9 !important;
+}
+
+[data-theme="light"] .chart-indicator-label {
+  background: rgba(246, 248, 252, 0.85) !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+  color: #1E293B !important;
+}
+
+#chart-sym-title {
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  max-width: 200px !important;
+}
+
+.candle-countdown-pill {
+  padding-right: 8px !important;
+  margin-right: 4px !important;
+}
+
 
 
 

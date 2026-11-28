@@ -125,17 +125,27 @@
     if (typeof window !== 'undefined') window.activeChartAdapter = adp;
   }
   function ensureChartLibrary() {
-    if (window.klinecharts || window.LightweightCharts) return Promise.resolve();
+    if (window.JSChart || window.LightweightCharts) return Promise.resolve();
     if (!chartLibraryPromise) {
       chartLibraryPromise = new Promise((resolve, reject) => {
         const script = document.createElement('script');
-        script.src = 'klinecharts.min.js';
+        script.src = 'libs/hqchart/umychart.js';
         script.onload = () => {
-          const adapterScript = document.createElement('script');
-          adapterScript.src = 'chart-adapter.js';
-          adapterScript.onload = resolve;
-          adapterScript.onerror = resolve;
-          document.head.appendChild(adapterScript);
+          const complierScript = document.createElement('script');
+          complierScript.src = 'libs/hqchart/umychart.complier.js';
+          complierScript.onload = () => {
+            const styleScript = document.createElement('script');
+            styleScript.src = 'libs/hqchart/umychart.style.js';
+            styleScript.onload = () => {
+              const adapterScript = document.createElement('script');
+              adapterScript.src = 'chart-adapter.js';
+              adapterScript.onload = resolve;
+              adapterScript.onerror = resolve;
+              document.head.appendChild(adapterScript);
+            };
+            document.head.appendChild(styleScript);
+          };
+          document.head.appendChild(complierScript);
         };
         script.onerror = () => {
           const lwScript = document.createElement('script');
@@ -3600,9 +3610,8 @@
   }
   function initLightweightChartInstance() {
     const container = document.getElementById('tv-main-chart');
-    const isKlineEngine = typeof SikhoChartAdapter !== 'undefined' &&
-      SikhoChartAdapter.getEngine() === 'klinechart' &&
-      typeof klinecharts !== 'undefined';
+    const isHqEngine = typeof SikhoChartAdapter !== 'undefined' &&
+      (SikhoChartAdapter.getEngine() === 'hqchart' || SikhoChartAdapter.getEngine() === 'klinechart');
 
     const currentAdp = (typeof getActiveChartAdapter === 'function') ? getActiveChartAdapter() : (typeof window !== 'undefined' ? window.activeChartAdapter : null);
     if (currentAdp) {
@@ -3618,7 +3627,7 @@
       return;
     }
 
-    if (tvChart && !isKlineEngine) {
+    if (tvChart && !isHqEngine) {
       const targetKey = (state.activeInstrument?.globalId || '') + ':' + (state.activeTimeframe || '5m');
       if (state.chartDataKey !== targetKey) {
         state.candles=[]; candleSeries.setData([]);
@@ -3640,22 +3649,30 @@
 
     if (container) container.innerHTML = '';
 
-    if (isKlineEngine) {
-      setActiveChartAdapter(SikhoChartAdapter.createAdapter('klinechart'));
+    if (isHqEngine) {
+      setActiveChartAdapter(SikhoChartAdapter.createAdapter('hqchart'));
       activeChartAdapter.init(container, {
         isDark: resolveEffectiveTheme() === 'dark',
         onCrosshair: (param) => {
-          if (!param || !param.kLineData) {
+          let bar = null;
+          if (param && param.kLineData) bar = param.kLineData;
+          else if (param && param.Data) bar = param.Data;
+          else if (param && param.KData) bar = param.KData;
+          if (!bar) {
             if (!state.isUserScrolledBack && !state.historicalInspection) {
               inspectedCandleTime = null;
             }
             return;
           }
-          const bar = param.kLineData;
-          inspectedCandleTime = Math.floor(bar.timestamp / 1000);
+          const ts = bar.timestamp || (bar.Date ? bar.Date : (bar.time ? bar.time * 1000 : Date.now()));
+          inspectedCandleTime = ts > 1e11 ? Math.floor(ts / 1000) : ts;
           const legend = document.getElementById('chart-ohlc-legend');
           if (legend) {
-            legend.textContent = `${formatChartTime(inspectedCandleTime, true)} · O ${fmtNum(bar.open)}  H ${fmtNum(bar.high)}  L ${fmtNum(bar.low)}  C ${fmtNum(bar.close)}`;
+            const o = bar.open ?? bar.Open ?? 0;
+            const h = bar.high ?? bar.High ?? 0;
+            const l = bar.low ?? bar.Low ?? 0;
+            const c = bar.close ?? bar.Close ?? 0;
+            legend.textContent = `${formatChartTime(inspectedCandleTime, true)} · O ${fmtNum(o)}  H ${fmtNum(h)}  L ${fmtNum(l)}  C ${fmtNum(c)}`;
           }
         },
         onVisibleRangeChange: () => {
@@ -4617,11 +4634,11 @@
   function toggleChartEngineRollback() {
     if (typeof SikhoChartAdapter === 'undefined') return;
     const current = SikhoChartAdapter.getEngine();
-    const next = current === 'klinechart' ? 'lightweight' : 'klinechart';
+    const next = current === 'hqchart' ? 'lightweight' : 'hqchart';
     SikhoChartAdapter.setEngine(next);
 
     const badge = document.getElementById('chart-engine-badge');
-    if (badge) badge.textContent = `Engine: ${next === 'klinechart' ? 'KLineChart' : 'Lightweight (Rollback)'}`;
+    if (badge) badge.textContent = `Engine: ${next === 'hqchart' ? 'HQChart' : 'Lightweight (Rollback)'}`;
 
     const rollAdp = (typeof getActiveChartAdapter === 'function') ? getActiveChartAdapter() : null;
     if (rollAdp) {
@@ -4636,7 +4653,19 @@
     if (state.candles && state.candles.length > 0) {
       candleSeries.setData(state.candles);
     }
-    showBrandedAlert('Chart Engine Changed', `Switched to ${next === 'klinechart' ? 'KLineChart v10' : 'Lightweight Charts (Fallback)'}.`);
+    showBrandedAlert('Chart Engine Changed', `Switched to ${next === 'hqchart' ? 'HQChart' : 'Lightweight Charts (Fallback)'}.`);
+  }
+
+  function selectLeftDrawingTool(toolId) {
+    const btns = document.querySelectorAll('#chart-drawing-toolbar-left .tv-draw-btn');
+    btns.forEach((b) => {
+      b.classList.toggle('active', b.getAttribute('data-tool') === toolId);
+    });
+
+    const adp = (typeof getActiveChartAdapter === 'function') ? getActiveChartAdapter() : window.activeChartAdapter;
+    if (adp && typeof adp.setDrawingTool === 'function') {
+      adp.setDrawingTool(toolId);
+    }
   }
 
   function openDrawingsModal() {
@@ -8094,6 +8123,7 @@
     resetIndicatorParamsToDefault,
     toggleIndicatorFavorite,
     toggleChartEngineRollback,
+    selectLeftDrawingTool,
     openDrawingsModal,
     selectDrawingTool,
     cycleDrawingMagnet,
