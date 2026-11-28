@@ -1,49 +1,21 @@
 /**
- * Sikho Trading — Professional Mobile Chart Adapter & HQChart Integration
- * Engine: 'hqchart' (default) with 'lightweight' (fallback).
- * Strictly inverted Indian market conventions:
- *   - Green = Up / Bullish (close >= open)
- *   - Red = Down / Bearish (close < open)
- * Preserves Apache 2.0 license.
+ * Sikho Trading — Professional Mobile Chart Adapter & KLineChart Integration
+ * Supported Engines: 'klinechart' (v10.1.1 pinned, default) and 'lightweight' (rollback)
+ * Apache-2.0 License preserved.
  */
 (function (global) {
   'use strict';
 
-  const DEFAULT_ENGINE = 'hqchart';
+  // =========================================================================
+  // 1. CONSTANTS & METADATA
+  // =========================================================================
+  const DEFAULT_ENGINE = 'klinechart';
   const STORAGE_KEY_ENGINE = 'tz_chart_engine';
   const STORAGE_KEY_INDICATORS = 'tz_kline_indicators_v2';
   const STORAGE_KEY_FAVORITES = 'tz_kline_favorites_v2';
   const STORAGE_KEY_DRAWINGS = 'tz_kline_drawings_v2';
 
-  // Indian Market Convention Palette
-  const THEME_COLORS = {
-    dark: {
-      up: '#34D399',
-      upRgb: 'rgb(52, 211, 153)',
-      upRgba: 'rgba(52, 211, 153, 0.25)',
-      down: '#FB7185',
-      downRgb: 'rgb(251, 113, 133)',
-      downRgba: 'rgba(251, 113, 133, 0.25)',
-      bg: '#0B1220',
-      grid: 'rgba(255, 255, 255, 0.05)',
-      text: '#94A3B8',
-      border: '#1E293B',
-    },
-    light: {
-      up: '#047857',
-      upRgb: 'rgb(4, 120, 87)',
-      upRgba: 'rgba(4, 120, 87, 0.2)',
-      down: '#BE123C',
-      downRgb: 'rgb(190, 18, 60)',
-      downRgba: 'rgba(190, 18, 60, 0.2)',
-      bg: '#F6F8FC',
-      grid: 'rgba(0, 0, 0, 0.05)',
-      text: '#526176',
-      border: '#D8E0EB',
-    },
-  };
-
-  // Technical Indicator Registry
+  // Indicator Registry with detailed category, param schemas and descriptions
   const INDICATOR_REGISTRY = {
     // --- Main Chart Overlays ---
     MA: {
@@ -148,7 +120,7 @@
       ],
     },
 
-    // --- Oscillators ---
+    // --- Oscillators (Lower Sub-Panes) ---
     RSI: {
       name: 'RSI',
       label: 'Relative Strength Index (RSI)',
@@ -177,17 +149,17 @@
     },
     KDJ: {
       name: 'KDJ',
-      label: 'KDJ Stochastic Oscillator',
+      label: 'KDJ (Stochastic Oscillator)',
       category: 'oscillator',
       series: 'normal',
       isStack: false,
-      description: 'Stochastic indicator with %K, %D and %J lines to identify overbought/oversold turns.',
+      description: 'Fast momentum oscillator identifying short-term overbought/oversold turns.',
       requiresVolume: false,
       defaultParams: [9, 3, 3],
       paramDefs: [
         { name: 'Period', min: 2, max: 100, step: 1 },
-        { name: 'M1 (%K smooth)', min: 1, max: 50, step: 1 },
-        { name: 'M2 (%D smooth)', min: 1, max: 50, step: 1 },
+        { name: 'M1', min: 1, max: 50, step: 1 },
+        { name: 'M2', min: 1, max: 50, step: 1 },
       ],
     },
     ATR: {
@@ -196,10 +168,32 @@
       category: 'oscillator',
       series: 'normal',
       isStack: false,
-      description: 'Market volatility indicator measuring the degree of price movement.',
+      description: 'Wilder volatility gauge measuring absolute candle range in INR.',
       requiresVolume: false,
       defaultParams: [14],
-      paramDefs: [{ name: 'ATR Period', min: 1, max: 100, step: 1 }],
+      paramDefs: [{ name: 'Period', min: 2, max: 100, step: 1 }],
+    },
+    CCI: {
+      name: 'CCI',
+      label: 'Commodity Channel Index',
+      category: 'oscillator',
+      series: 'normal',
+      isStack: false,
+      description: 'Identifies cyclical price trends and deviations from statistical means.',
+      requiresVolume: false,
+      defaultParams: [20],
+      paramDefs: [{ name: 'Period', min: 2, max: 200, step: 1 }],
+    },
+    WR: {
+      name: 'WR',
+      label: 'Williams %R',
+      category: 'oscillator',
+      series: 'normal',
+      isStack: false,
+      description: 'Momentum indicator reflecting the market close relative to the high-low range.',
+      requiresVolume: false,
+      defaultParams: [14],
+      paramDefs: [{ name: 'Period', min: 2, max: 100, step: 1 }],
     },
     BIAS: {
       name: 'BIAS',
@@ -389,553 +383,840 @@
     },
   ];
 
-  // Helper to convert timestamp (sec or ms) to IST YYYYMMDD and HHMM
-  function epochToIstDateAndTime(epoch) {
-    const tsMs = epoch > 1e11 ? Number(epoch) : Number(epoch) * 1000;
-    // IST = UTC + 5:30 (19800000 ms)
-    const ist = new Date(tsMs + 19800000);
-    const y = ist.getUTCFullYear();
-    const m = ist.getUTCMonth() + 1;
-    const d = ist.getUTCDate();
-    const dateInt = y * 10000 + m * 100 + d;
-    const hh = ist.getUTCHours();
-    const mm = ist.getUTCMinutes();
-    const timeInt = hh * 100 + mm;
-    return { dateInt, timeInt, tsMs };
+  // =========================================================================
+  // 2. REGISTER CUSTOM INDICATORS & OVERLAYS IN KLINECHART
+  // =========================================================================
+  function registerCustomKLineExtensions(kl) {
+    if (!kl || typeof kl.registerIndicator !== 'function') return;
+
+    // A. Custom ATR Indicator (Average True Range)
+    try {
+      kl.registerIndicator({
+        name: 'ATR',
+        shortName: 'ATR',
+        series: 'normal',
+        calcParams: [14],
+        precision: 2,
+        shouldOhlc: true,
+        figures: [{ key: 'atr', title: 'ATR: ', type: 'line' }],
+        calc: (dataList, indicator) => {
+          const period = (indicator.calcParams && indicator.calcParams[0]) || 14;
+          let prevClose = null;
+          let trSum = 0;
+          let prevAtr = null;
+          return dataList.map((k, i) => {
+            const h = k.high;
+            const l = k.low;
+            let tr = h - l;
+            if (prevClose !== null) {
+              tr = Math.max(h - l, Math.abs(h - prevClose), Math.abs(l - prevClose));
+            }
+            prevClose = k.close;
+            trSum += tr;
+
+            const res = {};
+            if (i >= period - 1) {
+              if (prevAtr === null) {
+                prevAtr = trSum / period;
+              } else {
+                prevAtr = (prevAtr * (period - 1) + tr) / period;
+              }
+              res.atr = Number(prevAtr.toFixed(2));
+            }
+            return res;
+          });
+        },
+      });
+    } catch {}
+
+    // B. Custom VWAP Indicator (Volume-Weighted Average Price anchored to IST session)
+    try {
+      kl.registerIndicator({
+        name: 'VWAP',
+        shortName: 'VWAP',
+        series: 'price',
+        calcParams: [],
+        precision: 2,
+        shouldOhlc: true,
+        figures: [{ key: 'vwap', title: 'VWAP: ', type: 'line' }],
+        calc: (dataList) => {
+          let cumVol = 0;
+          let cumTpVol = 0;
+          let currentSessionDate = '';
+          return dataList.map((k) => {
+            // Anchor to IST session date (UTC + 5:30)
+            const istDate = new Date(k.timestamp + 19800000);
+            const sessionDate = `${istDate.getUTCFullYear()}-${istDate.getUTCMonth() + 1}-${istDate.getUTCDate()}`;
+            if (sessionDate !== currentSessionDate) {
+              currentSessionDate = sessionDate;
+              cumVol = 0;
+              cumTpVol = 0;
+            }
+            const vol = Number(k.volume) || 0;
+            if (vol <= 0) {
+              // Volume unavailable (e.g. index spot); do not invent volume
+              return {};
+            }
+            const tp = (k.high + k.low + k.close) / 3;
+            cumVol += vol;
+            cumTpVol += tp * vol;
+            return cumVol > 0 ? { vwap: Number((cumTpVol / cumVol).toFixed(2)) } : {};
+          });
+        },
+      });
+    } catch {}
+
+    // C. Custom Rectangle Zone Overlay (Supply / Demand consolidation box)
+    try {
+      kl.registerOverlay({
+        name: 'rectZone',
+        totalStep: 3,
+        needDefaultPointFigure: true,
+        needDefaultXAxisFigure: true,
+        needDefaultYAxisFigure: true,
+        createPointFigures: ({ coordinates }) => {
+          if (coordinates.length >= 2) {
+            const x = Math.min(coordinates[0].x, coordinates[1].x);
+            const y = Math.min(coordinates[0].y, coordinates[1].y);
+            const width = Math.abs(coordinates[0].x - coordinates[1].x);
+            const height = Math.abs(coordinates[0].y - coordinates[1].y);
+            return [
+              {
+                type: 'rect',
+                attrs: { x, y, width, height },
+                styles: {
+                  style: 'stroke_fill',
+                  color: 'rgba(59, 130, 246, 0.16)',
+                  borderColor: '#3B82F6',
+                  borderSize: 1.5,
+                  borderDashedValue: [4, 4],
+                },
+              },
+            ];
+          }
+          return [];
+        },
+      });
+    } catch {}
+
+    // D. Custom Circle Zone Overlay (Pivot zone / target)
+    try {
+      kl.registerOverlay({
+        name: 'circleZone',
+        totalStep: 3,
+        needDefaultPointFigure: true,
+        needDefaultXAxisFigure: true,
+        needDefaultYAxisFigure: true,
+        createPointFigures: ({ coordinates }) => {
+          if (coordinates.length >= 2) {
+            const c0 = coordinates[0];
+            const c1 = coordinates[1];
+            const r = Math.hypot(c0.x - c1.x, c0.y - c1.y);
+            return [
+              {
+                type: 'circle',
+                attrs: { x: c0.x, y: c0.y, r },
+                styles: {
+                  style: 'stroke_fill',
+                  color: 'rgba(234, 179, 8, 0.16)',
+                  borderColor: '#EAB308',
+                  borderSize: 1.5,
+                },
+              },
+            ];
+          }
+          return [];
+        },
+      });
+    } catch {}
+
+    // E. Custom Price & Date Measurement Overlay
+    try {
+      kl.registerOverlay({
+        name: 'priceMeasurement',
+        totalStep: 3,
+        needDefaultPointFigure: true,
+        needDefaultXAxisFigure: true,
+        needDefaultYAxisFigure: true,
+        createPointFigures: ({ coordinates, overlay }) => {
+          if (coordinates.length >= 2) {
+            const c1 = coordinates[0];
+            const c2 = coordinates[1];
+            const x = Math.min(c1.x, c2.x);
+            const y = Math.min(c1.y, c2.y);
+            const width = Math.abs(c1.x - c2.x);
+            const height = Math.abs(c1.y - c2.y);
+
+            const p1 = overlay.points?.[0];
+            const p2 = overlay.points?.[1];
+            const priceDiff = (p2?.value || 0) - (p1?.value || 0);
+            const pct = p1?.value ? (priceDiff / p1.value) * 100 : 0;
+            const sign = priceDiff >= 0 ? '+' : '';
+            const isPos = priceDiff >= 0;
+
+            const label = `${sign}₹${priceDiff.toFixed(2)} (${sign}${pct.toFixed(2)}%)`;
+            return [
+              {
+                type: 'rect',
+                attrs: { x, y, width, height },
+                styles: {
+                  style: 'stroke_fill',
+                  color: isPos ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+                  borderColor: isPos ? '#10B981' : '#EF4444',
+                  borderSize: 1.5,
+                },
+              },
+              {
+                type: 'text',
+                attrs: {
+                  x: x + 6,
+                  y: y + 18,
+                  text: label,
+                },
+                styles: {
+                  color: isPos ? '#10B981' : '#EF4444',
+                  size: 11,
+                  weight: 'bold',
+                  family: 'system-ui, sans-serif',
+                },
+              },
+            ];
+          }
+          return [];
+        },
+      });
+    } catch {}
+
+    // F. Custom Long Risk/Reward Planning Tool (Visual Analysis Only)
+    try {
+      kl.registerOverlay({
+        name: 'riskRewardLong',
+        totalStep: 3,
+        needDefaultPointFigure: true,
+        needDefaultXAxisFigure: true,
+        needDefaultYAxisFigure: true,
+        createPointFigures: ({ coordinates, overlay }) => {
+          if (coordinates.length >= 2) {
+            const p1 = overlay.points?.[0]; // Entry
+            const p2 = overlay.points?.[1]; // Target
+            if (!p1 || !p2) return [];
+            const entryY = coordinates[0].y;
+            const targetY = coordinates[1].y;
+            const leftX = Math.min(coordinates[0].x, coordinates[1].x);
+            const width = Math.max(Math.abs(coordinates[0].x - coordinates[1].x), 80);
+
+            const ep = p1.value || 0;
+            const tp = p2.value || 0;
+            const reward = Math.abs(tp - ep);
+            const risk = reward / 2; // Default 1:2 R:R target
+            const sl = ep - risk;
+
+            const targetTop = Math.min(entryY, targetY);
+            const targetHeight = Math.abs(entryY - targetY);
+            const riskHeight = targetHeight / 2;
+
+            return [
+              // Target Profit Zone (Green)
+              {
+                type: 'rect',
+                attrs: { x: leftX, y: targetTop, width, height: targetHeight },
+                styles: {
+                  style: 'stroke_fill',
+                  color: 'rgba(16, 185, 129, 0.18)',
+                  borderColor: '#10B981',
+                  borderSize: 1.5,
+                },
+              },
+              // Stop Loss Zone (Red)
+              {
+                type: 'rect',
+                attrs: { x: leftX, y: Math.max(entryY, targetY), width, height: riskHeight },
+                styles: {
+                  style: 'stroke_fill',
+                  color: 'rgba(239, 68, 68, 0.18)',
+                  borderColor: '#EF4444',
+                  borderSize: 1.5,
+                },
+              },
+              // Info Text
+              {
+                type: 'text',
+                attrs: {
+                  x: leftX + 8,
+                  y: targetTop + 16,
+                  text: `LONG R:R 1:2.0 · Target ₹${tp.toFixed(2)} (+₹${reward.toFixed(2)})`,
+                },
+                styles: { color: '#10B981', size: 11, weight: 'bold' },
+              },
+            ];
+          }
+          return [];
+        },
+      });
+    } catch {}
+
+    // G. Custom Short Risk/Reward Planning Tool (Visual Analysis Only)
+    try {
+      kl.registerOverlay({
+        name: 'riskRewardShort',
+        totalStep: 3,
+        needDefaultPointFigure: true,
+        needDefaultXAxisFigure: true,
+        needDefaultYAxisFigure: true,
+        createPointFigures: ({ coordinates, overlay }) => {
+          if (coordinates.length >= 2) {
+            const p1 = overlay.points?.[0];
+            const p2 = overlay.points?.[1];
+            if (!p1 || !p2) return [];
+            const entryY = coordinates[0].y;
+            const targetY = coordinates[1].y;
+            const leftX = Math.min(coordinates[0].x, coordinates[1].x);
+            const width = Math.max(Math.abs(coordinates[0].x - coordinates[1].x), 80);
+
+            const ep = p1.value || 0;
+            const tp = p2.value || 0;
+            const reward = Math.abs(ep - tp);
+            const risk = reward / 2;
+
+            const targetTop = Math.min(entryY, targetY);
+            const targetHeight = Math.abs(entryY - targetY);
+            const riskHeight = targetHeight / 2;
+
+            return [
+              // Target Profit Zone (Green, downward)
+              {
+                type: 'rect',
+                attrs: { x: leftX, y: Math.max(entryY, targetY), width, height: targetHeight },
+                styles: {
+                  style: 'stroke_fill',
+                  color: 'rgba(16, 185, 129, 0.18)',
+                  borderColor: '#10B981',
+                  borderSize: 1.5,
+                },
+              },
+              // Stop Loss Zone (Red, upward)
+              {
+                type: 'rect',
+                attrs: { x: leftX, y: targetTop - riskHeight, width, height: riskHeight },
+                styles: {
+                  style: 'stroke_fill',
+                  color: 'rgba(239, 68, 68, 0.18)',
+                  borderColor: '#EF4444',
+                  borderSize: 1.5,
+                },
+              },
+              // Info Text
+              {
+                type: 'text',
+                attrs: {
+                  x: leftX + 8,
+                  y: Math.max(entryY, targetY) + 16,
+                  text: `SHORT R:R 1:2.0 · Target ₹${tp.toFixed(2)} (+₹${reward.toFixed(2)})`,
+                },
+                styles: { color: '#10B981', size: 11, weight: 'bold' },
+              },
+            ];
+          }
+          return [];
+        },
+      });
+    } catch {}
   }
 
   // =========================================================================
-  // HQCHART ADAPTER CLASS
+  // 3. KLINECHART ADAPTER CLASS
   // =========================================================================
-  class HQChartAdapter {
+  class KLineChartAdapter {
     constructor() {
-      this.engine = 'hqchart';
-      this.chart = null;      // JSChart instance
-      this.hqChart = null;    // JSChartContainer
+      this.engine = 'klinechart';
+      this.chart = null;
       this.container = null;
-      this.activeIndicators = new Map();
+      this.tickSubscriber = null;
+      this.activeIndicators = new Map(); // indicatorName -> { id, paneId, isStack, params }
       this.undoStack = [];
       this.redoStack = [];
       this.drawingHistoryLimit = 20;
-      this.candleHistory = [];
       this.currentSymbol = null;
-      this.currentPeriod = '5m';
-      this.currentPeriodId = 5;
-      this.isDark = true;
-      this.magnetActive = false;
-      this.lockActive = false;
-      this.eraseActive = false;
-      this.options = {};
-    }
-
-    // Configure HQChart global styles with inverted Indian colors
-    applyIndianMarketColors(isDark) {
-      const palette = isDark ? THEME_COLORS.dark : THEME_COLORS.light;
-      let res = null;
-      try { if (typeof g_JSChartResource !== 'undefined') res = g_JSChartResource; } catch {}
-      if (!res && typeof global !== 'undefined' && global.g_JSChartResource) res = global.g_JSChartResource;
-      if (!res && typeof globalThis !== 'undefined' && globalThis.g_JSChartResource) res = globalThis.g_JSChartResource;
-      if (!res && typeof window !== 'undefined' && window.g_JSChartResource) res = window.g_JSChartResource;
-
-      if (res) {
-        if (res.FrameLogo) {
-          res.FrameLogo.Text = null;
-        }
-        if (isDark) {
-          res.BGColor = '#0B1220';
-          res.FrameTitleBGColor = '#0B1220';
-          res.FrameBorderPen = 'rgba(255, 255, 255, 0.1)';
-          res.FrameSplitPen = 'rgba(255, 255, 255, 0.06)';
-          res.FrameSplitTextColor = '#B2BFD1';
-        } else {
-          res.BGColor = '#F6F8FC';
-          res.FrameTitleBGColor = '#F6F8FC';
-          res.FrameBorderPen = '#D8E0EB';
-          res.FrameSplitPen = '#E2E8F0';
-          res.FrameSplitTextColor = '#526176';
-        }
-
-        res.UpBarColor = palette.upRgb;
-        res.DownBarColor = palette.downRgb;
-        res.UnchagneBarColor = '#888888';
-        if (res.FrameLatestPrice) {
-          res.FrameLatestPrice.UpBarColor = palette.upRgb;
-          res.FrameLatestPrice.DownBarColor = palette.downRgb;
-        }
-        if (res.HLCArea) {
-          res.HLCArea.HighLineColor = palette.upRgb;
-          res.HLCArea.LowLineColor = palette.downRgb;
-          res.HLCArea.UpAreaColor = palette.upRgba;
-          res.HLCArea.DownAreaColor = palette.downRgba;
-        }
-      }
-    }
-
-    parsePeriodToHQId(tf) {
-      if (!tf) return 5;
-      const s = String(tf).trim();
-      if (s === '1m') return 4;
-      if (s === '3m') return 20003;
-      if (s === '5m') return 5;
-      if (s === '15m') return 6;
-      if (s === '30m') return 7;
-      if (s === '1h' || s === '60m') return 8;
-      if (s === '1D' || s === '1d') return 0;
-      return 5;
+      this.currentPeriod = null;
     }
 
     init(containerEl, options = {}) {
+      if (!global.klinecharts) {
+        throw new Error('KLineChart library not loaded');
+      }
       this.container = typeof containerEl === 'string' ? document.getElementById(containerEl) : containerEl;
       if (!this.container) return null;
 
-      this.isDark = options.isDark !== false;
-      this.options = options;
-      this.container.style.backgroundColor = this.isDark ? '#080C12' : '#F6F8FC';
+      const isDark = options.isDark !== false;
+      this.container.style.backgroundColor = isDark ? '#0B1220' : '#F6F8FC';
+
+      // Register custom indicators and overlays on klinecharts engine
+      registerCustomKLineExtensions(global.klinecharts);
+
+      // Clean container of any stale elements
       this.container.innerHTML = '';
 
-      // Strictly apply Indian Market Convention (Green = Up, Red = Down)
-      this.applyIndianMarketColors(this.isDark);
+      // Initialize KLineChart instance
+      this.chart = global.klinecharts.init(this.container, {
+        timezone: 'Asia/Kolkata',
+        styles: this.getThemeStyles(isDark),
+      });
 
-      if (typeof global.JSChart === 'undefined') {
-        // Fallback placeholder if library is running in test/mock environment
-        return this;
-      }
+      // Bind crosshair action
+      this.chart.subscribeAction('onCrosshairChange', (param) => {
+        if (typeof options.onCrosshair === 'function') {
+          options.onCrosshair(param);
+        }
+      });
 
-      const self = this;
-      const periodId = this.parsePeriodToHQId(this.currentPeriod);
-      this.currentPeriodId = periodId;
-
-      const chartOption = {
-        Type: '历史K线图',
-        Windows: [
-          { Index: 'MA', IsDrawTitleBG: false },
-          { Index: 'VOL', IsDrawTitleBG: false },
-        ],
-        IsAutoUpdate: false,
-        IsApiPeriod: true,
-        EnableResize: true,
-        IsShowRightMenu: false,
-        KLine: {
-          DragDownload: { Enable: false },
-          Period: periodId,
-          Right: 0,
-          DrawType: 0,
-        },
-        NetworkFilter: function (obj, callback) {
-          self.handleNetworkFilter(obj, callback);
-        },
-        EventCallback: [
-          {
-            event: 1, // TitleDraw / Crosshair
-            callback: function (event, data) {
-              if (typeof self.options.onCrosshair === 'function') {
-                self.options.onCrosshair(data);
-              }
-            },
-          },
-        ],
-      };
-
-      try {
-        this.chart = global.JSChart.Init(this.container);
-        this.chart.SetOption(chartOption);
-        this.hqChart = this.chart.JSChartContainer;
-      } catch (e) {
-        console.warn('HQChart init error:', e);
-      }
+      // Bind visible range change for scrolling/pagination/TP-SL sync
+      this.chart.subscribeAction('onVisibleRangeChange', (param) => {
+        if (typeof options.onVisibleRangeChange === 'function') {
+          options.onVisibleRangeChange(param);
+        }
+      });
 
       return this.chart;
     }
 
-    handleNetworkFilter(obj, callback) {
-      if (!obj) return;
-      const name = obj.Name || '';
-      if (
-        name === 'KLineChartContainer::RequestHistoryData' ||
-        name === 'KLineChartContainer::ReqeustHistoryMinuteData' ||
-        name === 'KLineChartContainer::RequestMinuteHistoryData' ||
-        name.includes('HistoryData') ||
-        name.includes('HistoryMinute')
-      ) {
-        obj.PreventDefault = true;
-        const sym = this.currentSymbol?.ticker || (obj.Request && obj.Request.Data && obj.Request.Data.symbol) || 'NIFTY';
-        const isMinute = this.currentPeriodId !== 0;
-        const formattedData = this.formatHistoryForHQ(this.candleHistory, isMinute);
-        if (typeof callback === 'function') {
-          callback({
-            code: 0,
-            symbol: sym,
-            data: formattedData,
-            ChartOperator: { IsShowAll: true },
-          });
-        }
-        return;
+    getThemeStyles(isDark) {
+      if (isDark) {
+        return {
+          grid: {
+            show: true,
+            horizontal: { color: 'rgba(255, 255, 255, 0.05)', size: 1 },
+            vertical: { color: 'rgba(255, 255, 255, 0.05)', size: 1 },
+          },
+          candle: {
+            type: 'candle_solid',
+            bar: {
+              upColor: '#34D399',
+              downColor: '#FB7185',
+              noChangeColor: '#888888',
+              upBorderColor: '#34D399',
+              downBorderColor: '#FB7185',
+              noChangeBorderColor: '#888888',
+              upWickColor: '#34D399',
+              downWickColor: '#FB7185',
+              noChangeWickColor: '#888888',
+            },
+            priceMark: {
+              last: {
+                show: true,
+                upColor: '#34D399',
+                downColor: '#FB7185',
+                noChangeColor: '#888888',
+                line: { show: true, style: 'dashed', dashedValue: [3, 3] },
+                text: { color: '#FFFFFF', size: 11, paddingLeft: 4, paddingRight: 4 },
+              },
+            },
+            tooltip: {
+              showRule: 'none', // Handled by app's native OHLC legend bar
+            },
+          },
+          xAxis: {
+            show: true,
+            axisLine: { color: '#30415B', size: 1 },
+            tickText: { color: '#B2BFD1', size: 11 },
+          },
+          yAxis: {
+            show: true,
+            axisLine: { color: '#30415B', size: 1 },
+            tickText: { color: '#B2BFD1', size: 11 },
+          },
+          separator: {
+            color: '#30415B',
+            size: 1,
+          },
+          crosshair: {
+            show: true,
+            horizontal: {
+              line: { color: 'rgba(241, 245, 249, 0.35)', style: 'dashed', dashedValue: [3, 3] },
+              text: { color: '#F1F5F9', backgroundColor: '#1B283D' },
+            },
+            vertical: {
+              line: { color: 'rgba(241, 245, 249, 0.35)', style: 'dashed', dashedValue: [3, 3] },
+              text: { color: '#F1F5F9', backgroundColor: '#1B283D' },
+            },
+          },
+          overlay: {
+            point: { color: '#60A5FA', borderColor: '#FFFFFF', radius: 4 },
+            line: { color: '#60A5FA', size: 1.5 },
+          },
+        };
+      } else {
+        return {
+          grid: {
+            show: true,
+            horizontal: { color: 'rgba(0, 0, 0, 0.05)', size: 1 },
+            vertical: { color: 'rgba(0, 0, 0, 0.05)', size: 1 },
+          },
+          candle: {
+            type: 'candle_solid',
+            bar: {
+              upColor: '#047857',
+              downColor: '#BE123C',
+              noChangeColor: '#666666',
+              upBorderColor: '#047857',
+              downBorderColor: '#BE123C',
+              noChangeBorderColor: '#666666',
+              upWickColor: '#047857',
+              downWickColor: '#BE123C',
+              noChangeWickColor: '#666666',
+            },
+            priceMark: {
+              last: {
+                show: true,
+                upColor: '#047857',
+                downColor: '#BE123C',
+                noChangeColor: '#666666',
+                line: { show: true, style: 'dashed', dashedValue: [3, 3] },
+                text: { color: '#FFFFFF', size: 11, paddingLeft: 4, paddingRight: 4 },
+              },
+            },
+            tooltip: {
+              showRule: 'none',
+            },
+          },
+          xAxis: {
+            show: true,
+            axisLine: { color: '#D8E0EB', size: 1 },
+            tickText: { color: '#526176', size: 11 },
+          },
+          yAxis: {
+            show: true,
+            axisLine: { color: '#D8E0EB', size: 1 },
+            tickText: { color: '#526176', size: 11 },
+          },
+          separator: {
+            color: '#D8E0EB',
+            size: 1,
+          },
+          crosshair: {
+            show: true,
+            horizontal: {
+              line: { color: 'rgba(23, 32, 51, 0.35)', style: 'dashed', dashedValue: [3, 3] },
+              text: { color: '#FFFFFF', backgroundColor: '#172033' },
+            },
+            vertical: {
+              line: { color: 'rgba(23, 32, 51, 0.35)', style: 'dashed', dashedValue: [3, 3] },
+              text: { color: '#FFFFFF', backgroundColor: '#172033' },
+            },
+          },
+          overlay: {
+            point: { color: '#1D4ED8', borderColor: '#FFFFFF', radius: 4 },
+            line: { color: '#1D4ED8', size: 1.5 },
+          },
+        };
       }
-      if (name.includes('FlowCapital')) {
-        obj.PreventDefault = true;
-        if (typeof callback === 'function') {
-          callback({ code: 0, stock: [] });
-        }
-        return;
-      }
-      if (name.includes('Realtime') || name.includes('Tick')) {
-        obj.PreventDefault = true;
-        return;
-      }
-    }
-
-    formatHistoryForHQ(candles, isMinute) {
-      if (!Array.isArray(candles) || candles.length === 0) return [];
-      let prevClose = null;
-      return candles.map((c) => {
-        const { dateInt, timeInt } = epochToIstDateAndTime(c.time);
-        const open = Number(c.open);
-        const high = Number(c.high);
-        const low = Number(c.low);
-        const close = Number(c.close);
-        const vol = Number(c.volume) || 0;
-        const amount = vol * close;
-        const yclose = prevClose !== null ? prevClose : open;
-        prevClose = close;
-
-        if (isMinute) {
-          // [Date, YClose, Open, High, Low, Close, Vol, Amount, Time]
-          return [dateInt, yclose, open, high, low, close, vol, amount, timeInt];
-        } else {
-          // [Date, YClose, Open, High, Low, Close, Vol, Amount]
-          return [dateInt, yclose, open, high, low, close, vol, amount];
-        }
-      });
     }
 
     setTheme(isDark) {
-      this.isDark = isDark;
       if (this.container) {
-        this.container.style.backgroundColor = isDark ? '#080C12' : '#F6F8FC';
+        this.container.style.backgroundColor = isDark ? '#0B1220' : '#F6F8FC';
       }
-      this.applyIndianMarketColors(isDark);
-      if (this.hqChart && typeof this.hqChart.Draw === 'function') {
-        this.hqChart.Draw();
-      }
+      if (!this.chart) return;
+      this.chart.setStyles(this.getThemeStyles(isDark));
+    }
+
+    parsePeriod(tf) {
+      if (!tf) return { multiplier: 5, timespan: 'minute' };
+      const num = parseInt(tf, 10);
+      if (tf.endsWith('m')) return { multiplier: num || 5, timespan: 'minute' };
+      if (tf.endsWith('h')) return { multiplier: num || 1, timespan: 'hour' };
+      if (tf.endsWith('D')) return { multiplier: num || 1, timespan: 'day' };
+      if (tf.endsWith('W')) return { multiplier: num || 1, timespan: 'week' };
+      return { multiplier: 5, timespan: 'minute' };
+    }
+
+    bindDataLoader(loader) {
+      if (!this.chart) return;
+      this.chart.setDataLoader({
+        getBars: (params) => {
+          if (typeof loader.getBars === 'function') {
+            loader.getBars(params);
+          }
+        },
+        subscribeBar: (params) => {
+          this.tickSubscriber = params.callback;
+        },
+        unsubscribeBar: () => {
+          this.tickSubscriber = null;
+        },
+      });
     }
 
     setInstrumentAndPeriod(inst, tf) {
+      if (!this.chart) return;
+      const precision = Number(inst.pricePrecision) || 2;
       this.currentSymbol = {
         ticker: inst.symbol || inst.name || inst.globalId,
-        pricePrecision: Number(inst.pricePrecision) || 2,
-        name: inst.name || inst.symbol,
+        pricePrecision: precision,
+        volumePrecision: 0,
       };
-      this.currentPeriod = tf || '5m';
-      this.currentPeriodId = this.parsePeriodToHQId(this.currentPeriod);
-
-      if (this.chart) {
-        if (typeof this.chart.ChangeSymbol === 'function') {
-          this.chart.ChangeSymbol(this.currentSymbol.ticker);
-        }
-        if (typeof this.chart.ChangePeriod === 'function') {
-          this.chart.ChangePeriod(this.currentPeriodId);
-        }
-      }
+      this.currentPeriod = this.parsePeriod(tf);
+      this.chart.setSymbol(this.currentSymbol);
+      this.chart.setPeriod(this.currentPeriod);
     }
 
     applyNewData(candles, more = false) {
-      this.candleHistory = Array.isArray(candles) ? candles : [];
-      if (!this.hqChart) return;
+      if (!this.chart || !Array.isArray(candles)) return;
+      // Convert candles to KLineChart milliseconds format
+      const formatted = candles.map((c) => ({
+        timestamp: c.time > 1e11 ? c.time : c.time * 1000,
+        open: Number(c.open),
+        high: Number(c.high),
+        low: Number(c.low),
+        close: Number(c.close),
+        volume: Number(c.volume) || 0,
+      }));
 
-      const isMinute = this.currentPeriodId !== 0;
-      const hqData = this.formatHistoryForHQ(this.candleHistory, isMinute);
-      const payload = {
-        code: 0,
-        symbol: this.currentSymbol?.ticker || 'NIFTY',
-        data: hqData,
-        ChartOperator: { IsShowAll: true },
-      };
-
-      if (isMinute && typeof this.hqChart.RecvMinuteHistoryData === 'function') {
-        this.hqChart.RecvMinuteHistoryData(payload);
-      } else if (typeof this.hqChart.RecvHistoryData === 'function') {
-        this.hqChart.RecvHistoryData(payload);
+      // Set via resetData and internal dataLoader callback
+      if (this.tickSubscriber) {
+        // Real-time mode via loader
       }
-
-      try {
-        if (this.hqChart && this.hqChart.ChartSplashPaint) {
-          this.hqChart.ChartSplashPaint.EnableSplash(false);
-        }
-      } catch {}
-
-      if (typeof this.hqChart.Draw === 'function') {
-        this.hqChart.Draw();
-      }
-      if (typeof this.options.onVisibleRangeChange === 'function') {
-        this.options.onVisibleRangeChange();
+      this.chart.resetData();
+      if (this.chart.getChartStore && typeof this.chart.getChartStore()._addData === 'function') {
+        this.chart.getChartStore()._addData(formatted, 'init', more);
       }
     }
 
     updateData(candle) {
-      if (!candle || !this.hqChart) return;
-      // Maintain candleHistory in-place
-      const last = this.candleHistory[this.candleHistory.length - 1];
-      if (last && Math.floor(last.time) === Math.floor(candle.time)) {
-        this.candleHistory[this.candleHistory.length - 1] = candle;
-      } else {
-        this.candleHistory.push(candle);
-      }
-
-      const { dateInt, timeInt } = epochToIstDateAndTime(candle.time);
-      const tick = {
-        symbol: this.currentSymbol?.ticker || 'NIFTY',
-        date: dateInt,
-        time: timeInt,
+      if (!this.chart || !candle) return;
+      const formatted = {
+        timestamp: candle.time > 1e11 ? candle.time : candle.time * 1000,
         open: Number(candle.open),
         high: Number(candle.high),
         low: Number(candle.low),
-        price: Number(candle.close),
-        vol: Number(candle.volume) || 0,
-        amount: (Number(candle.volume) || 0) * Number(candle.close),
+        close: Number(candle.close),
+        volume: Number(candle.volume) || 0,
       };
-
-      if (typeof this.hqChart.RecvRealtimeData === 'function') {
-        this.hqChart.RecvRealtimeData({ stock: [tick] });
-      }
-      if (typeof this.hqChart.Draw === 'function') {
-        this.hqChart.Draw();
-      }
-      if (typeof this.options.onVisibleRangeChange === 'function') {
-        this.options.onVisibleRangeChange();
+      if (typeof this.tickSubscriber === 'function') {
+        this.tickSubscriber(formatted);
+      } else if (this.chart.getChartStore && typeof this.chart.getChartStore()._addData === 'function') {
+        this.chart.getChartStore()._addData(formatted, 'update');
       }
     }
 
     getDataList() {
-      return this.candleHistory || [];
+      if (!this.chart) return [];
+      return this.chart.getDataList() || [];
     }
 
     resize() {
-      if (this.chart && typeof this.chart.OnSize === 'function') {
-        this.chart.OnSize();
-      } else if (this.hqChart && typeof this.hqChart.OnSize === 'function') {
-        this.hqChart.OnSize();
-      }
+      if (!this.chart) return;
+      this.chart.resize();
     }
 
     scrollToRealTime() {
-      if (this.hqChart && typeof this.hqChart.Draw === 'function') {
-        this.hqChart.Draw();
-      }
+      if (!this.chart) return;
+      this.chart.scrollToRealTime(0);
     }
 
-    // --- Coordinate conversions for TP/SL and Overlay Badges ---
+    // --- Coordinate conversions for TP/SL and Drawings ---
     priceToCoordinate(price, paneHeight = null) {
-      const p = Number(price);
-      if (!p || p <= 0) return null;
+      if (!this.chart || !(Number(price) > 0)) return null;
       try {
-        if (this.hqChart?.Frame?.SubFrame?.[0]?.Frame) {
-          const frame = this.hqChart.Frame.SubFrame[0].Frame;
-          const y = frame.GetYFromData ? frame.GetYFromData(p, false) : null;
-          if (Number.isFinite(y)) {
-            const totalH = this.container?.clientHeight || 420;
-            const maxH = paneHeight || (totalH - 30);
-            if (y < 0 || y > maxH) return { offscreen: true, coord: y };
-            return { offscreen: false, y: Math.round(y) };
-          }
+        const coord = this.chart.convertToPixel({ value: Number(price) }, { paneId: 'candle_pane', absolute: true });
+        if (!coord || !Number.isFinite(coord.y)) return null;
+        const totalHeight = this.container?.clientHeight || 420;
+        const limitHeight = paneHeight || (totalHeight - 30);
+        if (coord.y < 0 || coord.y > limitHeight) {
+          return { offscreen: true, coord: coord.y };
         }
-      } catch {}
-
-      // Fallback coordinate mapping from candle history min/max
-      if (this.candleHistory.length > 0) {
-        let min = Infinity, max = -Infinity;
-        this.candleHistory.forEach(c => {
-          if (c.low < min) min = c.low;
-          if (c.high > max) max = c.high;
-        });
-        if (max > min) {
-          const totalH = this.container?.clientHeight || 420;
-          const pad = 30;
-          const usable = totalH - pad * 2;
-          const y = pad + (1 - (p - min) / (max - min)) * usable;
-          if (y < 0 || y > totalH) return { offscreen: true, coord: y };
-          return { offscreen: false, y: Math.round(y) };
-        }
+        return { offscreen: false, y: Math.round(coord.y) };
+      } catch {
+        return null;
       }
-      return null;
     }
 
     coordinateToPrice(y) {
-      const yNum = Number(y);
-      if (!Number.isFinite(yNum)) return null;
+      if (!this.chart || !Number.isFinite(y)) return null;
       try {
-        if (this.hqChart?.Frame?.SubFrame?.[0]?.Frame) {
-          const frame = this.hqChart.Frame.SubFrame[0].Frame;
-          const top = frame.ChartBorder?.GetTopEx?.() || 0;
-          const bottom = frame.ChartBorder?.GetBottomEx?.() || (this.container?.clientHeight || 420);
-          const min = frame.HorizontalMin;
-          const max = frame.HorizontalMax;
-          if (max > min && bottom > top) {
-            const ratio = (bottom - yNum) / (bottom - top);
-            return min + ratio * (max - min);
-          }
-        }
-      } catch {}
-      return null;
+        const pt = this.chart.convertFromPixel({ y: Number(y) }, { paneId: 'candle_pane', absolute: true });
+        return pt?.value ? Number(pt.value) : null;
+      } catch {
+        return null;
+      }
     }
 
     timeToCoordinate(timeSec) {
-      const t = Number(timeSec);
-      if (!t || this.candleHistory.length === 0) return null;
-      const idx = this.candleHistory.findIndex(c => Math.abs(c.time - t) < 30);
-      if (idx >= 0) {
-        const totalW = this.container?.clientWidth || 380;
-        const step = totalW / Math.max(this.candleHistory.length, 1);
-        return Math.round(idx * step);
+      if (!this.chart || !(Number(timeSec) > 0)) return null;
+      try {
+        const tsMs = timeSec > 1e11 ? timeSec : timeSec * 1000;
+        const coord = this.chart.convertToPixel({ timestamp: tsMs }, { paneId: 'candle_pane', absolute: true });
+        return coord?.x ? Math.round(coord.x) : null;
+      } catch {
+        return null;
       }
-      return null;
     }
 
     coordinateToTime(x) {
-      const xNum = Number(x);
-      if (!Number.isFinite(xNum) || this.candleHistory.length === 0) return null;
-      const totalW = this.container?.clientWidth || 380;
-      const ratio = Math.max(0, Math.min(1, xNum / totalW));
-      const idx = Math.floor(ratio * (this.candleHistory.length - 1));
-      return this.candleHistory[idx]?.time || null;
+      if (!this.chart || !Number.isFinite(x)) return null;
+      try {
+        const pt = this.chart.convertFromPixel({ x: Number(x) }, { paneId: 'candle_pane', absolute: true });
+        return pt?.timestamp ? Math.floor(pt.timestamp / 1000) : null;
+      } catch {
+        return null;
+      }
     }
 
     // --- Indicator Management ---
     createIndicator(name, isStack = null, paneOptions = {}, calcParams = null) {
+      if (!this.chart) return null;
       const meta = INDICATOR_REGISTRY[name];
       if (!meta) return null;
-      const id = `ind_${name}_${Date.now()}`;
-      this.activeIndicators.set(name, {
-        id,
-        name,
-        isStack: isStack !== null ? isStack : meta.isStack,
-        params: calcParams || meta.defaultParams,
-      });
 
-      if (this.chart) {
-        try {
-          if (meta.isStack && typeof this.chart.ChangeIndex === 'function') {
-            this.chart.ChangeIndex(0, name);
-          } else if (typeof this.chart.AddIndexWindow === 'function') {
-            this.chart.AddIndexWindow(name);
-          }
-        } catch (e) {
-          console.warn('HQChart ChangeIndex error:', e);
-        }
+      const stack = isStack !== null ? isStack : meta.isStack;
+      const targetPane = stack ? 'candle_pane' : (paneOptions.id || null);
+
+      const indConfig = {
+        name,
+        paneId: targetPane,
+      };
+      if (Array.isArray(calcParams)) {
+        indConfig.calcParams = calcParams;
+      }
+
+      const id = this.chart.createIndicator(indConfig, stack, paneOptions);
+      if (id) {
+        this.activeIndicators.set(name, { id, name, isStack: stack, paneId: targetPane, params: calcParams || meta.defaultParams });
       }
       return id;
     }
 
     removeIndicator(name) {
-      if (!this.activeIndicators.has(name)) return false;
+      if (!this.chart) return false;
+      const entry = this.activeIndicators.get(name);
+      if (!entry) return false;
+      const removed = this.chart.removeIndicator({ name });
       this.activeIndicators.delete(name);
-      if (this.chart && typeof this.chart.DeleteIndexWindow === 'function') {
-        try { this.chart.DeleteIndexWindow(name); } catch {}
-      }
-      return true;
+      return removed;
     }
 
     overrideIndicator(name, calcParams) {
-      if (!this.activeIndicators.has(name) || !Array.isArray(calcParams)) return false;
+      if (!this.chart || !Array.isArray(calcParams)) return false;
       const entry = this.activeIndicators.get(name);
+      if (!entry) return false;
+      const res = this.chart.overrideIndicator({
+        name,
+        calcParams,
+      });
       entry.params = calcParams;
-      return true;
+      return res;
     }
 
     getIndicators() {
-      return Array.from(this.activeIndicators.values());
+      if (!this.chart) return [];
+      return this.chart.getIndicators() || [];
     }
 
-    // --- TradingView Left Vertical Toolbar & Overlay Management ---
     setDrawingTool(toolId) {
+      if (!this.chart) return;
+      this.activeTool = toolId;
       const toolMap = {
-        cursor: 'cursor',
-        trendline: '趋势线',
-        ray: '射线',
-        hline: '水平线',
-        channel: '价格通道线',
-        fib: '黄金分割',
-        rect: '矩形',
-        text: '文本',
-        eraser: 'eraser',
-        magnet: 'magnet',
-        lock: 'lock',
-        trash: 'trash',
+        cursor: null,
+        trendline: 'straightLine',
+        ray: 'rayLine',
+        hline: 'horizontalStraightLine',
+        channel: 'parallelStraightLine',
+        fib: 'fibonacciLine',
+        rect: 'rectZone',
+        text: 'simpleAnnotation',
       };
-
       if (toolId === 'cursor') {
-        this.eraseActive = false;
-        if (this.hqChart) {
-          this.hqChart.EnableEraseChartDrawPicture = false;
-          if (typeof this.hqChart.ClearCurrnetDrawPicture === 'function') {
-            this.hqChart.ClearCurrnetDrawPicture();
-          }
-        }
         return;
       }
-
       if (toolId === 'trash') {
         this.clearAllOverlays();
         return;
       }
-
       if (toolId === 'eraser') {
-        this.eraseActive = !this.eraseActive;
-        if (this.hqChart) {
-          this.hqChart.EnableEraseChartDrawPicture = this.eraseActive;
+        const overlays = this.getOverlays();
+        if (overlays.length > 0) {
+          this.removeOverlay(overlays[overlays.length - 1].id);
         }
         return;
       }
-
-      if (toolId === 'magnet') {
-        this.magnetActive = !this.magnetActive;
-        if (this.hqChart && typeof this.hqChart.SetChartDrawOption === 'function') {
-          this.hqChart.SetChartDrawOption({ Magnet: { Enable: this.magnetActive, Type: 0 } });
-        }
-        return;
-      }
-
       if (toolId === 'lock') {
-        this.lockActive = !this.lockActive;
+        this.isLocked = !this.isLocked;
+        const overlays = this.getOverlays();
+        overlays.forEach((o) => {
+          try {
+            if (typeof this.chart.overrideOverlay === 'function') {
+              this.chart.overrideOverlay({ id: o.id, lock: this.isLocked });
+            }
+          } catch {}
+        });
         return;
       }
-
-      const hqName = toolMap[toolId] || toolId;
-      if (this.hqChart && typeof this.hqChart.CreateChartDrawPicture === 'function') {
-        try {
-          this.hqChart.CreateChartDrawPicture(hqName);
-        } catch (e) {
-          console.warn('CreateChartDrawPicture error:', e);
-        }
+      if (toolId === 'magnet') {
+        this.magnetMode = !this.magnetMode;
+        return;
       }
+      const overlayName = toolMap[toolId] || toolId;
+      this.createOverlay(overlayName);
     }
 
+    zoomIn() {
+      if (!this.chart) return;
+      try {
+        if (typeof this.chart.zoomAtCoordinate === 'function') {
+          this.chart.zoomAtCoordinate(0.2, { x: 200, y: 150 });
+        }
+      } catch {}
+    }
+
+    zoomOut() {
+      if (!this.chart) return;
+      try {
+        if (typeof this.chart.zoomAtCoordinate === 'function') {
+          this.chart.zoomAtCoordinate(-0.2, { x: 200, y: 150 });
+        }
+      } catch {}
+    }
+
+    // --- Drawing Overlay Management ---
     createOverlay(type, options = {}) {
-      const id = `draw_${type}_${Date.now()}`;
-      const action = { action: 'create', id, overlayDef: { name: type, ...options } };
-      this.pushDrawingAction(action);
-      this.setDrawingTool(type);
+      if (!this.chart) return null;
+      const overlayDef = {
+        name: type,
+        lock: Boolean(options.lock),
+        visible: options.visible !== false,
+        points: options.points || [],
+      };
+      if (options.styles) {
+        overlayDef.styles = options.styles;
+      }
+      const id = this.chart.createOverlay(overlayDef);
+      if (id && !options.skipHistory) {
+        this.pushDrawingAction({ action: 'create', id, overlayDef });
+      }
       return id;
     }
 
     removeOverlay(id) {
-      const action = { action: 'remove', id };
-      this.pushDrawingAction(action);
-      return true;
+      if (!this.chart || !id) return false;
+      const overlays = this.chart.getOverlays() || [];
+      const target = overlays.find((o) => o.id === id);
+      if (target) {
+        this.pushDrawingAction({ action: 'remove', id, overlayDef: { ...target } });
+      }
+      return this.chart.removeOverlay(id);
     }
 
     clearAllOverlays() {
-      this.pushDrawingAction({ action: 'clear' });
-      if (this.hqChart && typeof this.hqChart.ClearChartDrawPicture === 'function') {
-        try {
-          this.hqChart.ClearChartDrawPicture();
-        } catch {}
+      if (!this.chart) return;
+      const overlays = this.chart.getOverlays() || [];
+      if (overlays.length > 0) {
+        this.pushDrawingAction({ action: 'clear', overlays: overlays.map((o) => ({ ...o })) });
       }
-      const svg = document.getElementById('drawing-svg-layer');
-      if (svg) svg.innerHTML = '';
+      this.chart.removeOverlay();
     }
 
     getOverlays() {
-      return [];
+      if (!this.chart) return [];
+      return this.chart.getOverlays() || [];
     }
 
     pushDrawingAction(action) {
@@ -943,41 +1224,66 @@
       if (this.undoStack.length > this.drawingHistoryLimit) {
         this.undoStack.shift();
       }
-      this.redoStack = [];
+      this.redoStack = []; // Clear redo stack on new action
     }
 
     undoDrawing() {
-      if (this.undoStack.length === 0) return false;
+      if (!this.chart || this.undoStack.length === 0) return false;
       const action = this.undoStack.pop();
-      this.redoStack.push(action);
-      return true;
+      if (action.action === 'create') {
+        this.chart.removeOverlay(action.id);
+        this.redoStack.push(action);
+        return true;
+      } else if (action.action === 'remove') {
+        const newId = this.chart.createOverlay(action.overlayDef);
+        action.id = newId;
+        this.redoStack.push(action);
+        return true;
+      } else if (action.action === 'clear') {
+        (action.overlays || []).forEach((o) => this.chart.createOverlay(o));
+        this.redoStack.push(action);
+        return true;
+      }
+      return false;
     }
 
     redoDrawing() {
-      if (this.redoStack.length === 0) return false;
+      if (!this.chart || this.redoStack.length === 0) return false;
       const action = this.redoStack.pop();
-      this.undoStack.push(action);
-      return true;
+      if (action.action === 'create') {
+        const newId = this.chart.createOverlay(action.overlayDef);
+        action.id = newId;
+        this.undoStack.push(action);
+        return true;
+      } else if (action.action === 'remove') {
+        this.chart.removeOverlay(action.id);
+        this.undoStack.push(action);
+        return true;
+      } else if (action.action === 'clear') {
+        this.chart.removeOverlay();
+        this.undoStack.push(action);
+        return true;
+      }
+      return false;
     }
 
     destroy() {
-      if (this.chart) {
-        try {
-          if (typeof this.chart.Destroy === 'function') this.chart.Destroy();
-        } catch {}
-      }
+      if (!this.chart) return;
+      try {
+        if (global.klinecharts && typeof global.klinecharts.dispose === 'function') {
+          global.klinecharts.dispose(this.container || 'tv-main-chart');
+        } else if (typeof this.chart.destroy === 'function') {
+          this.chart.destroy();
+        }
+      } catch {}
       this.chart = null;
-      this.hqChart = null;
       this.activeIndicators.clear();
-      this.candleHistory = [];
+      this.tickSubscriber = null;
     }
   }
 
-  // Alias for backward-compatibility with previous adapter callers & test suites
-  const KLineChartAdapter = HQChartAdapter;
-
   // =========================================================================
-  // UNIFIED SIKHO CHART ADAPTER MANAGER
+  // 4. UNIFIED SIKHO CHART ADAPTER MANAGER
   // =========================================================================
   const SikhoChartAdapter = {
     INDICATOR_REGISTRY,
@@ -986,24 +1292,24 @@
     getEngine() {
       try {
         const stored = localStorage.getItem(STORAGE_KEY_ENGINE);
-        if (stored === 'lightweight') return 'lightweight';
-        if (stored === 'hqchart' || stored === 'klinechart') return 'hqchart';
+        if (stored === 'lightweight' || stored === 'klinechart') return stored;
       } catch {}
       return DEFAULT_ENGINE;
     },
 
     setEngine(engine) {
-      const normalized = (engine === 'klinechart' || engine === 'hqchart') ? 'hqchart' : 'lightweight';
+      if (engine !== 'klinechart' && engine !== 'lightweight') return;
       try {
-        localStorage.setItem(STORAGE_KEY_ENGINE, normalized);
+        localStorage.setItem(STORAGE_KEY_ENGINE, engine);
       } catch {}
     },
 
     createAdapter(engine = null) {
       const active = engine || this.getEngine();
-      if (active === 'hqchart' || active === 'klinechart') {
-        return new HQChartAdapter();
+      if (active === 'klinechart') {
+        return new KLineChartAdapter();
       }
+      // Lightweight charts fallback adapter
       return null;
     },
 
@@ -1014,6 +1320,7 @@
         const raw = localStorage.getItem(key);
         if (raw) return JSON.parse(raw);
       } catch {}
+      // Defaults: BOLL and RSI
       return {
         active: ['BOLL', 'RSI'],
         params: {
@@ -1048,7 +1355,6 @@
     },
   };
 
+  // Expose to window / global
   global.SikhoChartAdapter = SikhoChartAdapter;
-  global.HQChartAdapter = HQChartAdapter;
-  global.KLineChartAdapter = KLineChartAdapter;
 })(typeof window !== 'undefined' ? window : globalThis);

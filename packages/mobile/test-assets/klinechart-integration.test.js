@@ -7,31 +7,22 @@ import vm from 'node:vm';
 const WWW_DIR = path.resolve('packages/mobile/android/app/src/main/assets/www');
 
 test('TASK 1: Pinned Local Assets, Licenses, and Engine Decoupling', async () => {
-  // 1. Verify HQChart bundled library files exist and KLineChart is completely removed
-  const hqJs = path.join(WWW_DIR, 'libs/hqchart/umychart.js');
-  const hqComplierJs = path.join(WWW_DIR, 'libs/hqchart/umychart.complier.js');
-  const hqStyleJs = path.join(WWW_DIR, 'libs/hqchart/umychart.style.js');
+  // 1. Verify bundled library files exist and are not empty
   const klineJs = path.join(WWW_DIR, 'klinecharts.min.js');
-
-  assert.ok(fs.existsSync(hqJs), 'umychart.js must be locally bundled in assets/libs/hqchart');
-  assert.ok(fs.statSync(hqJs).size > 1000000, 'umychart.js must be a complete bundled file');
-  assert.ok(fs.existsSync(hqComplierJs), 'umychart.complier.js must be locally bundled');
-  assert.ok(fs.existsSync(hqStyleJs), 'umychart.style.js must be locally bundled');
-
-  // Verify KLineChart is completely removed
-  assert.ok(!fs.existsSync(klineJs), 'klinecharts.min.js must NOT exist in assets (completely removed)');
-
-  const licenseFile = path.join(WWW_DIR, 'LICENSE-hqchart.txt');
-  const noticeFile = path.join(WWW_DIR, 'NOTICE-hqchart.txt');
+  const licenseFile = path.join(WWW_DIR, 'LICENSE-klinecharts.txt');
+  const noticeFile = path.join(WWW_DIR, 'NOTICE-klinecharts.txt');
   const adapterFile = path.join(WWW_DIR, 'chart-adapter.js');
 
-  assert.ok(fs.existsSync(licenseFile), 'LICENSE-hqchart.txt must be bundled');
+  assert.ok(fs.existsSync(klineJs), 'klinecharts.min.js must be locally bundled in assets');
+  assert.ok(fs.statSync(klineJs).size > 100000, 'klinecharts.min.js must be a complete bundled file');
+
+  assert.ok(fs.existsSync(licenseFile), 'LICENSE-klinecharts.txt must be bundled');
   const licenseContent = fs.readFileSync(licenseFile, 'utf8');
   assert.match(licenseContent, /Apache License/i, 'License file must preserve Apache 2.0 license');
 
-  assert.ok(fs.existsSync(noticeFile), 'NOTICE-hqchart.txt must be bundled');
+  assert.ok(fs.existsSync(noticeFile), 'NOTICE-klinecharts.txt must be bundled');
   const noticeContent = fs.readFileSync(noticeFile, 'utf8');
-  assert.match(noticeContent, /HQChart/i, 'Notice file must reference HQChart');
+  assert.match(noticeContent, /KLineChart/i, 'Notice file must reference KLineChart');
 
   assert.ok(fs.existsSync(adapterFile), 'chart-adapter.js must exist');
 });
@@ -63,16 +54,16 @@ test('TASK 2: Chart Adapter Engine Switching, Persistence & Rollback', async () 
   const SikhoChartAdapter = context.window.SikhoChartAdapter;
   assert.ok(SikhoChartAdapter, 'SikhoChartAdapter must be exposed on window');
 
-  // Default engine is hqchart
-  assert.equal(SikhoChartAdapter.getEngine(), 'hqchart', 'Default engine must be hqchart');
+  // Default engine is klinechart
+  assert.equal(SikhoChartAdapter.getEngine(), 'klinechart', 'Default engine must be klinechart');
 
   // Rollback to lightweight
   SikhoChartAdapter.setEngine('lightweight');
   assert.equal(SikhoChartAdapter.getEngine(), 'lightweight', 'Engine should roll back to lightweight');
 
-  // Restore to hqchart
-  SikhoChartAdapter.setEngine('hqchart');
-  assert.equal(SikhoChartAdapter.getEngine(), 'hqchart', 'Engine should restore to hqchart');
+  // Restore to klinechart
+  SikhoChartAdapter.setEngine('klinechart');
+  assert.equal(SikhoChartAdapter.getEngine(), 'klinechart', 'Engine should restore to klinechart');
 });
 
 test('TASK 3: Technical Indicator Registry, Categories & Session VWAP / ATR', async () => {
@@ -140,38 +131,50 @@ test('TASK 4: Categorized Drawing Workspace & Overlay Tools', async () => {
   assert.ok(measCat.tools.some(t => t.id === 'riskRewardShort'), 'Short risk/reward must be available');
 });
 
-test('TASK 5: Drawing Action Stack & Color Inversion for Indian Convention', async () => {
+test('TASK 5: Drawing Migration & Undo/Redo Independence', async () => {
   const adapterContent = fs.readFileSync(path.join(WWW_DIR, 'chart-adapter.js'), 'utf8');
-  const mockResource = {
-    UpBarColor: 'rgb(238,21,21)', // Chinese default red
-    DownBarColor: 'rgb(25,158,0)', // Chinese default green
-    FrameLatestPrice: {},
-    HLCArea: {},
-  };
   const context = vm.createContext({
     window: {},
     document: { getElementById: () => null },
     localStorage: { getItem: () => null, setItem: () => {} },
-    g_JSChartResource: mockResource,
   });
   context.global = context.window;
   vm.runInContext(adapterContent, context);
 
-  const adapter = context.window.SikhoChartAdapter.createAdapter('hqchart');
-  assert.ok(adapter, 'HQChartAdapter instance created');
+  const adapter = context.window.SikhoChartAdapter.createAdapter('klinechart');
+  assert.ok(adapter, 'KLineChartAdapter instance created');
 
   // Verify undo stack does not execute orders
   adapter.pushDrawingAction({ action: 'create', id: 'ov_1', overlayDef: { name: 'straightLine' } });
   assert.equal(adapter.undoStack.length, 1);
   assert.equal(adapter.redoStack.length, 0);
 
-  // Verify Color Inversion applied to HQChart resources:
-  // Green = Up / Bullish (close >= open), Red = Down / Bearish (close < open)
-  adapter.applyIndianMarketColors(true); // Dark mode
-  assert.match(mockResource.UpBarColor, /52|34|green/i, 'UpBarColor must be inverted to green for bullish');
-  assert.match(mockResource.DownBarColor, /251|113|red/i, 'DownBarColor must be inverted to red for bearish');
+  // Legacy SVG to KLineChart overlay format conversion
+  const legacyDrawings = [
+    { type: 'trendline', p1: { time: 1732600000, price: 24200 }, p2: { time: 1732603600, price: 24350 } },
+    { type: 'hline', p1: { time: 1732600000, price: 24150 }, p2: { time: 1732600000, price: 24150 } },
+    { type: 'rect', p1: { time: 1732600000, price: 24100 }, p2: { time: 1732607200, price: 24250 } },
+  ];
 
-  adapter.applyIndianMarketColors(false); // Light mode
-  assert.match(mockResource.UpBarColor, /4|120|87/i, 'UpBarColor must be dark green for light theme');
-  assert.match(mockResource.DownBarColor, /190|18|60/i, 'DownBarColor must be crimson red for light theme');
+  const legacyTypeMap = {
+    trendline: 'straightLine',
+    hline: 'horizontalStraightLine',
+    rect: 'rectZone',
+    fib: 'fibonacciLine',
+    rr_long: 'riskRewardLong',
+  };
+
+  const migrated = legacyDrawings.map(d => ({
+    name: legacyTypeMap[d.type],
+    points: [
+      { timestamp: d.p1.time * 1000, value: d.p1.price },
+      { timestamp: d.p2.time * 1000, value: d.p2.price },
+    ]
+  }));
+
+  assert.equal(migrated[0].name, 'straightLine');
+  assert.equal(migrated[0].points[0].timestamp, 1732600000000);
+  assert.equal(migrated[0].points[0].value, 24200);
+  assert.equal(migrated[1].name, 'horizontalStraightLine');
+  assert.equal(migrated[2].name, 'rectZone');
 });

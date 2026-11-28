@@ -1,7 +1,0 @@
-HQChart
-Copyright (c) 2018-2024 jones (jones_2000@163.com)
-https://github.com/jones2000/HQChart
-
-This product includes software developed under the Apache License 2.0.
-Integrated as chart rendering engine in Sikho Trading mobile application.
-Candlestick and volume color conventions adapted for Indian market standards (Green = Up, Red = Down).

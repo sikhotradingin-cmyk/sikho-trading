@@ -125,27 +125,17 @@
     if (typeof window !== 'undefined') window.activeChartAdapter = adp;
   }
   function ensureChartLibrary() {
-    if (window.JSChart || window.LightweightCharts) return Promise.resolve();
+    if (window.klinecharts || window.LightweightCharts) return Promise.resolve();
     if (!chartLibraryPromise) {
       chartLibraryPromise = new Promise((resolve, reject) => {
         const script = document.createElement('script');
-        script.src = 'libs/hqchart/umychart.js';
+        script.src = 'klinecharts.min.js';
         script.onload = () => {
-          const complierScript = document.createElement('script');
-          complierScript.src = 'libs/hqchart/umychart.complier.js';
-          complierScript.onload = () => {
-            const styleScript = document.createElement('script');
-            styleScript.src = 'libs/hqchart/umychart.style.js';
-            styleScript.onload = () => {
-              const adapterScript = document.createElement('script');
-              adapterScript.src = 'chart-adapter.js';
-              adapterScript.onload = resolve;
-              adapterScript.onerror = resolve;
-              document.head.appendChild(adapterScript);
-            };
-            document.head.appendChild(styleScript);
-          };
-          document.head.appendChild(complierScript);
+          const adapterScript = document.createElement('script');
+          adapterScript.src = 'chart-adapter.js';
+          adapterScript.onload = resolve;
+          adapterScript.onerror = resolve;
+          document.head.appendChild(adapterScript);
         };
         script.onerror = () => {
           const lwScript = document.createElement('script');
@@ -3629,8 +3619,8 @@
   }
   function initLightweightChartInstance() {
     const container = document.getElementById('tv-main-chart');
-    const isHqEngine = typeof SikhoChartAdapter !== 'undefined' &&
-      (SikhoChartAdapter.getEngine() === 'hqchart' || SikhoChartAdapter.getEngine() === 'klinechart');
+    const isKlineEngine = typeof SikhoChartAdapter !== 'undefined' &&
+      SikhoChartAdapter.getEngine() === 'klinechart';
 
     const currentAdp = (typeof getActiveChartAdapter === 'function') ? getActiveChartAdapter() : (typeof window !== 'undefined' ? window.activeChartAdapter : null);
     if (currentAdp) {
@@ -3646,7 +3636,7 @@
       return;
     }
 
-    if (tvChart && !isHqEngine) {
+    if (tvChart && !isKlineEngine) {
       const targetKey = (state.activeInstrument?.globalId || '') + ':' + (state.activeTimeframe || '5m');
       if (state.chartDataKey !== targetKey) {
         state.candles=[]; candleSeries.setData([]);
@@ -3668,8 +3658,8 @@
 
     if (container) container.innerHTML = '';
 
-    if (isHqEngine) {
-      setActiveChartAdapter(SikhoChartAdapter.createAdapter('hqchart'));
+    if (isKlineEngine) {
+      setActiveChartAdapter(SikhoChartAdapter.createAdapter('klinechart'));
       activeChartAdapter.init(container, {
         isDark: resolveEffectiveTheme() === 'dark',
         onCrosshair: (param) => {
@@ -4653,11 +4643,11 @@
   function toggleChartEngineRollback() {
     if (typeof SikhoChartAdapter === 'undefined') return;
     const current = SikhoChartAdapter.getEngine();
-    const next = current === 'hqchart' ? 'lightweight' : 'hqchart';
+    const next = current === 'klinechart' ? 'lightweight' : 'klinechart';
     SikhoChartAdapter.setEngine(next);
 
     const badge = document.getElementById('chart-engine-badge');
-    if (badge) badge.textContent = `Engine: ${next === 'hqchart' ? 'HQChart' : 'Lightweight (Rollback)'}`;
+    if (badge) badge.textContent = `Engine: ${next === 'klinechart' ? 'KLineChart' : 'Lightweight (Rollback)'}`;
 
     const rollAdp = (typeof getActiveChartAdapter === 'function') ? getActiveChartAdapter() : null;
     if (rollAdp) {
@@ -4672,7 +4662,7 @@
     if (state.candles && state.candles.length > 0) {
       candleSeries.setData(state.candles);
     }
-    showBrandedAlert('Chart Engine Changed', `Switched to ${next === 'hqchart' ? 'HQChart' : 'Lightweight Charts (Fallback)'}.`);
+    showBrandedAlert('Chart Engine Changed', `Switched to ${next === 'klinechart' ? 'KLineChart' : 'Lightweight Charts (Fallback)'}.`);
   }
 
   function selectLeftDrawingTool(toolId) {
