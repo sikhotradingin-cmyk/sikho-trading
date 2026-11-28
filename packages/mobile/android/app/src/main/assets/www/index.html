@@ -142,7 +142,7 @@
         </div>
       </header>
 
-      <div id="launch-access-label" class="launch-label" hidden></div>
+      <div id="launch-access-label" class="launch-label" hidden style="display:none;"></div>
       <div id="app-connectivity-banner" class="app-status-banner" role="status" aria-live="polite" hidden></div>
       <!-- Persistent Benchmark Index Strip -->
       <div id="benchmark-index-strip" class="index-strip-bar"></div>
@@ -236,10 +236,10 @@
       <!-- TAB 3: PORTFOLIO (Holdings | Positions | History) -->
       <main id="tab-portfolio" class="white-content-scroll" style="display:none;">
         <div class="dark-summary-card">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-            <div>
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:8px;">
+            <div style="min-width:0;flex:1;">
               <div class="summary-label">TOTAL VIRTUAL EQUITY</div>
-              <div id="port-total-equity" class="summary-big-val">₹1,00,000.00</div>
+              <div id="port-total-equity" class="summary-big-val" style="word-break:break-word;">₹1,00,000.00</div>
             </div>
             <span class="paper-badge-header">PRACTICE PORTFOLIO</span>
           </div>
@@ -274,21 +274,9 @@
         <div id="portfolio-list-container"></div>
       </main>
 
-      <!-- TAB 4: ORDERS (Pending | Executed | Cancelled | Rejected) -->
-      <main id="tab-orders" class="white-content-scroll" style="display:none;">
-        <div class="filter-chips-scroll">
-          <button class="filter-chip active" onclick="window.TZApp.setOrdersFilter('ALL', this)">All Orders</button>
-          <button class="filter-chip" onclick="window.TZApp.setOrdersFilter('PENDING', this)">Pending</button>
-          <button class="filter-chip" onclick="window.TZApp.setOrdersFilter('EXECUTED', this)">Executed</button>
-          <button class="filter-chip" onclick="window.TZApp.setOrdersFilter('CANCELLED', this)">Cancelled</button>
-          <button class="filter-chip" onclick="window.TZApp.setOrdersFilter('REJECTED', this)">Rejected</button>
-        </div>
-        <div id="orders-list-container"></div>
-      </main>
+      <div id="tab-orders" style="display:none;"></div>
 
-      <main id="tab-history" class="white-content-scroll" style="display:none;"></main>
-
-      <!-- TAB 5: PROFILE & PRACTICE PERFORMANCE (Shared Theme System) -->
+      <!-- TAB 4: PROFILE & PRACTICE PERFORMANCE (Shared Theme System) -->
       <main id="tab-profile" class="white-content-scroll" style="display:none;">
         <!-- Clean User Identity Header -->
         <div class="profile-header-card">
@@ -301,21 +289,12 @@
               </div>
             </div>
             <!-- Subscription Tier Badge -->
-            <div id="prof-tier-badge-container">
+            <div id="prof-tier-badge-container" style="display:none;">
               <span id="prof-tier-badge" class="tier-pill-free">FREE PLAN</span>
             </div>
           </div>
-
-          <!-- Subscription Banner / Upgrade CTA -->
-          <div id="prof-sub-banner" class="profile-sub-banner">
-            <div>
-              <div id="prof-sub-title" class="profile-sub-title">Sikho Trading Free Tier</div>
-              <div id="prof-sub-desc" class="profile-sub-desc">NIFTY &amp; BANKNIFTY Futures &amp; Options Practice</div>
-            </div>
-            <button id="prof-btn-manage-sub" class="btn-lime-primary" style="width:auto;min-height:34px;padding:0 14px;font-size:12px;" onclick="window.TZApp.openSubscriptionPlansModal()">
-              Upgrade ➔
-            </button>
-          </div>
+          <!-- Subscription Banner / Upgrade CTA (Hidden for Clean Profile) -->
+          <div id="prof-sub-banner" class="profile-sub-banner" style="display:none;"></div>
         </div>
 
         <!-- Practice Capital & Session Metrics Card -->
@@ -346,6 +325,30 @@
               <div class="summary-label">Session Win Rate</div>
               <div id="prof-session-winrate" class="summary-sub-val">0.0%</div>
             </div>
+          </div>
+        </div>
+
+        <!-- Unified Orders & Trade History Section -->
+        <div class="profile-surface-card" style="margin:0 16px 14px;border-radius:14px;padding:16px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+            <div class="section-title-dark" style="font-size:13px;text-transform:uppercase;letter-spacing:0.5px;">Orders &amp; Trade History</div>
+          </div>
+          <div class="segmented-pill-group" style="width:100%;display:grid;grid-template-columns:repeat(2,1fr);margin-bottom:14px;">
+            <button id="prof-btn-sub-orders" class="seg-pill-btn active" onclick="window.TZApp.switchProfileSubTab('orders')">Orders</button>
+            <button id="prof-btn-sub-history" class="seg-pill-btn" onclick="window.TZApp.switchProfileSubTab('history')">Trade History</button>
+          </div>
+          <div id="prof-subview-orders">
+            <div class="filter-chips-scroll" style="margin:0 0 10px 0;padding:0;">
+              <button class="filter-chip active" onclick="window.TZApp.setOrdersFilter('ALL', this)">All Orders</button>
+              <button class="filter-chip" onclick="window.TZApp.setOrdersFilter('PENDING', this)">Pending</button>
+              <button class="filter-chip" onclick="window.TZApp.setOrdersFilter('EXECUTED', this)">Executed</button>
+              <button class="filter-chip" onclick="window.TZApp.setOrdersFilter('CANCELLED', this)">Cancelled</button>
+              <button class="filter-chip" onclick="window.TZApp.setOrdersFilter('REJECTED', this)">Rejected</button>
+            </div>
+            <div id="orders-list-container"></div>
+          </div>
+          <div id="prof-subview-history" style="display:none;">
+            <div id="tab-history"></div>
           </div>
         </div>
 
@@ -451,7 +454,7 @@
       <!-- Native Banner Ad Reserved Space (Directly above Bottom Navigation) -->
       <div id="native-ad-banner-spacer" style="display:none;width:100%;height:50px;background:#080C12;border-top:1px solid rgba(255,255,255,0.06);flex-shrink:0;"></div>
 
-      <!-- Bottom Navigation Bar (5 Tabs, SVG Icons) -->
+      <!-- Bottom Navigation Bar (4 Tabs: Markets, Watchlists, Portfolio, Profile) -->
       <nav class="bottom-nav-bar">
         <button id="nav-btn-explore" class="nav-tab-btn active" onclick="window.TZApp.switchMainTab('explore')">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -471,13 +474,6 @@
           </svg>
           <span>Portfolio</span>
         </button>
-        <button id="nav-btn-orders" class="nav-tab-btn" onclick="window.TZApp.switchMainTab('orders')">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
-          </svg>
-          <span>Orders</span>
-        </button>
-<button id="nav-btn-history" class="nav-tab-btn" onclick="window.TZApp.switchMainTab('history')"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 5h16v16H4zM8 2v6m8-6v6M8 12h8m-8 4h5"/></svg><span>History</span></button>
         <button id="nav-btn-profile" class="nav-tab-btn" onclick="window.TZApp.switchMainTab('profile')">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
@@ -1187,7 +1183,7 @@
             <button type="button" class="btn-lime-primary" style="width:auto;min-height:46px;padding:0 14px;font-size:13px;font-weight:700;" onclick="window.TZApp.applyCustomCapital()">Set</button>
           </div>
           <div id="custom-capital-preview" style="font-size:13px;font-weight:700;color:var(--positive-text);margin-top:5px;min-height:18px;">Virtual capital: ₹1,00,000</div>
-          <div id="custom-capital-tier-hint" style="font-size:11.5px;color:var(--text-secondary);margin-top:2px;">Free tier: ₹1,00,000 to ₹20,00,000 • Pro / Free Launch: up to ₹10 Crore</div>
+          <div id="custom-capital-tier-hint" style="font-size:11.5px;color:var(--text-secondary);margin-top:2px;">Free tier: ₹1,00,000 to ₹20,00,000 • Pro: up to ₹10 Crore</div>
         </div>
 
         <div style="margin:14px 0;padding:12px;border-radius:12px;background:var(--bg-elevated);border:1px solid var(--border-subtle);font-size:12px;color:var(--text-secondary);line-height:1.45;">

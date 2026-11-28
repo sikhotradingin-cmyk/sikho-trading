@@ -1505,7 +1505,9 @@
       el.hidden = false;
       return;
     }
-    if (state.token && state.wsConnected && state.feedHealth?.marketSession?.isMarketOpen && state.lastAnyTickReceiveMs && (Date.now() - state.lastAnyTickReceiveMs > 15000)) {
+    const genuinelyDelayed = Boolean(state.feedHealth?.delayed || state.feedHealth?.isDelayedQuotes || state.feedHealth?.isFallbackQuotes || state.isDelayedQuotes);
+    const staleWhenDisconnected = Boolean(!state.wsConnected && state.feedHealth?.marketSession?.isMarketOpen && state.lastAnyTickReceiveMs && (Date.now() - state.lastAnyTickReceiveMs > 15000));
+    if (state.token && (genuinelyDelayed || staleWhenDisconnected)) {
       el.className = 'app-status-banner is-stale';
       el.innerHTML = `<span>Live prices delayed — showing last received quotes.</span><button type="button" class="app-status-banner-btn" onclick="window.TZApp.retryExploreData()">Refresh</button>`;
       el.hidden = false;
@@ -1638,7 +1640,9 @@
         if (state.optionChain && !optionChainFreeAllowed(state.optionChain.underlying)) closeOptionChainModal();
       }
       state.quotesMap = new Map();
-      window.SikhoUX?.notify(policy.accessMode === 'FREE_LAUNCH' ? 'Free Launch — all features unlocked' : 'Introductory access has ended. Existing positions can still be viewed and reduced.');
+      if (policy.accessMode !== 'FREE_LAUNCH') {
+        window.SikhoUX?.notify('Introductory access has ended. Existing positions can still be viewed and reduced.');
+      }
     }
     if (modeChanged || accessChanged) {
       renderBenchmarkIndexStrip();
@@ -1649,8 +1653,9 @@
     }
     const label = document.getElementById('launch-access-label');
     if (label) {
-      label.textContent = policy.label;
-      label.hidden = policy.accessMode !== 'FREE_LAUNCH';
+      label.textContent = '';
+      label.hidden = true;
+      label.style.display = 'none';
     }
   }
   async function pollAccessPolicy() {
@@ -1887,23 +1892,33 @@
       }
     }
 
-    if(state.access?.accessMode==='FREE_LAUNCH'){
-      if(!isPro && badgeEl)badgeEl.textContent='FREE LAUNCH';
-      if(!isPro && subTitle)subTitle.textContent=state.access.label;
-      if(!isPro && subDesc)subDesc.textContent='Introductory access supported by ads. Capital changes use the approved presets.';
-      if(subBtn)subBtn.hidden=true;
-    }else if(subBtn)subBtn.hidden=false;
+    if (state.access?.accessMode === 'FREE_LAUNCH') {
+      if (badgeEl) badgeEl.style.display = 'none';
+      const subBanner = document.getElementById('prof-sub-banner');
+      if (subBanner) subBanner.style.display = 'none';
+    } else if (subBtn) subBtn.hidden = false;
+
     if (state.performance) {
-      const session=state.performance.session || state.performance.currentSession || {};
-      const lifetime=state.performance.lifetime || {};
-      const cur={...session,realizedPnlINR:Number(session.realizedPnlPaise||0)/100,winRatePercent:session.tradesCount?100*Number(session.winTradesCount||0)/session.tradesCount:0};
-      const life={...lifetime,netPnlINR:Number(lifetime.lifetimeNetTradingPnlPaise||0)/100,totalChargesINR:Number(lifetime.lifetimeChargesPaise||0)/100,totalClosedTrades:lifetime.lifetimeTradesCount||0,winRatePercent:lifetime.winRatePct||0};
+      const session = state.performance.session || state.performance.currentSession || {};
+      const lifetime = state.performance.lifetime || {};
+      const cur = {
+        ...session,
+        realizedPnlINR: Number(session.realizedPnlPaise || 0) / 100,
+        winRatePercent: session.tradesCount ? (100 * Number(session.winTradesCount || 0)) / session.tradesCount : 0
+      };
+      const life = {
+        ...lifetime,
+        netPnlINR: Number(lifetime.lifetimeNetTradingPnlPaise || lifetime.netPaise || 0) / 100,
+        totalChargesINR: Number(lifetime.lifetimeChargesPaise || lifetime.chargesPaise || 0) / 100,
+        totalClosedTrades: Number(lifetime.lifetimeTradesCount ?? lifetime.closedTrades ?? 0),
+        winRatePercent: Number(lifetime.winRatePct ?? 0)
+      };
 
       const sessPnlEl = document.getElementById('prof-session-pnl');
       if (sessPnlEl) {
         const pnl = Number(cur.realizedPnlINR || 0);
         sessPnlEl.textContent = (pnl >= 0 ? '+' : '') + fmtINR(pnl);
-        sessPnlEl.style.color = pnl >= 0 ? '#C7F542' : '#EF4444';
+        sessPnlEl.style.color = pnl >= 0 ? 'var(--positive-text)' : 'var(--negative-text)';
       }
 
       const sessWrEl = document.getElementById('prof-session-winrate');
@@ -1915,7 +1930,7 @@
       if (lifePnlEl) {
         const netPnl = Number(life.netPnlINR || 0);
         lifePnlEl.textContent = (netPnl >= 0 ? '+' : '') + fmtINR(netPnl);
-        lifePnlEl.style.color = netPnl >= 0 ? '#0F172A' : '#EF4444';
+        lifePnlEl.style.color = netPnl >= 0 ? 'var(--positive-text)' : 'var(--negative-text)';
       }
 
       const lifeChgEl = document.getElementById('prof-lifetime-charges');
@@ -2129,7 +2144,7 @@
         </svg>
         <span>Customize</span>
       </div>
-      <div class="all-indices-pill-card" onclick="window.TZApp.openAllIndicesModal()">
+      <div class="all-indices-pill-card" onclick="window.TZApp.openAllIndicesModal()" style="margin-right:16px;">
         <span>All Indices</span>
         <span style="font-size:10px;color:var(--text-on-black-secondary);">${state.indices.length}+ indices ➔</span>
       </div>
@@ -3186,6 +3201,22 @@
     return inst;
   }
 
+  function formatChartHeaderExpiry(expStr) {
+    if (!expStr) return '';
+    const s = String(expStr).trim();
+    const mDayMon = s.match(/(\d{1,2})\s*([A-Za-z]{3})/);
+    if (mDayMon) {
+      return (mDayMon[1].length === 1 ? '0' + mDayMon[1] : mDayMon[1]) + ' ' + mDayMon[2].toUpperCase();
+    }
+    const mIso = s.match(/(\d{4})-(\d{2})-(\d{2})/);
+    if (mIso) {
+      const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+      const mon = months[parseInt(mIso[2], 10) - 1] || mIso[2];
+      return mIso[3] + ' ' + mon;
+    }
+    return s;
+  }
+
   function formatChartHeaderContractIdentity(inst) {
     if (!inst) return 'Instrument';
     const sym = (inst.symbol || inst.name || inst.globalId?.split(':')[1] || 'Instrument').trim();
@@ -3196,16 +3227,26 @@
       return inst.name && inst.name.length > sym.length ? inst.name : sym;
     }
 
-    const parts = [sym];
-    if (inst.expiry && !sym.includes(inst.expiry)) {
-      parts.push(inst.expiry);
+    let expDisplay = formatChartHeaderExpiry(inst.expiry);
+    let symClean = sym;
+
+    // Check if sym has embedded date/expiry (e.g. "03 DEC 26" or "2026-12-03" or "26DEC")
+    const embeddedDateMatch = sym.match(/\s+(\d{1,2}\s+[A-Za-z]{3}(?:\s+\d{2,4})?|\d{4}-\d{2}-\d{2})\b/);
+    if (embeddedDateMatch) {
+      if (!expDisplay) expDisplay = formatChartHeaderExpiry(embeddedDateMatch[1]);
+      symClean = sym.replace(embeddedDateMatch[0], '').trim();
     }
-    if (isOption && inst.strikePrice && !sym.includes(String(inst.strikePrice))) {
-      parts.push(`₹${inst.strikePrice} ${inst.optionType || ''}`.trim());
-    } else if (isFut && !sym.includes('FUT')) {
-      parts.push('FUT');
+
+    if (isOption && inst.strikePrice && !symClean.includes(String(inst.strikePrice))) {
+      symClean = `${symClean} ${inst.strikePrice} ${inst.optionType || ''}`.trim();
+    } else if (isFut && !symClean.includes('FUT')) {
+      symClean = `${symClean} FUT`.trim();
     }
-    return parts.join(' ');
+
+    if (expDisplay) {
+      return `${symClean} · ${expDisplay}`;
+    }
+    return symClean;
   }
 
   async function openChartByGlobalId(globalId) {
@@ -5708,22 +5749,50 @@
     } catch { }
   }
 
+  function switchProfileSubTab(subTab) {
+    state.profileSubTab = subTab;
+    const btnOrders = document.getElementById('prof-btn-sub-orders');
+    const btnHistory = document.getElementById('prof-btn-sub-history');
+    const viewOrders = document.getElementById('prof-subview-orders');
+    const viewHistory = document.getElementById('prof-subview-history');
+    if (btnOrders) btnOrders.classList.toggle('active', subTab === 'orders');
+    if (btnHistory) btnHistory.classList.toggle('active', subTab === 'history');
+    if (viewOrders) viewOrders.style.display = subTab === 'orders' ? 'block' : 'none';
+    if (viewHistory) viewHistory.style.display = subTab === 'history' ? 'block' : 'none';
+    if (subTab === 'orders') {
+      window.SikhoHistory?.showOrders(apiFetch, state.ordersFilter);
+    } else if (subTab === 'history') {
+      window.SikhoHistory?.show(apiFetch);
+    }
+  }
+
   function switchMainTab(tab) {
+    if (tab === 'orders') {
+      switchMainTab('profile');
+      switchProfileSubTab('orders');
+      return;
+    }
+    if (tab === 'history') {
+      switchMainTab('profile');
+      switchProfileSubTab('history');
+      return;
+    }
     const activeTab = tab === 'markets' ? 'explore' : tab;
     const changed = state.mainTab !== activeTab;
     state.mainTab = activeTab;
     const strip=document.getElementById('benchmark-index-strip');if(strip)strip.style.display=activeTab==='explore'?'flex':'none';
-    const launch=document.getElementById('launch-access-label');if(launch)launch.style.display=activeTab==='explore'?'block':'none';
-    const tabs = ['explore', 'watchlists', 'portfolio', 'orders', 'history', 'profile'];
+    const launch=document.getElementById('launch-access-label');if(launch)launch.style.display='none';
+    const tabs = ['explore', 'watchlists', 'portfolio', 'profile'];
     tabs.forEach((t) => {
       const el = document.getElementById(`tab-${t}`);
       const btn = document.getElementById(`nav-btn-${t}`);
       if (el) el.style.display = t === activeTab ? 'block' : 'none';
       if (btn) btn.classList.toggle('active', t === activeTab);
     });
-    if(tab==='history')window.SikhoHistory?.show(apiFetch);
-    if(tab==='orders')window.SikhoHistory?.showOrders(apiFetch,state.ordersFilter);
-    if (tab === 'portfolio' || tab === 'orders' || tab === 'profile') {
+    if (activeTab === 'profile') {
+      switchProfileSubTab(state.profileSubTab || 'orders');
+    }
+    if (activeTab === 'portfolio' || activeTab === 'profile') {
       refreshAccountAndPortfolio();
     }
     syncNativeSystemBarTheme();
@@ -7962,6 +8031,7 @@
     retryExploreData:loadExploreData,
     signOut,
     switchMainTab,
+    switchProfileSubTab,
     clearCurrentWatchlist,
     setExploreCategory,
     setMarketSegment: setExploreCategory,

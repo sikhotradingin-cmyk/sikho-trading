@@ -673,32 +673,92 @@ export class PostgresRepository {
         startedAt: now,
       };
     }
-    return this.mapSession(res.rows[0]);
+    const s = this.mapSession(res.rows[0]);
+    try {
+      const tcRes = await this.db.query(
+        `SELECT 
+           COUNT(*) as session_trades,
+           COALESCE(SUM(CAST(gross_paise AS BIGINT)), 0) as session_gross,
+           COALESCE(SUM(COALESCE(CAST(charges_paise AS BIGINT), 0)), 0) as session_charges,
+           COUNT(CASE WHEN charges_paise IS NOT NULL AND CAST(gross_paise AS BIGINT) > CAST(charges_paise AS BIGINT) THEN 1 END) as session_wins
+         FROM trade_closures
+         WHERE account_id = $1 AND session_id = $2`,
+        [accountId, s.id]
+      );
+      if (tcRes.rows.length > 0) {
+        const tcRow = tcRes.rows[0];
+        const sGross = BigInt(tcRow.session_gross || 0);
+        const sCharges = BigInt(tcRow.session_charges || 0);
+        s.tradesCount = parseInt(tcRow.session_trades || '0', 10);
+        s.totalChargesPaise = sCharges;
+        s.realizedPnlPaise = sGross - sCharges;
+        s.winTradesCount = parseInt(tcRow.session_wins || '0', 10);
+      }
+    } catch {}
+    return s;
   }
 
   public async getLifetimePerformance(userId: string): Promise<LifetimePerformance> {
+    const accRes = await this.db.query('SELECT id FROM virtual_accounts WHERE user_id = $1 LIMIT 1', [userId]);
+    const accountId = accRes.rows[0]?.id;
+
+    let totalGross = 0n;
+    let totalCharges = 0n;
+    let totalTrades = 0;
+    let winTrades = 0;
+
+    if (accountId) {
+      try {
+        const tcRes = await this.db.query(
+          `SELECT 
+             COUNT(*) as count,
+             COALESCE(SUM(CAST(gross_paise AS BIGINT)), 0) as gross,
+             COALESCE(SUM(COALESCE(CAST(charges_paise AS BIGINT), 0)), 0) as charges,
+             COUNT(CASE WHEN charges_paise IS NOT NULL AND CAST(gross_paise AS BIGINT) > CAST(charges_paise AS BIGINT) THEN 1 END) as wins
+           FROM trade_closures
+           WHERE account_id = $1`,
+          [accountId]
+        );
+        if (tcRes.rows.length > 0) {
+          totalGross += BigInt(tcRes.rows[0].gross || 0);
+          totalCharges += BigInt(tcRes.rows[0].charges || 0);
+          totalTrades += parseInt(tcRes.rows[0].count || '0', 10);
+          winTrades += parseInt(tcRes.rows[0].wins || '0', 10);
+        }
+
+        const chkRes = await this.db.query(
+          'SELECT purged_trades_count, purged_gross_paise, purged_charges_paise, purged_wins_count FROM history_retention_checkpoints WHERE account_id = $1',
+          [accountId]
+        );
+        if (chkRes.rows.length > 0) {
+          const chk = chkRes.rows[0];
+          totalGross += BigInt(chk.purged_gross_paise || 0);
+          totalCharges += BigInt(chk.purged_charges_paise || 0);
+          totalTrades += parseInt(chk.purged_trades_count || '0', 10);
+          winTrades += parseInt(chk.purged_wins_count || '0', 10);
+        }
+
+        const legRes = await this.db.query(
+          "SELECT COUNT(*) as count, COALESCE(SUM(amount_paise), 0) as gross FROM account_ledger_entries l LEFT JOIN trade_closures t ON t.id = l.reference_id WHERE l.account_id = $1 AND l.entry_type = 'TRADE_PNL' AND t.id IS NULL",
+          [accountId]
+        );
+        if (legRes.rows.length > 0) {
+          totalGross += BigInt(legRes.rows[0].gross || 0);
+          totalTrades += parseInt(legRes.rows[0].count || '0', 10);
+        }
+      } catch {}
+    }
+
     const sessRes = await this.db.query(
-      `SELECT 
-         COUNT(*) as total_sessions,
-         COALESCE(SUM(realized_pnl_paise), 0) as total_pnl,
-         COALESCE(SUM(total_charges_paise), 0) as total_charges,
-         COALESCE(SUM(trades_count), 0) as total_trades,
-         COALESCE(SUM(win_trades_count), 0) as total_wins
-       FROM practice_sessions
-       WHERE user_id = $1`,
+      'SELECT COUNT(*) as total_sessions FROM practice_sessions WHERE user_id = $1',
       [userId]
     );
-    const row = sessRes.rows[0] || {};
-    const totalPnl = BigInt(row.total_pnl || 0);
-    const totalCharges = BigInt(row.total_charges || 0);
-    const totalTrades = parseInt(row.total_trades || '0', 10);
-    const winTrades = parseInt(row.total_wins || '0', 10);
-    const totalSessions = parseInt(row.total_sessions || '0', 10);
+    const totalSessions = parseInt(sessRes.rows[0]?.total_sessions || '0', 10);
 
     return {
-      lifetimeRealizedPnlPaise: totalPnl,
+      lifetimeRealizedPnlPaise: totalGross,
       lifetimeChargesPaise: totalCharges,
-      lifetimeNetTradingPnlPaise: totalPnl - totalCharges,
+      lifetimeNetTradingPnlPaise: totalGross - totalCharges,
       lifetimeTradesCount: totalTrades,
       lifetimeWinTradesCount: winTrades,
       winRatePct: totalTrades > 0 ? Math.round((winTrades / totalTrades) * 10000) / 100 : 0,

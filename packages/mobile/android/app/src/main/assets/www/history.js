@@ -32,7 +32,6 @@
         <h2>Trade history</h2>
         <p>Realized exits, separate from open positions and order status.</p>
       </div>
-      <div class="history-retention-notice" role="note"><span class="history-retention-icon" aria-hidden="true">ℹ️</span> Trade history is retained for 30 days.</div>
       ${filters('history')}
       <label class="history-session">Practice session <select id="history-session"><option value="">All sessions</option></select></label>
       <div id="history-summary" role="status"></div>
@@ -103,7 +102,7 @@
       const notice=data.retentionNotice || 'Trade history is retained for 30 days.';
 
       document.getElementById('history-summary').innerHTML=`
-        <div class="history-retention-banner"><span class="history-retention-icon">ℹ️</span> ${esc(notice)}</div>
+        <div class="history-retention-notice history-retention-banner"><span class="history-retention-icon">ℹ️</span> ${esc(notice)}</div>
         <div class="history-summary-grid">
           <div><b>${s.closedTrades}</b> closed exits${data.legacyTotal?' + '+data.legacyTotal+' older settlements':''}</div>
           <div><b>${s.wins} / ${s.losses} / ${s.breakeven}</b> win / loss / flat</div>

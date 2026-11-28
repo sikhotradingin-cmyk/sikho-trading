@@ -56,12 +56,14 @@ test('States 11/12/23/31/35: Status banner enforces Maintenance > Offline > Reco
   assert.match(el.className, /is-reconnecting/);
   assert.match(el.innerHTML, /Attempt 2/);
 
-  // 4. Stale wins when WS connected & market open & tick > 15s old
+  // 4. Delayed banner shows when genuinely receiving delayed quotes
   state.wsConnected = true;
+  state.feedHealth.delayed = true;
   c.updateAppStatusBanner();
   assert.match(el.className, /is-stale/);
 
-  // 5. Optional update shows when feed is fresh
+  // Auto-hides when live WebSocket is connected without delayed quotes
+  state.feedHealth.delayed = false;
   state.lastAnyTickReceiveMs = Date.now();
   c.updateAppStatusBanner();
   assert.match(el.className, /is-update/);
